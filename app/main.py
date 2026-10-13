@@ -94,8 +94,10 @@ def query_for(text: str, scope: str = "all") -> str:
         raise ValueError("Escribe términos para buscar.")
     if scope not in {"all", "texts"}:
         raise ValueError("Ámbito de búsqueda no válido.")
-    # Escape Lucene special characters so user input remains a search term, not a query.
-    term = re.sub(r'([+\\-!(){}\\[\\]^"~*?:\\\\/|&])', r'\\\\\\1', term)
+    # Prevent user text from being interpreted as Lucene query syntax.
+    term = re.sub(r'[+\\-!(){}\\[\\]^"~*?:\\\\/|&]', " ", term).strip()
+    if not term:
+        raise ValueError("La consulta no contiene términos de búsqueda válidos.")
     fields = f'(title:({term}) OR creator:({term}) OR subject:({term}) OR description:({term}))'
     return ("mediatype:texts AND " if scope == "texts" else "") + fields
 
