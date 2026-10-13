@@ -191,3 +191,159 @@ async def download_file(file_id: int):
             conn.execute("UPDATE archive_files SET download_status='error',download_error=?,downloaded_bytes=? WHERE id=?",
                          (str(exc)[:1000], total, file_id))
     return RedirectResponse(url="/files/" + quote(row["identifier"], safe=""), status_code=303)
+
+
+
+# Integrated intake: inventory new candidates and download a small number of likely score files.
+def _intake_priority(name: str, fmt: str, size: int | None) -> int:
+    suffix = Path(name.lower()).suffix
+    f = (fmt or "").casefold()
+    # Prefer editable notation, then score PDFs; do not discard unfamiliar extensions
+    # from inventory, but avoid automatically downloading unknown files.
+    priority = {
+        ".musicxml": 120, ".mxl": 118, ".xml": 105, ".mei": 100, ".abc": 98,
+        ".sib": 96, ".mscz": 95, ".mscx": 94, ".musx": 92, ".mus": 90,
+        ".capx": 90, ".ove": 88, ".ly": 88, ".nwc": 86, ".nwctxt": 85,
+        ".pdf": 80, ".djvu": 60, ".ps": 58, ".zip": 50, ".7z": 45,
+        ".mid": 30, ".midi": 30, ".kar": 28,
+        ".jpg": 18, ".jpeg": 18, ".png": 18, ".tif": 18, ".tiff": 18, ".jp2": 10,
+        ".txt": 8, ".ocr": 8, ".html": 5,
+    }.get(suffix, 0)
+    if any(token in f for token in ("musicxml", "compressed score", "sibelius", "capella", "finale", "lilypond")):
+        priority += 20
+    if any(token in name.casefold() for token in ("thumb", "thumbnail", "tile", "scandata", "djvu.xml", "hocr", "chocr", "ocr_search", "page_numbers", "torrent", "metadata")):
+        priority -= 100
+    if size is not None:
+        if size <= 0:
+            priority -= 100
+        elif size > MAX_DOWNLOAD_BYTES:
+            priority -= 80
+        elif size < 1024:
+            priority -= 15
+    return priority
+
+
+@router.get("/intake", response_class=HTMLResponse)
+def intake_page():
+    with db() as conn:
+        totals = conn.execute("""SELECT
+            (SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok') AS inventoried,
+            (SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded') AS downloaded,
+            (SELECT COUNT(*) FROM global_discovery_seen WHERE score>0) AS candidates,
+            (SELECT COUNT(*) FROM archive_files WHERE download_status='error') AS errors""").fetchone()
+        recent = conn.execute("""SELECT f.identifier,a.title,f.file_name,f.archive_format,f.size_bytes,
+            f.download_status,f.sha256,f.local_path
+            FROM archive_files f JOIN archive_items a ON a.identifier=f.identifier
+            WHERE f.download_status IN ('downloaded','error','too_large')
+            ORDER BY f.id DESC LIMIT 30""").fetchall()
+    body = "<p><a href='/'>← Inicio</a></p><h1>Captación integrada: inventariar y descargar</h1>"
+    body += "<p>Este proceso combina ambas tareas: inventaría candidatos que aún no tienen inventario y descarga unos pocos archivos priorizados. No descarga en masa y no escribe en OSAP.</p>"
+    body += "<div style='display:flex;gap:1rem;flex-wrap:wrap'>" + "".join(
+        f"<div style='background:#f1f4f7;padding:1rem;border-radius:8px'><small>{label}</small><h2>{value or 0}</h2></div>"
+        for label,value in [("Candidatos musicales",totals["candidates"]),("Elementos inventariados",totals["inventoried"]),("Archivos descargados",totals["downloaded"]),("Errores de descarga",totals["errors"])]
+    ) + "</div>"
+    body += "<section style='padding:1rem;margin:1rem 0;background:#fff;border:1px solid #ddd;border-radius:8px'><form method='post' action='/intake/run'>"
+    body += "<label>Candidatos nuevos a inventariar <select name='items'><option>5</option><option selected>10</option><option>20</option></select></label> "
+    body += "<label>Máximo de descargas en esta ejecución <select name='downloads'><option>1</option><option selected>3</option><option>5</option><option>10</option></select></label> "
+    body += "<button style='padding:.7rem 1rem;cursor:pointer'>Inventariar y descargar</button></form>"
+    body += "<p><small>Prioridad: formatos editables de notación, PDF y otros formatos de partitura. Se excluyen auxiliares obvios y archivos por encima del límite de tamaño configurado. Los formatos desconocidos permanecen registrados, pero no se descargan automáticamente hasta clasificarlos.</small></p></section>"
+    body += "<h2>Actividad reciente</h2><table><tr><th>Elemento / archivo</th><th>Formato</th><th>Tamaño</th><th>Estado</th><th>SHA-256 local</th></tr>"
+    for row in recent:
+        size = f"{row['size_bytes']:,} bytes" if row["size_bytes"] is not None else "—"
+        body += f"<tr><td><a href='/files/{quote(row['identifier'], safe='')}'>{esc(row['title'] or row['identifier'])}</a><br><small>{esc(row['file_name'])}</small></td><td>{esc(row['archive_format'] or Path(row['file_name']).suffix or 'Desconocido')}</td><td>{esc(size)}</td><td>{esc(row['download_status'])}</td><td><code>{esc(row['sha256'] or '—')}</code></td></tr>"
+    body += "</table>"
+    return HTMLResponse(body)
+
+
+@router.post("/intake/run", response_class=HTMLResponse)
+async def run_integrated_intake(items: int = 10, downloads: int = 3):
+    items = max(1, min(int(items), 20))
+    downloads = max(0, min(int(downloads), 10))
+    inventoried_now = 0
+    inventory_errors: list[str] = []
+    downloaded_now = 0
+    download_errors: list[str] = []
+
+    # First inventory only a small batch of candidates not yet inventoried successfully.
+    with db() as conn:
+        targets = conn.execute("""SELECT a.identifier,a.title FROM global_discovery_seen s
+            JOIN archive_items a ON a.identifier=s.identifier
+            LEFT JOIN archive_item_inventories i ON i.identifier=s.identifier
+            WHERE s.score>0 AND (i.identifier IS NULL OR i.status='error')
+            ORDER BY s.score DESC,s.seen_at DESC LIMIT ?""", (items,)).fetchall()
+
+    for target in targets:
+        identifier = target["identifier"]
+        try:
+            async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+                response = await client.get(METADATA_ENDPOINT + quote(identifier, safe=""))
+                response.raise_for_status()
+                payload = response.json()
+            files = payload.get("files", [])
+            if not isinstance(files, list):
+                raise ValueError("Respuesta de inventario no válida")
+            stamp = now()
+            recorded = 0
+            with db() as conn:
+                for item in files:
+                    name = str(item.get("name", "")).strip()
+                    if not name or name in {".", ".."} or any(part == ".." for part in name.replace("\\\\", "/").split("/")):
+                        continue
+                    try:
+                        size = int(item["size"]) if item.get("size") not in (None, "") else None
+                    except (ValueError, TypeError):
+                        size = None
+                    fmt = str(item.get("format") or "")
+                    url = "https://archive.org/download/" + quote(identifier, safe="") + "/" + quote(name, safe="/")
+                    conn.execute("""INSERT INTO archive_files
+                        (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
+                        source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
+                        md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
+                        (identifier,name,safe_filename(name),url,size,fmt,item.get("md5"),item.get("sha1"),int(relevant_file(name,fmt)),stamp))
+                    recorded += 1
+                conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
+                    VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET checked_at=excluded.checked_at,
+                    file_count=excluded.file_count,status='ok',error_text=NULL""", (identifier,stamp,recorded))
+            inventoried_now += 1
+        except Exception as exc:
+            inventory_errors.append(f"{identifier}: {str(exc)[:180]}")
+            with db() as conn:
+                conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
+                    VALUES(?,?,0,'error',?) ON CONFLICT(identifier) DO UPDATE SET checked_at=excluded.checked_at,
+                    status='error',error_text=excluded.error_text""", (identifier,now(),str(exc)[:1000]))
+
+    # Then select highest-priority eligible files already catalogued, including prior inventory batches.
+    if downloads:
+        with db() as conn:
+            all_files = conn.execute("""SELECT f.* FROM archive_files f
+                JOIN global_discovery_seen s ON s.identifier=f.identifier
+                WHERE s.score>0 AND f.relevant=1 AND f.download_status IN ('not_downloaded','error')
+                ORDER BY s.score DESC,f.id ASC""").fetchall()
+        ranked = sorted(all_files, key=lambda row: _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"]), reverse=True)
+        for row in ranked:
+            if downloaded_now >= downloads:
+                break
+            priority = _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"])
+            if priority <= 0:
+                continue
+            if row["size_bytes"] is not None and row["size_bytes"] > MAX_DOWNLOAD_BYTES:
+                with db() as conn:
+                    conn.execute("UPDATE archive_files SET download_status='too_large',download_error=? WHERE id=?", ("Supera el límite configurado", row["id"]))
+                continue
+            await download_file(int(row["id"]))
+            with db() as conn:
+                result = conn.execute("SELECT download_status FROM archive_files WHERE id=?", (row["id"],)).fetchone()
+            if result and result["download_status"] == "downloaded":
+                downloaded_now += 1
+            else:
+                download_errors.append(f"{row['identifier']} / {row['file_name']}: descarga fallida")
+
+    summary = f"<p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Descargas correctas en esta ejecución: <b>{downloaded_now}</b> de un máximo de {downloads}.</p>"
+    if inventory_errors:
+        summary += "<h3>Errores de inventario</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in inventory_errors) + "</ul>"
+    if download_errors:
+        summary += "<h3>Errores de descarga</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in download_errors) + "</ul>"
+    summary += "<p>Los inventarios y descargas se guardan en SQLite y en la carpeta local de descargas. No se ha escrito en OSAP.</p><p><a href='/intake'>Ver captación integrada</a> · <a href='/'>Inicio</a></p>"
+    return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Resultado de captación</title><body style='font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem'>" + summary + "</body></html>")
