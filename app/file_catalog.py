@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
@@ -256,7 +256,7 @@ def intake_page():
 
 
 @router.post("/intake/run", response_class=HTMLResponse)
-async def run_integrated_intake(items: int = 10, downloads: int = 3):
+async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3)):
     items = max(1, min(int(items), 20))
     downloads = max(0, min(int(downloads), 10))
     inventoried_now = 0
