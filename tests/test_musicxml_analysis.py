@@ -2,6 +2,9 @@ from zipfile import ZipFile
 
 import pytest
 
+from fastapi.testclient import TestClient
+
+import app.main as main
 from app.musicxml_analysis import analyze_musicxml
 
 
@@ -45,3 +48,34 @@ def test_analyze_musicxml_rejects_non_score_xml(tmp_path):
     path.write_text("<metadata><title>Not a score</title></metadata>", encoding="utf-8")
     with pytest.raises(ValueError, match="no tiene la estructura"):
         analyze_musicxml(path)
+
+
+def test_content_analysis_route_persists_downloaded_musicxml_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "analysis.sqlite3"))
+    score_path = tmp_path / "local-score.musicxml"
+    score_path.write_text(SCORE, encoding="utf-8")
+    with TestClient(main.app) as client:
+        stamp = main.now()
+        with main.db() as conn:
+            conn.execute("""INSERT INTO archive_items
+                (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                VALUES(?,?,?,?,?,?)""",
+                ("musicxml-route-test", "Test score", "https://archive.org/details/musicxml-route-test", "{}", stamp, stamp))
+            conn.execute("""INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,
+                 inventory_seen_at,download_status,local_path,sha256)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("musicxml-route-test", "local-score.musicxml", "local-score.musicxml",
+                 "https://archive.org/download/musicxml-route-test/local-score.musicxml",
+                 score_path.stat().st_size, "MusicXML", None, None, 1, stamp, "downloaded",
+                 str(score_path), "test-sha256"))
+        response = client.post("/items/musicxml-route-test/content-analysis/analyze-files",
+                               follow_redirects=False)
+        assert response.status_code == 303
+        with main.db() as conn:
+            row = conn.execute("SELECT status,analysis_json,sha256 FROM archive_file_analyses").fetchone()
+        assert row["status"] == "ok"
+        assert row["sha256"] == "test-sha256"
+        assert "Test Motet" in row["analysis_json"]
+        page = client.get("/items/musicxml-route-test/content-analysis")
+        assert "Test Motet" in page.text
