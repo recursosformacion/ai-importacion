@@ -19,7 +19,7 @@ METADATA_ENDPOINT = "https://archive.org/metadata/"
 USER_AGENT = "OSAP-AI-Importacion/0.2 (+https://openmusicrepository.com)"
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".xml", ".musicxml", ".mxl", ".mid", ".midi", ".zip", ".capx",
-    ".mus", ".sib", ".mscz", ".ly", ".ps", ".djvu", ".jpg", ".jpeg", ".png", ".tif", ".tiff"
+    ".mus", ".sib", ".mscz", ".ly", ".ps", ".djvu", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".txt"
 }
 router = APIRouter()
 
@@ -55,9 +55,9 @@ def valid_identifier(identifier: str) -> bool:
 def relevant_file(name: str, fmt: str) -> bool:
     suffix = Path(name.lower()).suffix
     format_text = fmt.lower()
-    return suffix in SUPPORTED_EXTENSIONS or any(word in format_text for word in (
+    return (suffix in SUPPORTED_EXTENSIONS and (suffix != ".txt" or any(token in name.lower() for token in ("djvu", "ocr", "fulltext", "full_text", "contents", "toc")))) or any(word in format_text for word in (
         "pdf", "musicxml", "midi", "musical score", "scorch", "capella", "sibelius",
-        "finale", "compressed score", "djvu", "image", "postscript", "lilypond"
+        "finale", "compressed score", "djvu", "image", "postscript", "lilypond", "djvu text", "ocr text"
     ))
 
 
@@ -130,7 +130,7 @@ def file_catalog(identifier: str):
                 action = f"<form method='post' action='/files/download/{f['id']}'><button>Descargar</button></form>"
             elif f["download_status"] == "downloaded":
                 action = "<span>Guardado localmente</span>"
-            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · candidato musical' if f['relevant'] else ''}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(f['download_status'])}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
+            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(f['download_status'])}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
         body += "</table>"
     body += "</html>"
     return HTMLResponse(body)
