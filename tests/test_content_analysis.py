@@ -19,7 +19,7 @@ def test_content_scope_and_candidate_units(tmp_path, monkeypatch):
         seed_item()
         response = client.get("/items/anthology-test/content-analysis")
         assert response.status_code == 200
-        assert "No se crean ni exportan obras OSAP" in response.text
+        assert "no se crean ni exportan obras OSAP" in response.text
 
         response = client.post(
             "/items/anthology-test/content-analysis/scope",
