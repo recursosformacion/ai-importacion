@@ -227,6 +227,26 @@ def music_candidate_score(doc: dict) -> tuple[int, str]:
     return score, "Indicios: " + ", ".join(hits[:6])
 
 
+def refresh_global_discovery_scores() -> None:
+    """Re-score previously saved candidates with the current filter, without new network calls."""
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT s.identifier, a.metadata_json
+               FROM global_discovery_seen s
+               JOIN archive_items a ON a.identifier=s.identifier"""
+        ).fetchall()
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            score, reason = music_candidate_score(metadata)
+            conn.execute(
+                "UPDATE global_discovery_seen SET score=?,reason=? WHERE identifier=?",
+                (score, reason, row["identifier"]),
+            )
+
+
 def display(value):
     if value is None:
         return None
@@ -321,6 +341,7 @@ def item_table(items):
 async def discover(rows: Annotated[int, Form()] = 100):
     rows = max(100, min(int(rows), 500))
     ensure_global_discovery_queries()
+    refresh_global_discovery_scores()
     query = "Exploración global reanudable por familias musicales"
     query_description = json.dumps(
         [{"key": key, "label": label, "query": archive_query}
@@ -367,8 +388,7 @@ async def discover(rows: Annotated[int, Form()] = 100):
                             """INSERT INTO global_discovery_seen(identifier,first_query_key,score,reason,seen_at)
                                VALUES(?,?,?,?,?)
                                ON CONFLICT(identifier) DO UPDATE SET
-                               score=MAX(global_discovery_seen.score,excluded.score),
-                               reason=CASE WHEN excluded.score>global_discovery_seen.score THEN excluded.reason ELSE global_discovery_seen.reason END""",
+                               score=excluded.score, reason=excluded.reason""",
                             (ident, query_key, score, reason, stamp),
                         )
                         if score > 0:
