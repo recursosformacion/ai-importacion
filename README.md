@@ -11,7 +11,8 @@ Aplicación independiente para localizar, registrar y revisar materiales musical
 - Estado de revisión de derechos explícito. Ver o descargar un archivo no implica permiso para redistribuirlo.
 - API de comprobación `GET /health`.
 - Análisis manual del alcance de cada elemento: obra única, varias obras, colección/volumen, no musical o pendiente.
-- Registro de obras candidatas dentro de un elemento, con compositor, fichero, páginas/localizador y evidencia (índice, portada, OCR, etc.). Dos candidatas sugieren una recopilación, sin sustituir una decisión editorial explícita.\n- Extracción conservadora de líneas candidatas desde ficheros OCR `.txt` y texto extraíble de PDF descargados. Las sugerencias se revisan y aceptan manualmente; no se convierten automáticamente en obras.
+- Registro de obras candidatas dentro de un elemento, con compositor, fichero, páginas/localizador y evidencia (índice, portada, OCR, etc.). Dos candidatas sugieren una recopilación, sin sustituir una decisión editorial explícita.
+- Extracción conservadora de líneas candidatas desde ficheros OCR `.txt` y texto extraíble de PDF descargados. Las sugerencias se revisan y aceptan manualmente; no se convierten automáticamente en obras.
 - Esta fase es solo de catalogación: no crea ni exporta obras OSAP.
 
 ## Requisitos y arranque
@@ -52,7 +53,8 @@ Las pruebas no necesitan una conexión real a Internet Archive; la búsqueda HTT
 - `archive_items`: identificador de Archive.org, campos visibles, JSON original, trazabilidad, revisión editorial y estado de derechos.
 - `archive_files`: inventario por elemento, formato, tamaño, checksums y estado/ruta de descarga local.
 - `archive_content_assessments`: clasificación y justificación del alcance del elemento.
-- `archive_item_contents`: unidades/obras candidatas localizadas dentro del elemento, con evidencia y localizador.\n- `archive_content_suggestions`: líneas detectadas en texto/OCR, pendientes de aceptación humana.
+- `archive_item_contents`: unidades/obras candidatas localizadas dentro del elemento, con evidencia y localizador.
+- `archive_content_suggestions`: líneas detectadas en texto/OCR, pendientes de aceptación humana.
 - `search_run_items`: asociación entre una búsqueda y los elementos devueltos.
 
 Los identificadores de Archive.org son únicos en el catálogo local. Si una nueva búsqueda devuelve el mismo identificador, se actualizan los metadatos y se conserva el primer momento de captación.
