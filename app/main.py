@@ -101,7 +101,7 @@ def query_for(text: str, scope: str = "all") -> str:
     if scope not in {"all", "texts"}:
         raise ValueError("Ámbito de búsqueda no válido.")
     # Prevent user text from being interpreted as Lucene query syntax.
-    term = re.sub(r"[^\\w\\s]", " ", term, flags=re.UNICODE).strip()
+    term = re.sub(r"[^\w\s]", " ", term, flags=re.UNICODE).strip()
     if not term:
         raise ValueError("La consulta no contiene términos de búsqueda válidos.")
     fields = f'(title:({term}) OR creator:({term}) OR subject:({term}) OR description:({term}))'
