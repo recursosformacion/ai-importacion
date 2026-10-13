@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -87,13 +88,16 @@ from app.file_catalog import router as file_catalog_router
 app.include_router(file_catalog_router)
 
 
-def query_for(text: str) -> str:
-    phrase = text.strip().replace("\\", "\\\\").replace('"', '\\"')
-    if not phrase:
+def query_for(text: str, scope: str = "all") -> str:
+    term = text.strip()
+    if not term:
         raise ValueError("Escribe términos para buscar.")
-    fields = f'(title:"{phrase}" OR creator:"{phrase}" OR subject:"{phrase}" OR description:"{phrase}")'
-    return "mediatype:texts AND " + fields
-
+    if scope not in {"all", "texts"}:
+        raise ValueError("Ámbito de búsqueda no válido.")
+    # Escape Lucene special characters so user input remains a search term, not a query.
+    term = re.sub(r'([+\\-!(){}\\[\\]^"~*?:\\\\/|&])', r'\\\\\\1', term)
+    fields = f'(title:({term}) OR creator:({term}) OR subject:({term}) OR description:({term}))'
+    return ("mediatype:texts AND " if scope == "texts" else "") + fields
 
 async def archive_search(query: str, rows: int) -> dict:
     params = [("q", query), ("rows", str(rows)), ("page", "1"), ("output", "json")]
@@ -172,7 +176,7 @@ def home(request: Request):
         runs = conn.execute("SELECT * FROM search_runs ORDER BY id DESC LIMIT 8").fetchall()
     body = "<h1>Captación de partituras</h1><p>Busca por título, compositor u otros términos. Los resultados se guardan en la base de datos local para revisarlos antes de cualquier futura exportación a OSAP.</p>"
     body += "<div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value}</h2></div>" for label, value in zip(["Elementos catalogados","Búsquedas realizadas","Pendientes de revisión"], counts)) + "</div>"
-    body += "<section class='panel'><h2>Nueva búsqueda</h2><form method='post' action='/search'><input name='query' type='text' required placeholder='Bach, Ave Maria, piano sonata'> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar en Internet Archive</button></form><p class='muted'>Busca en títulos, creadores, materias y descripciones de elementos de tipo texto.</p></section>"
+    body += "<section class='panel'><h2>Nueva búsqueda en Internet Archive</h2><form method='post' action='/search'><input name='query' type='text' required placeholder='Bach, Ave Maria, piano sonata'> <label>Buscar en <select name='scope'><option value='all' selected>Todos los tipos de material</option><option value='texts'>Solo textos / libros digitalizados</option></select></label> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar en Internet Archive</button></form><p class='muted'>Busca en metadatos (título, creador, materias y descripción). Por defecto incluye todos los tipos de material; puedes limitar a textos/libros si lo necesitas. La búsqueda de metadatos no lee todavía el contenido de los PDF.</p></section>"
     body += "<section class='panel'><h2>Catálogo local reciente</h2>" + item_table(items) + "<p><a href='/items'>Ver todo el catálogo →</a></p></section>"
     body += "<section class='panel'><h2>Últimas búsquedas</h2><table><tr><th>Consulta</th><th>Resultados</th><th>Estado</th><th>Inicio</th></tr>"
     for run in runs:
@@ -191,11 +195,11 @@ def item_table(items):
 
 
 @app.post("/search", response_class=HTMLResponse)
-async def search(query: Annotated[str, Form()], rows: Annotated[int, Form()] = 25):
+async def search(query: Annotated[str, Form()], rows: Annotated[int, Form()] = 25, scope: Annotated[str, Form()] = "all"):
     query = query.strip()
     rows = max(1, min(int(rows), 100))
     try:
-        archive_query = query_for(query)
+        archive_query = query_for(query, scope)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     with db() as conn:
@@ -239,7 +243,7 @@ def item_detail(identifier: str):
     body = f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
     body += "<p><a href=\"/files/" + esc(identifier) + "\">Consultar inventario de ficheros y descargar</a></p>"
     body += "<p><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar si contiene una o varias obras</a></p>"
-  body += "<section class='panel'><h2>Ficha local</h2>"
+    body += "<section class='panel'><h2>Ficha local</h2>"
     for label, key in [("Identificador","identifier"),("Creador","creator_json"),("Fecha","item_date"),("Tipo","mediatype"),("Visto por primera vez","first_seen_at"),("Última observación","last_seen_at"),("Declaración de derechos de origen","rights_json")]:
         body += f"<p><b>{label}:</b> {esc(item[key] or '—')}</p>"
     body += f"<p><b>Revisión de derechos:</b> {esc(item['rights_status'])}</p><form method='post' action='/items/{esc(identifier)}/rights-status'><select name='status'>"
