@@ -130,9 +130,17 @@ async def archive_search(query: str, rows: int) -> dict:
     data = payload.get("response", {})
     return {"total": int(data.get("numFound", 0)), "docs": data.get("docs", [])}
 
-async def archive_scrape(query: str, count: int, cursor: str | None = None) -> dict:
-    """Fetch one resumable batch from Internet Archive's cursor-based Scraping API."""
-    params = {"q": query, "fields": SCRAPE_FIELDS, "count": max(100, min(int(count), 1000))}
+async def archive_scrape(query: str, count: int, cursor: str | None = None, query_key: str = "default") -> dict:
+    """Fetch one resumable batch from Internet Archive cursor-based Scraping API.
+
+    Keep a stable query-specific field ordering to avoid observed cross-query
+    response-cache collisions when request shapes are otherwise identical.
+    """
+    fields = list(FIELDS)
+    rotations = {key: index for index, (key, _, _) in enumerate(GLOBAL_DISCOVERY_QUERIES)}
+    offset = rotations.get(query_key, 0) % len(fields)
+    fields = fields[offset:] + fields[:offset]
+    params = {"q": query, "fields": ",".join(fields), "count": max(100, min(int(count), 1000))}
     if cursor:
         params["cursor"] = cursor
     async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}) as client:
@@ -146,7 +154,6 @@ async def archive_scrape(query: str, count: int, cursor: str | None = None) -> d
         "items": payload.get("items", []),
         "cursor": payload.get("cursor"),
     }
-
 
 GLOBAL_DISCOVERY_QUERIES = (
     ("scores_titles", "Títulos con términos de partitura",
@@ -325,7 +332,7 @@ async def discover(rows: Annotated[int, Form()] = 100):
         for state in states:
             query_key = state["query_key"]
             try:
-                result = await archive_scrape(state["archive_query"], rows, state["cursor"])
+                result = await archive_scrape(state["archive_query"], rows, state["cursor"], query_key)
                 docs = result["items"]
                 batch_received += len(docs)
                 processed_queries += 1
