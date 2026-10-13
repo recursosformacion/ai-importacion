@@ -106,6 +106,12 @@ async def inspect_files(identifier: str):
                   md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
                   (identifier, name, safe_filename(name), source_url, size, fmt, item.get("md5"), item.get("sha1"),
                    int(relevant_file(name, fmt)), stamp))
+            conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
+                VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET
+                checked_at=excluded.checked_at,file_count=excluded.file_count,status='ok',error_text=NULL""",
+                (identifier, stamp, conn.execute(
+                    "SELECT COUNT(*) FROM archive_files WHERE identifier=?", (identifier,)
+                ).fetchone()[0]))
         return RedirectResponse(url="/files/" + quote(identifier, safe=""), status_code=303)
     except HTTPException:
         raise
@@ -151,6 +157,16 @@ async def download_file(file_id: int):
         row = conn.execute("SELECT * FROM archive_files WHERE id=?", (file_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    with db() as conn:
+        inventory = conn.execute(
+            "SELECT status FROM archive_item_inventories WHERE identifier=?",
+            (row["identifier"],),
+        ).fetchone()
+    if not inventory or inventory["status"] != "ok":
+        raise HTTPException(
+            status_code=409,
+            detail="No se puede descargar: el elemento no tiene un inventario correcto registrado.",
+        )
     if not row["relevant"]:
         raise HTTPException(status_code=422, detail="El formato no está clasificado como candidato musical")
     if row["size_bytes"] is not None and row["size_bytes"] > MAX_DOWNLOAD_BYTES:
@@ -319,6 +335,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
         with db() as conn:
             all_files = conn.execute("""SELECT f.* FROM archive_files f
                 JOIN global_discovery_seen s ON s.identifier=f.identifier
+                JOIN archive_item_inventories i ON i.identifier=f.identifier AND i.status='ok'
                 WHERE s.score>0 AND f.relevant=1 AND f.download_status IN ('not_downloaded','error')
                 ORDER BY s.score DESC,f.id ASC""").fetchall()
         ranked = sorted(all_files, key=lambda row: _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"]), reverse=True)
