@@ -380,19 +380,19 @@ def extract_text_candidates(text: str) -> list[tuple[int, str]]:
                "public domain", "digitized by", "scanned by", "www.", "http://", "https://")
     candidates = []
     for line_no, raw in enumerate(text.splitlines(), 1):
-        line = " ".join(raw.replace("\\x0c", " ").split()).strip(" .·—-")
+        line = " ".join(raw.replace("\x0c", " ").split()).strip(" .·—-")
         if not 4 <= len(line) <= 140:
             continue
         low = line.lower()
         if any(token in low for token in ignored):
             continue
-        if re.fullmatch(r"[\\W_\\d]+", line) or len(re.findall(r"\\d", line)) > len(line) * 0.35:
+        if re.fullmatch(r"[\W_\d]+", line) or len(re.findall(r"\d", line)) > len(line) * 0.35:
             continue
         if len(line.split()) > 18 or line.endswith((":", ";", ",")):
             continue
         # Contents pages often end in dotted leaders and a page number.
-        line = re.sub(r"\\s*[.·_]{2,}\\s*\\d{1,4}\\s*$", "", line).strip(" .·—-")
-        line = re.sub(r"^\\s*(?:no?\\.?\\s*)?\\d{1,3}[.)]\\s*", "", line).strip()
+        line = re.sub(r"\s*[.·_]{2,}\s*\d{1,4}\s*$", "", line).strip(" .·—-")
+        line = re.sub(r"^\s*(?:no?\.?\s*)?\d{1,3}[.)]\s*", "", line).strip()
         if 4 <= len(line) <= 140 and line not in {value for _, value in candidates}:
             candidates.append((line_no, line))
     return candidates[:300]
@@ -423,8 +423,8 @@ def extract_content_suggestions(identifier: str):
                 pages = []
                 for page_no, pdf_page in enumerate(reader.pages, 1):
                     page_text = pdf_page.extract_text() or ""
-                    pages.append(f"\\n[PAGE {page_no}]\\n" + page_text)
-                text_content = "\\n".join(pages)
+                    pages.append(f"\n[PAGE {page_no}]\n" + page_text)
+                text_content = "\n".join(pages)
         except Exception:
             continue
         if not text_content.strip():
