@@ -101,7 +101,7 @@ def query_for(text: str, scope: str = "all") -> str:
     if scope not in {"all", "texts"}:
         raise ValueError("Ámbito de búsqueda no válido.")
     # Prevent user text from being interpreted as Lucene query syntax.
-    term = re.sub(r'[+\\-!(){}\\[\\]^"~*?:\\\\/|&]', " ", term).strip()
+    term = re.sub(r"[^\\w\\s]", " ", term, flags=re.UNICODE).strip()
     if not term:
         raise ValueError("La consulta no contiene términos de búsqueda válidos.")
     fields = f'(title:({term}) OR creator:({term}) OR subject:({term}) OR description:({term}))'
@@ -298,7 +298,7 @@ def content_analysis(identifier: str):
     body += "<section class='panel'><h2>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
     for value, label in CONTENT_SCOPES.items():
         body += f"<option value='{value}' {'selected' if scope == value else ''}>{label}</option>"
-    body += "</select></label><p><label>Justificación / evidencias consultadas<br><textarea name='rationale' rows='3' style='width:95%'>{esc(rationale)}</textarea></label></p><button>Guardar clasificación</button></form></section>"
+    body += f"</select></label><p><label>Justificación / evidencias consultadas<br><textarea name='rationale' rows='3' style='width:95%'>{esc(rationale)}</textarea></label></p><button>Guardar clasificación</button></form></section>"
     body += "<section class='panel'><h2>Ficheros conocidos</h2>"
     if not files:
         body += "<p>No hay inventario de ficheros todavía. <a href='/files/" + esc(identifier) + "'>Consultar el inventario</a> para identificar PDF, MusicXML, MIDI, ZIP o imágenes.</p>"
