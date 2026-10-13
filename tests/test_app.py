@@ -39,3 +39,45 @@ def test_health_and_home(tmp_path, monkeypatch):
     with TestClient(main.app) as client:
         assert client.get("/health").json()["status"] == "ok"
         assert "Captación de partituras" in client.get("/").text
+
+
+
+def test_music_candidate_filter_rejects_irrelevant_and_prioritizes_scores():
+    score, reason = main.music_candidate_score({
+        "title": "Choral sheet music for mixed voices",
+        "subject": ["Sheet music", "Choral music"],
+    })
+    assert score > 0
+    assert "Indicios" in reason
+
+    score, reason = main.music_candidate_score({
+        "title": "Revision of glioblastoma proliferation research",
+        "description": "Scientific systematic review",
+    })
+    assert score == 0
+    assert "Descartado" in reason
+
+
+def test_global_discovery_filters_before_saving(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "discover.sqlite3"))
+
+    async def fake_archive_search(query, rows):
+        assert query == main.GLOBAL_MUSIC_QUERY
+        assert rows == 25
+        return {
+            "total": 900,
+            "docs": [
+                {"identifier": "score-good", "title": "Sheet music: Ave Maria", "subject": ["Vocal score"]},
+                {"identifier": "paper-bad", "title": "Scientific review", "description": "glioblastoma systematic review"},
+                {"identifier": "unknown", "title": "Untitled item"},
+            ],
+        }
+
+    monkeypatch.setattr(main, "archive_search", fake_archive_search)
+    with TestClient(main.app) as client:
+        response = client.post("/discover", data={"rows": 25})
+        assert response.status_code == 200
+        assert "1</b> han superado el filtro inicial" in response.text
+        with main.db() as conn:
+            identifiers = [row["identifier"] for row in conn.execute("SELECT identifier FROM archive_items")]
+        assert identifiers == ["score-good"]
