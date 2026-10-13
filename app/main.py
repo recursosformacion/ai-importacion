@@ -90,6 +90,11 @@ def init_db():
           score INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
           seen_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_global_discovery_seen_score ON global_discovery_seen(score);
+        CREATE TABLE IF NOT EXISTS archive_item_inventories(
+          identifier TEXT PRIMARY KEY REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          checked_at TEXT NOT NULL, file_count INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL, error_text TEXT);
+        CREATE INDEX IF NOT EXISTS idx_archive_item_inventories_status ON archive_item_inventories(status);
         """)
 
 
@@ -101,7 +106,11 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="AI Importación", version="0.2.0", lifespan=lifespan)
 
-from app.file_catalog import router as file_catalog_router
+from app.file_catalog import (
+    router as file_catalog_router, relevant_file, safe_filename, valid_identifier,
+    METADATA_ENDPOINT, USER_AGENT,
+)
+from urllib.parse import quote
 app.include_router(file_catalog_router)
 
 
@@ -316,6 +325,24 @@ def home(request: Request):
         discovery = conn.execute("SELECT COUNT(*) AS scanned, SUM(CASE WHEN score>0 THEN 1 ELSE 0 END) AS candidates FROM global_discovery_seen").fetchone()
         query_states = conn.execute("SELECT label,status,scanned_count,total_found FROM global_discovery_queries ORDER BY query_key").fetchall()
     body += "<section class='panel'><h2>Exploración global reanudable</h2><p>La exploración usa varias consultas musicales independientes y la API de cursor de Internet Archive. Cada avance examina un lote de cada consulta activa; el cursor se guarda localmente para continuar sin volver al principio.</p><div class='metrics'><div class='metric'><span class='muted'>Elementos únicos examinados</span><h2>" + str(discovery["scanned"] or 0) + "</h2></div><div class='metric'><span class='muted'>Candidatos musicales únicos</span><h2>" + str(discovery["candidates"] or 0) + "</h2></div></div><form method='post' action='/discover'><label>Lote por consulta <select name='rows'>" + "".join(f"<option {'selected' if n==100 else ''}>{n}</option>" for n in [100,250,500]) + "</select></label> <button>Continuar exploración global</button></form><table><tr><th>Familia de búsqueda</th><th>Examinados</th><th>Coincidencias declaradas</th><th>Estado</th></tr>" + "".join(f"<tr><td>{esc(q['label'])}</td><td>{q['scanned_count']}</td><td>{esc(q['total_found'] if q['total_found'] is not None else '—')}</td><td>{esc(q['status'])}</td></tr>" for q in query_states) + "</table><p class='muted'>Los totales de consultas se solapan: no deben sumarse como obras únicas. Los candidatos se filtran por metadatos; todavía hay que inspeccionar los archivos y su contenido. No se descargan archivos automáticamente ni se escribe en OSAP.</p></section>"
+    with db() as conn:
+        inventory = conn.execute("""SELECT
+            COUNT(*) AS checked,
+            SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS successful,
+            SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS failed,
+            SUM(file_count) AS files
+            FROM archive_item_inventories""").fetchone()
+        pending_inventory = conn.execute("""SELECT COUNT(*) FROM global_discovery_seen s
+            JOIN archive_items a ON a.identifier=s.identifier
+            LEFT JOIN archive_item_inventories i ON i.identifier=s.identifier
+            WHERE s.score>0 AND (i.identifier IS NULL OR i.status='error')""").fetchone()[0]
+        format_counts = conn.execute("""SELECT COALESCE(NULLIF(archive_format,''),'Formato no indicado') AS fmt,
+            COUNT(*) AS n FROM archive_files f JOIN global_discovery_seen s ON s.identifier=f.identifier
+            WHERE s.score>0 GROUP BY fmt ORDER BY n DESC LIMIT 12""").fetchall()
+    body += "<section class='panel'><h2>Inventario de archivos de candidatos</h2><p>Consulta por lotes reanudables los archivos de Internet Archive para candidatos musicales. Registra todos los nombres y formatos, incluidos formatos desconocidos; no descarga archivos ni escribe en OSAP.</p><div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>" for label,value in [("Elementos inventariados",inventory['checked']),("Inventarios correctos",inventory['successful']),("Con error",inventory['failed']), ("Archivos registrados",inventory['files']), ("Pendientes / reintentables",pending_inventory)]) + "</div><form method='post' action='/inventory-candidates'><label>Elementos por lote <select name='batch_size'>" + "".join(f"<option {'selected' if n==25 else ''} value='{n}'>{n}</option>" for n in [10,25,50]) + "</select></label> <button>Inventariar siguiente lote</button></form>"
+    if format_counts:
+        body += "<h3>Formatos registrados entre candidatos</h3><table><tr><th>Formato declarado por Internet Archive</th><th>Archivos</th></tr>" + "".join(f"<tr><td>{esc(row['fmt'])}</td><td>{row['n']}</td></tr>" for row in format_counts) + "</table>"
+    body += "<p class='muted'>Los formatos reconocidos solo orientan la prioridad. Los formatos desconocidos también se conservan en el inventario para evitar descartar partituras potenciales.</p></section>"
     body += "<section class='panel'><h2>Búsqueda manual opcional</h2><form method='post' action='/search'><input name='query' type='text' required placeholder='Título, compositor o término musical'> <label>Buscar en <select name='scope'><option value='all' selected>Todos los tipos de material</option><option value='texts'>Solo textos / libros digitalizados</option></select></label> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar</button></form></section>"
     body += "<section class='panel'><h2>Catálogo local reciente</h2>" + item_table(items) + "<p><a href='/items'>Ver todo el catálogo →</a></p></section>"
     body += "<section class='panel'><h2>Últimas búsquedas</h2><table><tr><th>Consulta</th><th>Resultados</th><th>Estado</th><th>Inicio</th></tr>"
@@ -457,6 +484,91 @@ async def discover(rows: Annotated[int, Form()] = 100):
                 (str(exc)[:1000], now(), run_id),
             )
         return page("Error de exploración", f"<h1>No se pudo completar la exploración</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
+
+
+@app.post("/inventory-candidates", response_class=HTMLResponse)
+async def inventory_candidates(batch_size: Annotated[int, Form()] = 25):
+    batch_size = max(1, min(int(batch_size), 50))
+    with db() as conn:
+        targets = conn.execute("""SELECT a.identifier, a.title
+            FROM global_discovery_seen s JOIN archive_items a ON a.identifier=s.identifier
+            LEFT JOIN archive_item_inventories i ON i.identifier=s.identifier
+            WHERE s.score>0 AND (i.identifier IS NULL OR i.status='error')
+            ORDER BY s.score DESC, s.seen_at DESC LIMIT ?""", (batch_size,)).fetchall()
+    succeeded = 0
+    failed = []
+    total_files = 0
+    for target in targets:
+        identifier = target["identifier"]
+        if not valid_identifier(identifier):
+            message = "Identificador de Internet Archive no válido"
+            with db() as conn:
+                conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
+                    VALUES(?,?,0,'error',?) ON CONFLICT(identifier) DO UPDATE SET
+                    checked_at=excluded.checked_at,status='error',error_text=excluded.error_text""",
+                    (identifier, now(), message))
+            failed.append(f"{identifier}: {message}")
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+                response = await client.get(METADATA_ENDPOINT + quote(identifier, safe=""))
+                response.raise_for_status()
+                payload = response.json()
+            files = payload.get("files", [])
+            if not isinstance(files, list):
+                raise ValueError("Respuesta de inventario no válida: files no es una lista")
+            stamp = now()
+            recorded = 0
+            with db() as conn:
+                for item in files:
+                    name = str(item.get("name", "")).strip()
+                    if not name or name in {".", ".."} or any(part == ".." for part in name.replace("\\\\", "/").split("/")):
+                        continue
+                    try:
+                        size = int(item["size"]) if item.get("size") not in (None, "") else None
+                    except (ValueError, TypeError):
+                        size = None
+                    fmt = str(item.get("format") or "")
+                    source_url = "https://archive.org/download/" + quote(identifier, safe="") + "/" + quote(name, safe="/")
+                    conn.execute("""INSERT INTO archive_files
+                      (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at)
+                      VALUES(?,?,?,?,?,?,?,?,?,?)
+                      ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
+                      source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
+                      md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
+                      (identifier, name, safe_filename(name), source_url, size, fmt, item.get("md5"), item.get("sha1"),
+                       int(relevant_file(name, fmt)), stamp))
+                    recorded += 1
+                conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
+                    VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET
+                    checked_at=excluded.checked_at,file_count=excluded.file_count,status='ok',error_text=NULL""",
+                    (identifier, stamp, recorded))
+            succeeded += 1
+            total_files += recorded
+        except Exception as exc:
+            message = str(exc)[:1000]
+            with db() as conn:
+                conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
+                    VALUES(?,?,0,'error',?) ON CONFLICT(identifier) DO UPDATE SET
+                    checked_at=excluded.checked_at,status='error',error_text=excluded.error_text""",
+                    (identifier, now(), message))
+            failed.append(f"{identifier}: {message}")
+    with db() as conn:
+        remaining = conn.execute("""SELECT COUNT(*) FROM global_discovery_seen s
+            LEFT JOIN archive_item_inventories i ON i.identifier=s.identifier
+            WHERE s.score>0 AND (i.identifier IS NULL OR i.status='error')""").fetchone()[0]
+        checked = conn.execute("SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok'").fetchone()[0]
+        file_total = conn.execute("SELECT COUNT(*) FROM archive_files").fetchone()[0]
+        formats = conn.execute("""SELECT COALESCE(NULLIF(archive_format,''),'Formato no indicado') AS fmt, COUNT(*) AS n
+            FROM archive_files GROUP BY fmt ORDER BY n DESC LIMIT 20""").fetchall()
+    body = "<section class='panel'><h1>Inventario de archivos</h1><p>En este lote se han consultado <b>" + str(len(targets)) + "</b> elementos: <b>" + str(succeeded) + "</b> inventarios correctos, <b>" + str(len(failed)) + "</b> con error y <b>" + str(total_files) + "</b> archivos registrados en los inventarios correctos.</p><p>Elementos con inventario correcto acumulados: <b>" + str(checked) + "</b>. Archivos registrados en total: <b>" + str(file_total) + "</b>. Pendientes o reintentables: <b>" + str(remaining) + "</b>.</p>"
+    if failed:
+        body += "<h3>Errores que se podrán reintentar</h3><ul>" + "".join("<li>" + esc(error) + "</li>" for error in failed[:20]) + "</ul>"
+    body += "<h3>Formatos registrados (incluidos los no reconocidos)</h3><table><tr><th>Formato declarado</th><th>Archivos</th></tr>" + "".join(f"<tr><td>{esc(row['fmt'])}</td><td>{row['n']}</td></tr>" for row in formats) + "</table>"
+    if remaining:
+        body += "<form method='post' action='/inventory-candidates'><input type='hidden' name='batch_size' value='" + str(batch_size) + "'><button>Continuar con el siguiente lote</button></form>"
+    body += "<p><a href='/'>Volver al inicio</a></p></section>"
+    return page("Inventario de archivos", body)
 
 
 @app.post("/search", response_class=HTMLResponse)
