@@ -14,6 +14,7 @@ Aplicación independiente para localizar, registrar y revisar materiales musical
 - Análisis manual del alcance de cada elemento: obra única, varias obras, colección/volumen, no musical o pendiente.
 - Registro de obras candidatas dentro de un elemento, con compositor, fichero, páginas/localizador y evidencia (índice, portada, OCR, etc.). Dos candidatas sugieren una recopilación, sin sustituir una decisión editorial explícita.
 - Extracción conservadora de líneas candidatas desde ficheros OCR `.txt` y texto extraíble de PDF descargados. Las sugerencias se revisan y aceptan manualmente; no se convierten automáticamente en obras.
+- Análisis local de MusicXML/MXL descargados: extrae título, creadores, partes/instrumentos y compases; guarda el resultado y los errores en SQLite, sin alterar los archivos ni escribir en OSAP.
 - Esta fase es solo de catalogación: no crea ni exporta obras OSAP.
 
 ## Requisitos y arranque

@@ -95,6 +95,16 @@ def init_db():
           checked_at TEXT NOT NULL, file_count INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL, error_text TEXT);
         CREATE INDEX IF NOT EXISTS idx_archive_item_inventories_status ON archive_item_inventories(status);
+        CREATE TABLE IF NOT EXISTS archive_file_analyses(
+          file_id INTEGER PRIMARY KEY REFERENCES archive_files(id) ON DELETE CASCADE,
+          identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          analysis_type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          analysis_json TEXT NOT NULL,
+          error_text TEXT,
+          analyzed_at TEXT NOT NULL,
+          sha256 TEXT);
+        CREATE INDEX IF NOT EXISTS idx_archive_file_analyses_identifier ON archive_file_analyses(identifier);
         """)
 
 
@@ -111,6 +121,7 @@ from app.file_catalog import (
     METADATA_ENDPOINT, USER_AGENT,
 )
 from urllib.parse import quote
+from app.musicxml_analysis import analyze_musicxml
 app.include_router(file_catalog_router)
 
 
@@ -679,6 +690,25 @@ def content_analysis(identifier: str):
             body += f"<tr><td>{esc(frow['file_name'])}</td><td>{esc(frow['archive_format'] or '—')}</td><td>{esc(frow['size_bytes'] if frow['size_bytes'] is not None else '—')}</td><td>{'Sí' if frow['relevant'] else 'No'}</td></tr>"
         body += "</table>"
     body += "<p class='muted'>La lista de ficheros es una pista, no una prueba de cuántas obras contiene el elemento.</p></section>"
+    analyses = []
+    with db() as conn:
+        analyses = conn.execute("""SELECT a.*, f.file_name FROM archive_file_analyses a
+            JOIN archive_files f ON f.id=a.file_id
+            WHERE a.identifier=? ORDER BY a.analyzed_at DESC,f.file_name""", (identifier,)).fetchall()
+    body += "<section class='panel'><h2>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
+    if analyses:
+        body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
+        for result in analyses:
+            try:
+                data = json.loads(result["analysis_json"])
+            except (TypeError, json.JSONDecodeError):
+                data = {}
+            parts = data.get("parts", [])
+            part_names = ", ".join(p.get("name") or p.get("id") or "Parte" for p in parts)
+            creators = ", ".join(c.get("name", "") for c in data.get("creators", []) if c.get("name"))
+            body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
+        body += "</table>"
+    body += "</section>"
     body += "<section class='panel'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
     with db() as conn:
         suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
@@ -767,6 +797,45 @@ def extract_text_candidates(text: str) -> list[tuple[int, str]]:
         if 4 <= len(line) <= 140 and line not in {value for _, value in candidates}:
             candidates.append((line_no, line))
     return candidates[:300]
+
+
+@app.post("/items/{identifier}/content-analysis/analyze-files")
+def analyze_downloaded_musicxml(identifier: str):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
+            raise HTTPException(status_code=404, detail="Elemento no encontrado")
+        files = conn.execute("""SELECT id,file_name,local_path,sha256 FROM archive_files
+            WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
+            AND lower(file_name) LIKE '%.musicxml' OR
+                identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
+            AND lower(file_name) LIKE '%.mxl' OR
+                identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
+            AND lower(file_name) LIKE '%.xml'""", (identifier, identifier, identifier)).fetchall()
+    if not files:
+        raise HTTPException(status_code=422, detail="No hay archivos MusicXML/MXL descargados para analizar.")
+    for file_row in files:
+        path = Path(file_row["local_path"])
+        status = "ok"
+        error_text = None
+        try:
+            if not path.is_file():
+                raise FileNotFoundError("El archivo descargado no existe en la ruta local registrada.")
+            analysis = analyze_musicxml(path)
+        except Exception as exc:
+            analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
+            status = "error"
+            error_text = str(exc)[:1000]
+        with db() as conn:
+            conn.execute("""INSERT INTO archive_file_analyses
+                (file_id,identifier,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
+                VALUES(?,?, 'musicxml', ?,?,?,?,?)
+                ON CONFLICT(file_id) DO UPDATE SET identifier=excluded.identifier,
+                analysis_type=excluded.analysis_type,status=excluded.status,
+                analysis_json=excluded.analysis_json,error_text=excluded.error_text,
+                analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
+                (file_row["id"], identifier, status, json.dumps(analysis, ensure_ascii=False),
+                 error_text, now(), file_row["sha256"]))
+    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
 
 
 @app.post("/items/{identifier}/content-analysis/extract")
