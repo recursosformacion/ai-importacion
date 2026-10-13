@@ -196,20 +196,33 @@ MUSIC_NEGATIVE_TERMS = (
 
 
 def music_candidate_score(doc: dict) -> tuple[int, str]:
-    """Conservative metadata triage; never treats a score as proof of musical content."""
+    """Metadata triage that deprioritizes recordings without rejecting score collections."""
     fields = []
     for key in ("title", "subject", "description", "collection", "format"):
         value = doc.get(key)
         fields.extend(value if isinstance(value, list) else [value] if value else [])
     text = " ".join(str(value) for value in fields).casefold()
+    title_value = doc.get("title") or ""
+    title_text = " ".join(title_value) if isinstance(title_value, list) else str(title_value)
+    title_text = title_text.casefold()
     if any(term in text for term in MUSIC_NEGATIVE_TERMS):
         return 0, "Descartado por indicios de contenido ajeno a partituras"
+
+    strong = {"sheet music", "musical score", "music score", "partitura", "partituras",
+              "vocal score", "music notation", "musicxml", "lilypond"}
+    title_has_score_evidence = any(term in title_text for term in strong)
+    media_value = doc.get("mediatype") or ""
+    media_types = media_value if isinstance(media_value, list) else [media_value]
+    media_types = {str(value).casefold() for value in media_types}
+    non_score_media = bool(media_types & {"audio", "movies", "video", "software", "web"})
+    if non_score_media and not title_has_score_evidence:
+        return 0, "Descartado provisionalmente: tipo de material audiovisual/software sin indicio explícito de partitura en el título"
+
     hits = [term for term in MUSIC_POSITIVE_TERMS if term in text]
     if not hits:
         return 0, "Sin indicios musicales suficientes en los metadatos"
-    # Exact score/notation terms carry more weight than generic genre words.
-    strong = {"sheet music", "musical score", "music score", "partitura", "partituras",
-              "vocal score", "music notation", "musicxml", "lilypond"}
+    # Generic genres (symphony, sonata, concerto...) are weaker evidence than
+    # an explicit score/notation term. Texts and collections remain eligible.
     score = sum(3 if term in strong else 1 for term in hits)
     return score, "Indicios: " + ", ".join(hits[:6])
 
