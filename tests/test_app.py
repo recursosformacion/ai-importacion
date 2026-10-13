@@ -4,7 +4,9 @@ import app.main as main
 
 
 def test_query_builder():
-    assert main.query_for("Bach").startswith("mediatype:texts AND ")
+    assert "mediatype:texts" not in main.query_for("Bach")
+    assert main.query_for("Bach", "texts").startswith("mediatype:texts AND ")
+    assert "title:(Bach)" in main.query_for("Bach")
     try:
         main.query_for(" ")
     except ValueError:
