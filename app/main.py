@@ -224,8 +224,10 @@ async def search(query: Annotated[str, Form()], rows: Annotated[int, Form()] = 2
             conn.execute("UPDATE search_runs SET status='error',error_text=?,completed_at=? WHERE id=?", (str(exc)[:1000], now(), run_id))
         return page("Error de búsqueda", f"<h1>No se pudo completar la búsqueda</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
     with db() as conn:
-        items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 50").fetchall()
-    body = f"<section class='panel'><h2>Resultado de búsqueda</h2><p>Internet Archive informa de <b>{result['total']}</b> coincidencias. Se han recibido y guardado <b>{saved}</b> elementos.</p><p><a href='/'>Volver al inicio</a></p></section><section class='panel'><h2>Catálogo local</h2>{item_table(items)}</section>"
+        items = conn.execute("""SELECT ai.* FROM archive_items ai
+            JOIN search_run_items sri ON sri.identifier=ai.identifier
+            WHERE sri.search_run_id=? ORDER BY sri.result_rank LIMIT 100""", (run_id,)).fetchall()
+    body = f"<section class='panel'><h2>Resultado de búsqueda: {esc(query)}</h2><p>Internet Archive informa de <b>{result['total']}</b> coincidencias. Se han recibido y guardado <b>{saved}</b> elementos en esta búsqueda.</p><p><a href='/'>Volver al inicio</a></p></section><section class='panel'><h2>Resultados encontrados</h2>{item_table(items)}</section>"
     return page("Resultado de búsqueda", body)
 
 
