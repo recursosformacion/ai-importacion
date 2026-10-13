@@ -81,7 +81,7 @@ async def inspect_files(identifier: str):
         with db() as conn:
             for item in files:
                 name = str(item.get("name", "")).strip()
-                if not name or name in {".", ".."}:
+                if not name or name in {".", ".."} or any(part == ".." for part in name.replace("\\\\", "/").split("/")):
                     continue
                 try:
                     size = int(item["size"]) if item.get("size") not in (None, "") else None
