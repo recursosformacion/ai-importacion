@@ -17,9 +17,18 @@ DOWNLOAD_DIR = Path(os.getenv("AI_IMPORTACION_DOWNLOAD_DIR", "downloads"))
 MAX_DOWNLOAD_BYTES = int(os.getenv("AI_IMPORTACION_MAX_DOWNLOAD_BYTES", str(100 * 1024 * 1024)))
 METADATA_ENDPOINT = "https://archive.org/metadata/"
 USER_AGENT = "OSAP-AI-Importacion/0.2 (+https://openmusicrepository.com)"
+# Broad inventory of notation, score-editor, archive, scan and supporting-text formats.
+# Unknown formats are still recorded; this set only affects prioritization/download eligibility.
 SUPPORTED_EXTENSIONS = {
-    ".pdf", ".xml", ".musicxml", ".mxl", ".mid", ".midi", ".zip", ".capx",
-    ".mus", ".sib", ".mscz", ".ly", ".ps", ".djvu", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".txt"
+    ".pdf", ".djvu", ".ps",
+    ".xml", ".musicxml", ".mxl", ".mei", ".abc", ".ly",
+    ".mid", ".midi", ".kar",
+    ".capx", ".mus", ".musx", ".sib", ".mscz", ".mscx", ".ove", ".enc",
+    ".nwc", ".nwctxt", ".gp", ".gp3", ".gp4", ".gp5", ".gpx", ".gp7",
+    ".mgu", ".sgu",
+    ".zip", ".7z", ".tar", ".gz",
+    ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".jp2",
+    ".txt", ".ocr", ".html"
 }
 router = APIRouter()
 
