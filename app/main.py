@@ -51,6 +51,14 @@ def init_db():
           search_run_id INTEGER NOT NULL REFERENCES search_runs(id) ON DELETE CASCADE,
           identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
           result_rank INTEGER NOT NULL, PRIMARY KEY(search_run_id,identifier));
+        CREATE TABLE IF NOT EXISTS archive_files(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          file_name TEXT NOT NULL, file_name_safe TEXT NOT NULL, source_url TEXT NOT NULL,
+          size_bytes INTEGER, archive_format TEXT, md5 TEXT, sha1 TEXT, relevant INTEGER NOT NULL DEFAULT 0,
+          inventory_seen_at TEXT NOT NULL, download_status TEXT NOT NULL DEFAULT 'not_downloaded',
+          local_path TEXT, sha256 TEXT, downloaded_bytes INTEGER, download_error TEXT,
+          UNIQUE(identifier,file_name));
         CREATE INDEX IF NOT EXISTS idx_archive_title ON archive_items(title);
         """)
 
@@ -61,7 +69,10 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="AI Importación", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AI Importación", version="0.2.0", lifespan=lifespan)
+
+from app.file_catalog import router as file_catalog_router
+app.include_router(file_catalog_router)
 
 
 def query_for(text: str) -> str:
@@ -214,6 +225,7 @@ def item_detail(identifier: str):
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
     item = dict(item)
     body = f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
+    body += "<p><a href=\"/files/" + esc(identifier) + "\">Consultar inventario de ficheros y descargar</a></p>"
     body += "<section class='panel'><h2>Ficha local</h2>"
     for label, key in [("Identificador","identifier"),("Creador","creator_json"),("Fecha","item_date"),("Tipo","mediatype"),("Visto por primera vez","first_seen_at"),("Última observación","last_seen_at"),("Declaración de derechos de origen","rights_json")]:
         body += f"<p><b>{label}:</b> {esc(item[key] or '—')}</p>"
