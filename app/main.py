@@ -16,7 +16,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 ARCHIVE_ENDPOINT = "https://archive.org/advancedsearch.php"
-FIELDS = ["identifier", "title", "creator", "date", "mediatype", "collection", "rights", "description", "subject", "language", "publisher"]
+SCRAPE_ENDPOINT = "https://archive.org/services/search/v1/scrape"
+FIELDS = ["identifier", "title", "creator", "date", "mediatype", "collection", "rights", "description", "subject", "language", "publisher", "format"]
+SCRAPE_FIELDS = ",".join(FIELDS)
 USER_AGENT = "OSAP-AI-Importacion/0.1 (+https://openmusicrepository.com; metadata research)"
 
 
@@ -79,6 +81,15 @@ def init_db():
           source_file TEXT NOT NULL, line_number INTEGER NOT NULL,
           suggestion_text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
           created_at TEXT NOT NULL, UNIQUE(identifier,source_file,line_number,suggestion_text));
+        CREATE TABLE IF NOT EXISTS global_discovery_queries(
+          query_key TEXT PRIMARY KEY, label TEXT NOT NULL, archive_query TEXT NOT NULL,
+          cursor TEXT, total_found INTEGER, scanned_count INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending', updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS global_discovery_seen(
+          identifier TEXT PRIMARY KEY, first_query_key TEXT NOT NULL,
+          score INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+          seen_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_global_discovery_seen_score ON global_discovery_seen(score);
         """)
 
 
@@ -118,6 +129,47 @@ async def archive_search(query: str, rows: int) -> dict:
         raise RuntimeError("Respuesta de búsqueda no válida de Internet Archive")
     data = payload.get("response", {})
     return {"total": int(data.get("numFound", 0)), "docs": data.get("docs", [])}
+
+async def archive_scrape(query: str, count: int, cursor: str | None = None) -> dict:
+    """Fetch one resumable batch from Internet Archive's cursor-based Scraping API."""
+    params = {"q": query, "fields": SCRAPE_FIELDS, "count": max(100, min(int(count), 1000))}
+    if cursor:
+        params["cursor"] = cursor
+    async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}) as client:
+        response = await client.get(SCRAPE_ENDPOINT, params=params)
+        response.raise_for_status()
+        payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("items", []), list):
+        raise RuntimeError("Respuesta de exploración no válida de Internet Archive")
+    return {
+        "total": int(payload.get("total", 0)),
+        "items": payload.get("items", []),
+        "cursor": payload.get("cursor"),
+    }
+
+
+GLOBAL_DISCOVERY_QUERIES = (
+    ("scores_titles", "Títulos con términos de partitura",
+     '(title:"sheet music" OR title:"musical score" OR title:"music score" OR title:"partitura" OR title:"partituras" OR title:"vocal score" OR title:"choral score")'),
+    ("scores_subjects", "Materias musicales y notación",
+     '(subject:"sheet music" OR subject:"musical scores" OR subject:"music notation" OR subject:"choral music" OR subject:"hymns" OR subject:"scores")'),
+    ("notation_formats", "Formatos y programas de notación",
+     '(title:musicxml OR description:musicxml OR title:lilypond OR description:lilypond OR title:".mxl" OR title:"musical notation")'),
+    ("vocal_music", "Música vocal, coral y litúrgica",
+     '(title:choir OR title:choral OR title:hymn OR title:motet OR title:madrigal OR title:cantata OR title:psalm OR title:mass OR title:opera OR title:oratorio OR subject:"vocal music")'),
+    ("instrumental_music", "Música instrumental y partituras",
+     '(title:sonata OR title:symphony OR title:concerto OR title:quartet OR title:trio OR title:"piano score" OR title:"orchestral score" OR subject:"instrumental music")'),
+)
+
+
+def ensure_global_discovery_queries() -> None:
+    with db() as conn:
+        for query_key, label, archive_query in GLOBAL_DISCOVERY_QUERIES:
+            conn.execute(
+                """INSERT OR IGNORE INTO global_discovery_queries
+                   (query_key,label,archive_query,status,updated_at) VALUES(?,?,?,'pending',?)""",
+                (query_key, label, archive_query, now()),
+            )
 
 
 GLOBAL_MUSIC_QUERY = '(title:"sheet music" OR title:"musical score" OR title:"partitura" OR title:"partituras" OR title:"choral score" OR title:"vocal score" OR subject:"sheet music" OR subject:"musical scores" OR subject:"music notation" OR subject:"choral music" OR subject:"partitions musicales" OR description:"sheet music")'
@@ -219,7 +271,11 @@ def home(request: Request):
         runs = conn.execute("SELECT * FROM search_runs ORDER BY id DESC LIMIT 8").fetchall()
     body = "<h1>Captación de partituras</h1><p>La exploración global localiza candidatos musicales sin exigir un compositor ni un título. Los metadatos se filtran automáticamente; la revisión del contenido y de los derechos sigue siendo necesaria.</p>"
     body += "<div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value}</h2></div>" for label, value in zip(["Elementos catalogados","Búsquedas realizadas","Pendientes de revisión"], counts)) + "</div>"
-    body += "<section class='panel'><h2>Exploración global de material musical</h2><p>Busca en Internet Archive por señales de partituras y notación musical, sin introducir nombres. Los resultados que no muestran indicios musicales se excluyen de este catálogo de candidatos.</p><form method='post' action='/discover'><label>Lote de resultados <select name='rows'>" + "".join(f"<option {'selected' if n==100 else ''}>{n}</option>" for n in [25,50,100]) + "</select></label> <button>Iniciar exploración global</button></form><p class='muted'>Es una primera exploración por metadatos, no un rastreo exhaustivo de todo Internet Archive. No descarga ficheros automáticamente.</p></section>"
+    ensure_global_discovery_queries()
+    with db() as conn:
+        discovery = conn.execute("SELECT COUNT(*) AS scanned, SUM(CASE WHEN score>0 THEN 1 ELSE 0 END) AS candidates FROM global_discovery_seen").fetchone()
+        query_states = conn.execute("SELECT label,status,scanned_count,total_found FROM global_discovery_queries ORDER BY query_key").fetchall()
+    body += "<section class='panel'><h2>Exploración global reanudable</h2><p>La exploración usa varias consultas musicales independientes y la API de cursor de Internet Archive. Cada avance examina un lote de cada consulta activa; el cursor se guarda localmente para continuar sin volver al principio.</p><div class='metrics'><div class='metric'><span class='muted'>Elementos únicos examinados</span><h2>" + str(discovery["scanned"] or 0) + "</h2></div><div class='metric'><span class='muted'>Candidatos musicales únicos</span><h2>" + str(discovery["candidates"] or 0) + "</h2></div></div><form method='post' action='/discover'><label>Lote por consulta <select name='rows'>" + "".join(f"<option {'selected' if n==100 else ''}>{n}</option>" for n in [100,250,500]) + "</select></label> <button>Continuar exploración global</button></form><table><tr><th>Familia de búsqueda</th><th>Examinados</th><th>Coincidencias declaradas</th><th>Estado</th></tr>" + "".join(f"<tr><td>{esc(q['label'])}</td><td>{q['scanned_count']}</td><td>{esc(q['total_found'] if q['total_found'] is not None else '—')}</td><td>{esc(q['status'])}</td></tr>" for q in query_states) + "</table><p class='muted'>Los totales de consultas se solapan: no deben sumarse como obras únicas. Los candidatos se filtran por metadatos; todavía hay que inspeccionar los archivos y su contenido. No se descargan archivos automáticamente ni se escribe en OSAP.</p></section>"
     body += "<section class='panel'><h2>Búsqueda manual opcional</h2><form method='post' action='/search'><input name='query' type='text' required placeholder='Título, compositor o término musical'> <label>Buscar en <select name='scope'><option value='all' selected>Todos los tipos de material</option><option value='texts'>Solo textos / libros digitalizados</option></select></label> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar</button></form></section>"
     body += "<section class='panel'><h2>Catálogo local reciente</h2>" + item_table(items) + "<p><a href='/items'>Ver todo el catálogo →</a></p></section>"
     body += "<section class='panel'><h2>Últimas búsquedas</h2><table><tr><th>Consulta</th><th>Resultados</th><th>Estado</th><th>Inicio</th></tr>"
@@ -240,35 +296,117 @@ def item_table(items):
 
 @app.post("/discover", response_class=HTMLResponse)
 async def discover(rows: Annotated[int, Form()] = 100):
-    rows = max(1, min(int(rows), 100))
-    query = "Exploración global de material musical"
+    rows = max(100, min(int(rows), 500))
+    ensure_global_discovery_queries()
+    query = "Exploración global reanudable por familias musicales"
+    query_description = json.dumps(
+        [{"key": key, "label": label, "query": archive_query}
+         for key, label, archive_query in GLOBAL_DISCOVERY_QUERIES],
+        ensure_ascii=False,
+    )
     with db() as conn:
         run_id = conn.execute(
             "INSERT INTO search_runs(query_text,archive_query,rows_requested,started_at) VALUES(?,?,?,?)",
-            (query, GLOBAL_MUSIC_QUERY, rows, now()),
+            (query, query_description, rows, now()),
         ).lastrowid
+    batch_candidates = {}
+    batch_received = 0
+    total_reported = 0
+    errors = []
+    processed_queries = 0
     try:
-        result = await archive_search(GLOBAL_MUSIC_QUERY, rows)
-        candidates = []
-        for doc in result["docs"]:
-            score, reason = music_candidate_score(doc)
-            if score > 0:
-                doc = dict(doc)
-                doc["_ai_music_score"] = score
-                doc["_ai_music_reason"] = reason
-                candidates.append(doc)
-        candidates.sort(key=lambda doc: doc["_ai_music_score"], reverse=True)
-        saved = save_results(run_id, candidates)
         with db() as conn:
+            states = conn.execute(
+                "SELECT * FROM global_discovery_queries WHERE status!='completed' ORDER BY query_key"
+            ).fetchall()
+        for state in states:
+            query_key = state["query_key"]
+            try:
+                result = await archive_scrape(state["archive_query"], rows, state["cursor"])
+                docs = result["items"]
+                batch_received += len(docs)
+                processed_queries += 1
+                if state["cursor"] is None and state["total_found"] is None:
+                    total_for_query = result["total"]
+                else:
+                    total_for_query = state["total_found"]
+                next_cursor = result["cursor"]
+                if next_cursor and next_cursor == state["cursor"]:
+                    raise RuntimeError("Internet Archive devolvió el mismo cursor; se detuvo esta consulta para evitar un bucle.")
+                stamp = now()
+                with db() as conn:
+                    for doc in docs:
+                        ident = str(doc.get("identifier", "")).strip()
+                        if not ident:
+                            continue
+                        score, reason = music_candidate_score(doc)
+                        conn.execute(
+                            """INSERT INTO global_discovery_seen(identifier,first_query_key,score,reason,seen_at)
+                               VALUES(?,?,?,?,?)
+                               ON CONFLICT(identifier) DO UPDATE SET
+                               score=MAX(global_discovery_seen.score,excluded.score),
+                               reason=CASE WHEN excluded.score>global_discovery_seen.score THEN excluded.reason ELSE global_discovery_seen.reason END""",
+                            (ident, query_key, score, reason, stamp),
+                        )
+                        if score > 0:
+                            candidate = dict(doc)
+                            candidate["_ai_music_score"] = score
+                            candidate["_ai_music_reason"] = reason
+                            batch_candidates[ident] = candidate
+                    conn.execute(
+                        """UPDATE global_discovery_queries SET cursor=?,total_found=COALESCE(total_found,?),
+                           scanned_count=scanned_count+?,status=?,updated_at=? WHERE query_key=?""",
+                        (next_cursor, total_for_query, len(docs),
+                         "active" if next_cursor else "completed", stamp, query_key),
+                    )
+                total_reported += int(total_for_query or 0)
+            except Exception as exc:
+                errors.append(f"{state['label']}: {exc}")
+                with db() as conn:
+                    conn.execute(
+                        "UPDATE global_discovery_queries SET status='error',updated_at=? WHERE query_key=?",
+                        (now(), query_key),
+                    )
+        candidates = sorted(batch_candidates.values(), key=lambda doc: doc["_ai_music_score"], reverse=True)
+        saved = save_results(run_id, candidates) if candidates else 0
+        with db() as conn:
+            summary = conn.execute(
+                "SELECT COUNT(*) AS scanned, SUM(CASE WHEN score>0 THEN 1 ELSE 0 END) AS candidates FROM global_discovery_seen"
+            ).fetchone()
+            active = conn.execute(
+                "SELECT COUNT(*) FROM global_discovery_queries WHERE status!='completed'"
+            ).fetchone()[0]
+            status = "error" if errors and not processed_queries else "completed"
+            error_text = "; ".join(errors)[:1000] if errors else None
             conn.execute(
-                "UPDATE search_runs SET total_found=?,result_count=?,status='completed',completed_at=? WHERE id=?",
-                (result["total"], saved, now(), run_id),
+                "UPDATE search_runs SET total_found=?,result_count=?,status=?,error_text=?,completed_at=? WHERE id=?",
+                (total_reported, saved, status, error_text, now(), run_id),
             )
             items = conn.execute(
                 """SELECT ai.* FROM archive_items ai JOIN search_run_items sri
                    ON sri.identifier=ai.identifier WHERE sri.search_run_id=?
                    ORDER BY sri.result_rank LIMIT 100""", (run_id,)
             ).fetchall()
+        progress = (
+            f"<p>En este avance se examinaron <b>{batch_received}</b> registros en "
+            f"<b>{processed_queries}</b> consultas; {saved} candidatos de este lote superaron el filtro.</p>"
+            f"<p>Acumulado local: <b>{summary['scanned']}</b> identificadores únicos examinados y "
+            f"<b>{summary['candidates'] or 0}</b> con indicios musicales en metadatos.</p>"
+            f"<p>Consultas todavía pendientes o activas: <b>{active}</b>.</p>"
+        )
+        if errors:
+            progress += "<p><b>Incidencias:</b> " + esc(" | ".join(errors)) + "</p>"
+        if active:
+            progress += "<form method='post' action='/discover'><input type='hidden' name='rows' value='" + str(rows) + "'><button>Continuar con el siguiente lote</button></form>"
+        else:
+            progress += "<p><b>Las consultas configuradas han llegado al final de sus cursores.</b> Esto no garantiza que se haya localizado todo el material musical de Internet Archive.</p>"
+        body = (
+            "<section class='panel'><h2>Progreso de exploración global</h2>" + progress +
+            "<p>Los totales de distintas consultas pueden solaparse y no equivalen a partituras únicas. Los elementos se deduplican por identificador. El filtro se basa en metadatos, no en la inspección de todos los archivos.</p>"
+            "<p><a href='/'>Volver al inicio</a></p></section>"
+            f"<section class='panel'><h2>Candidatos musicales de este avance</h2>{item_table(items)}</section>"
+        )
+        return page("Exploración global", body)
     except Exception as exc:
         with db() as conn:
             conn.execute(
@@ -276,15 +414,6 @@ async def discover(rows: Annotated[int, Form()] = 100):
                 (str(exc)[:1000], now(), run_id),
             )
         return page("Error de exploración", f"<h1>No se pudo completar la exploración</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
-    body = (
-        f"<section class='panel'><h2>Exploración global completada</h2>"
-        f"<p>Internet Archive informa de <b>{result['total']}</b> coincidencias para la consulta musical. "
-        f"En este lote se han recibido {len(result['docs'])} registros y <b>{saved}</b> han superado el filtro inicial.</p>"
-        "<p>El filtro se basa en metadatos y puede dejar fuera partituras mal descritas o incluir falsos positivos. "
-        "Revisa los ficheros y el contenido antes de aceptar una obra.</p><p><a href='/'>Volver al inicio</a></p></section>"
-        f"<section class='panel'><h2>Candidatos musicales priorizados</h2>{item_table(items)}</section>"
-    )
-    return page("Exploración global", body)
 
 
 @app.post("/search", response_class=HTMLResponse)
