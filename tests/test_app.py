@@ -57,6 +57,25 @@ def test_music_candidate_filter_rejects_irrelevant_and_prioritizes_scores():
     assert score == 0
     assert "Descartado" in reason
 
+    # A musical genre in an audio item is not enough to make it a score candidate.
+    score, reason = main.music_candidate_score({
+        "identifier": "symphony-recording",
+        "title": "Symphony No. 5 - complete recording",
+        "mediatype": "audio",
+        "format": ["MP3", "VBR MP3"],
+    })
+    assert score == 0
+    assert "audiovisual" in reason
+
+    # Explicit score evidence in the title remains eligible even if the source
+    # item has an audiovisual media type; the content still needs inspection.
+    score, reason = main.music_candidate_score({
+        "title": "Ave Maria sheet music",
+        "mediatype": "texts",
+        "format": ["PDF"],
+    })
+    assert score > 0
+
 
 def test_global_discovery_uses_persistent_cursors_and_deduplicates(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "discover.sqlite3"))
