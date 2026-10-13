@@ -113,3 +113,115 @@ def test_global_discovery_uses_persistent_cursors_and_deduplicates(tmp_path, mon
         with main.db() as conn:
             assert conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0] == 3
             assert conn.execute("SELECT COUNT(*) FROM global_discovery_queries WHERE status='completed'").fetchone()[0] == 5
+
+def test_batch_inventory_records_unknown_and_uncommon_formats_and_is_resumable(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "inventory.sqlite3"))
+    main.init_db()
+    with main.db() as conn:
+        stamp = main.now()
+        conn.execute("""INSERT INTO archive_items
+            (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+            VALUES(?,?,?,?,?,?)""",
+            ("score-inventory-test", "Sibelius score", "https://archive.org/details/score-inventory-test",
+             json.dumps({"identifier":"score-inventory-test","title":"Sibelius sheet music"}), stamp, stamp))
+        conn.execute("""INSERT INTO global_discovery_seen(identifier,first_query_key,score,reason,seen_at)
+            VALUES(?,?,?,?,?)""", ("score-inventory-test", "scores_titles", 5, "sheet music", stamp))
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"files": [
+                {"name": "piece.sib", "format": "Sibelius", "size": "123", "md5": "abc"},
+                {"name": "mystery.zzz", "format": "Unknown Binary", "size": "456"},
+            ]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url):
+            assert "score-inventory-test" in url
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    with TestClient(main.app) as client:
+        response = client.post("/inventory-candidates", data={"batch_size": 10})
+        assert response.status_code == 200
+        assert "2" in response.text
+        with main.db() as conn:
+            rows = conn.execute("SELECT file_name,relevant,archive_format FROM archive_files ORDER BY file_name").fetchall()
+            assert [(r["file_name"], r["archive_format"]) for r in rows] == [
+                ("mystery.zzz", "Unknown Binary"), ("piece.sib", "Sibelius")
+            ]
+            assert conn.execute("SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok' AND file_count=2").fetchone()[0] == 1
+        # A successful zero-or-more-file inventory is not repeated on the next batch.
+        again = client.post("/inventory-candidates", data={"batch_size": 10})
+        assert "0</b> elementos" in again.text
+
+
+def test_batch_inventory_records_zero_files_and_retries_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "inventory-retry.sqlite3"))
+    main.init_db()
+    with main.db() as conn:
+        stamp = main.now()
+        for ident in ("empty-inventory-test", "retry-inventory-test"):
+            conn.execute("""INSERT INTO archive_items
+                (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                VALUES(?,?,?,?,?,?)""",
+                (ident, ident, "https://archive.org/details/" + ident,
+                 json.dumps({"identifier":ident,"title":"sheet music"}), stamp, stamp))
+            conn.execute("""INSERT INTO global_discovery_seen(identifier,first_query_key,score,reason,seen_at)
+                VALUES(?,?,?,?,?)""", (ident, "scores_titles", 3, "sheet music", stamp))
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.payload
+
+    calls = {"retry-inventory-test": 0}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url):
+            ident = "retry-inventory-test" if "retry-inventory-test" in url else "empty-inventory-test"
+            if ident == "retry-inventory-test":
+                calls[ident] += 1
+                if calls[ident] == 1:
+                    raise RuntimeError("temporary failure")
+                return FakeResponse({"files": []})
+            return FakeResponse({"files": []})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    with TestClient(main.app) as client:
+        first = client.post("/inventory-candidates", data={"batch_size": 10})
+        assert first.status_code == 200
+        with main.db() as conn:
+            row = conn.execute("SELECT status,file_count FROM archive_item_inventories WHERE identifier='empty-inventory-test'").fetchone()
+            assert (row["status"], row["file_count"]) == ("ok", 0)
+            assert conn.execute("SELECT status FROM archive_item_inventories WHERE identifier='retry-inventory-test'").fetchone()["status"] == "error"
+        second = client.post("/inventory-candidates", data={"batch_size": 10})
+        assert second.status_code == 200
+        with main.db() as conn:
+            assert conn.execute("SELECT status FROM archive_item_inventories WHERE identifier='retry-inventory-test'").fetchone()["status"] == "ok"
+        assert calls["retry-inventory-test"] == 2
