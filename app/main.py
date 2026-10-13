@@ -280,7 +280,10 @@ def home(request: Request):
     body += "<section class='panel'><h2>Catálogo local reciente</h2>" + item_table(items) + "<p><a href='/items'>Ver todo el catálogo →</a></p></section>"
     body += "<section class='panel'><h2>Últimas búsquedas</h2><table><tr><th>Consulta</th><th>Resultados</th><th>Estado</th><th>Inicio</th></tr>"
     for run in runs:
-        body += f"<tr><td>{esc(run['query_text'])}</td><td>{run['result_count']} guardados / {run['total_found']} encontrados</td><td>{esc(run['status'])} {esc(run['error_text'])}</td><td>{esc(run['started_at'])}</td></tr>"
+        result_label = f"{run['result_count']} guardados / {run['total_found']} coincidencias"
+        if "reanudable por familias" in run["query_text"]:
+            result_label += " (con posibles solapamientos)"
+        body += f"<tr><td>{esc(run['query_text'])}</td><td>{esc(result_label)}</td><td>{esc(run['status'])} {esc(run['error_text'])}</td><td>{esc(run['started_at'])}</td></tr>"
     body += "</table></section>"
     return page("AI Importación", body)
 
