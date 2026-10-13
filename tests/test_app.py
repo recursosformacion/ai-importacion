@@ -58,26 +58,39 @@ def test_music_candidate_filter_rejects_irrelevant_and_prioritizes_scores():
     assert "Descartado" in reason
 
 
-def test_global_discovery_filters_before_saving(tmp_path, monkeypatch):
+def test_global_discovery_uses_persistent_cursors_and_deduplicates(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "discover.sqlite3"))
+    calls = []
 
-    async def fake_archive_search(query, rows):
-        assert query == main.GLOBAL_MUSIC_QUERY
-        assert rows == 25
+    async def fake_archive_scrape(query, count, cursor=None):
+        assert count == 100
+        calls.append((query, cursor))
         return {
             "total": 900,
-            "docs": [
+            "items": [
                 {"identifier": "score-good", "title": "Sheet music: Ave Maria", "subject": ["Vocal score"]},
                 {"identifier": "paper-bad", "title": "Scientific review", "description": "glioblastoma systematic review"},
                 {"identifier": "unknown", "title": "Untitled item"},
             ],
+            "cursor": "next-cursor" if cursor is None else None,
         }
 
-    monkeypatch.setattr(main, "archive_search", fake_archive_search)
+    monkeypatch.setattr(main, "archive_scrape", fake_archive_scrape)
     with TestClient(main.app) as client:
-        response = client.post("/discover", data={"rows": 25})
-        assert response.status_code == 200
-        assert "1</b> han superado el filtro inicial" in response.text
+        first = client.post("/discover", data={"rows": 100})
+        assert first.status_code == 200
+        assert "15</b> registros" in first.text
+        assert "1 candidatos de este lote superaron el filtro" in first.text
         with main.db() as conn:
-            identifiers = [row["identifier"] for row in conn.execute("SELECT identifier FROM archive_items")]
-        assert identifiers == ["score-good"]
+            assert conn.execute("SELECT COUNT(*) FROM archive_items").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0] == 3
+            assert conn.execute("SELECT COUNT(*) FROM global_discovery_queries WHERE status='active'").fetchone()[0] == 5
+        second = client.post("/discover", data={"rows": 100})
+        assert second.status_code == 200
+        assert "llegado al final de sus cursores" in second.text
+        assert len(calls) == 10
+        assert all(cursor is None for _, cursor in calls[:5])
+        assert all(cursor == "next-cursor" for _, cursor in calls[5:])
+        with main.db() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0] == 3
+            assert conn.execute("SELECT COUNT(*) FROM global_discovery_queries WHERE status='completed'").fetchone()[0] == 5
