@@ -62,7 +62,7 @@ def test_global_discovery_uses_persistent_cursors_and_deduplicates(tmp_path, mon
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "discover.sqlite3"))
     calls = []
 
-    async def fake_archive_scrape(query, count, cursor=None):
+    async def fake_archive_scrape(query, count, cursor=None, query_key='default'):
         assert count == 100
         calls.append((query, cursor))
         return {
