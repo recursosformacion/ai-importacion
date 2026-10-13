@@ -1,6 +1,7 @@
 import json
 from fastapi.testclient import TestClient
 import app.main as main
+import app.file_catalog as file_catalog
 
 
 def test_query_builder():
@@ -228,7 +229,9 @@ def test_batch_inventory_records_zero_files_and_retries_errors(tmp_path, monkeyp
 
 
 def test_download_requires_successful_inventory(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "download-guard.sqlite3"))
+    db_path = str(tmp_path / "download-guard.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
     main.init_db()
     with main.db() as conn:
         stamp = main.now()
