@@ -13,7 +13,7 @@ Aplicación independiente para localizar, registrar y revisar materiales musical
 
 ## Requisitos y arranque
 
-Python 3.11 o posterior.
+Python 3.11 o posterior.\n\nConfiguración opcional: `AI_IMPORTACION_DOWNLOAD_DIR` cambia el directorio de descarga; `AI_IMPORTACION_MAX_DOWNLOAD_BYTES` cambia el límite por fichero (por defecto 100 MiB).
 
 ```bash
 python -m venv .venv
@@ -37,14 +37,14 @@ Las pruebas no necesitan una conexión real a Internet Archive; la búsqueda HTT
 ## Límites deliberados
 
 - La búsqueda inicial se restringe a elementos `mediatype:texts` y a los campos de metadatos indicados. No garantiza encontrar todos los materiales musicales ni todos los formatos.
-- Este bloque no descarga archivos binarios ni inspecciona su formato. El inventario de ficheros, la descarga controlada, los checksums y la detección de duplicados son una fase posterior.
+- El inventario de ficheros ya consulta la API de metadatos de Archive.org y registra nombre, formato, tamaño, MD5/SHA-1 de origen y URL. Los formatos candidatos (PDF, MusicXML/MXL, MIDI, ZIP, formatos de notación e imágenes de páginas) se pueden descargar individualmente con límite de tamaño y SHA-256 local. Las descargas quedan fuera de Git, en `downloads/`.
 - Se conservan los metadatos originales de la búsqueda; todavía no se crean obras, compositores, representaciones ni recursos OSAP.
 - La futura exportación debe usar los contratos de OSAP API y Storage, ser idempotente, disponer de dry-run y registrar resultados. No se deben insertar filas directamente en sus bases de datos.
 
 ## Modelo local
 
 - `search_runs`: consulta, expresión enviada, número solicitado, estado, totales y marcas de tiempo.
-- `archive_items`: identificador de Archive.org, campos visibles, JSON original, trazabilidad, revisión editorial y estado de derechos.
+- `archive_items`: identificador de Archive.org, campos visibles, JSON original, trazabilidad, revisión editorial y estado de derechos.\n- `archive_files`: inventario por elemento, formato, tamaño, checksums y estado/ruta de descarga local.
 - `search_run_items`: asociación entre una búsqueda y los elementos devueltos.
 
 Los identificadores de Archive.org son únicos en el catálogo local. Si una nueva búsqueda devuelve el mismo identificador, se actualizan los metadatos y se conserva el primer momento de captación.
