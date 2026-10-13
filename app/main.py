@@ -73,6 +73,12 @@ def init_db():
           source_file TEXT NOT NULL DEFAULT '', page_range TEXT NOT NULL DEFAULT '',
           evidence TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'candidate',
           notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE(identifier, ordinal));
+        CREATE TABLE IF NOT EXISTS archive_content_suggestions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          source_file TEXT NOT NULL, line_number INTEGER NOT NULL,
+          suggestion_text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL, UNIQUE(identifier,source_file,line_number,suggestion_text));
         """)
 
 
@@ -302,6 +308,18 @@ def content_analysis(identifier: str):
             body += f"<tr><td>{esc(frow['file_name'])}</td><td>{esc(frow['archive_format'] or '—')}</td><td>{esc(frow['size_bytes'] if frow['size_bytes'] is not None else '—')}</td><td>{'Sí' if frow['relevant'] else 'No'}</td></tr>"
         body += "</table>"
     body += "<p class='muted'>La lista de ficheros es una pista, no una prueba de cuántas obras contiene el elemento.</p></section>"
+    body += "<section class='panel'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    with db() as conn:
+        suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
+    if suggestions:
+        body += "<h3>Sugerencias para revisar</h3><table><tr><th>Texto detectado</th><th>Origen</th><th>Estado / acción</th></tr>"
+        for suggestion in suggestions:
+            body += f"<tr><td>{esc(suggestion['suggestion_text'])}</td><td>{esc(suggestion['source_file'])}<br>línea/página {suggestion['line_number']}</td><td>{esc(suggestion['status'])}"
+            if suggestion["status"] == "pending":
+                body += f"<form method='post' action='/items/{esc(identifier)}/content-analysis/suggestions/{suggestion['id']}/accept'><button>Aceptar como obra candidata</button></form>"
+            body += "</td></tr>"
+        body += "</table>"
+    body += "</section>"
     body += "<section class='panel'><h2>Obras o unidades de contenido identificadas</h2><p>Registra cada obra visible dentro de un PDF, volumen o conjunto. El fichero y las páginas son opcionales, pero ayudan a localizarla después.</p>"
     body += "<form method='post' action='/items/" + esc(identifier) + "/content-analysis/units'><p><label>Título de la obra o unidad *<br><input type='text' name='title' required></label></p><p><label>Compositor / creador<br><input type='text' name='creator'></label></p><p><label>Fichero de origen<br><input type='text' name='source_file'></label></p><p><label>Páginas / rango / localizador<br><input type='text' name='page_range' placeholder='p. 1–8, pistas 3–5, páginas del PDF'></label></p><p><label>Evidencia (índice, portada, contenido, OCR...)<br><input type='text' name='evidence' style='width:90%'></label></p><p><label>Notas<br><textarea name='notes' rows='2' style='width:95%'></textarea></label></p><button>Añadir obra candidata</button></form>"
     if units:
@@ -353,4 +371,88 @@ def add_content_unit(
             conn.execute("""INSERT INTO archive_content_assessments(identifier,scope,rationale,assessed_at)
                 VALUES(?,?,?,?) ON CONFLICT(identifier) DO UPDATE SET scope=excluded.scope,assessed_at=excluded.assessed_at""",
                 (identifier, "multiple_works", "Clasificación sugerida al registrar dos o más obras candidatas; requiere revisión humana.", now()))
+    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
+
+
+def extract_text_candidates(text: str) -> list[tuple[int, str]]:
+    """Conservative title-like lines from OCR/text; suggestions always require human review."""
+    ignored = ("internet archive", "table of contents", "contents", "copyright", "all rights reserved",
+               "public domain", "digitized by", "scanned by", "www.", "http://", "https://")
+    candidates = []
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        line = " ".join(raw.replace("\\x0c", " ").split()).strip(" .·—-")
+        if not 4 <= len(line) <= 140:
+            continue
+        low = line.lower()
+        if any(token in low for token in ignored):
+            continue
+        if re.fullmatch(r"[\\W_\\d]+", line) or len(re.findall(r"\\d", line)) > len(line) * 0.35:
+            continue
+        if len(line.split()) > 18 or line.endswith((":", ";", ",")):
+            continue
+        # Contents pages often end in dotted leaders and a page number.
+        line = re.sub(r"\\s*[.·_]{2,}\\s*\\d{1,4}\\s*$", "", line).strip(" .·—-")
+        line = re.sub(r"^\\s*(?:no?\\.?\\s*)?\\d{1,3}[.)]\\s*", "", line).strip()
+        if 4 <= len(line) <= 140 and line not in {value for _, value in candidates}:
+            candidates.append((line_no, line))
+    return candidates[:300]
+
+
+@app.post("/items/{identifier}/content-analysis/extract")
+def extract_content_suggestions(identifier: str):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
+            raise HTTPException(status_code=404, detail="Elemento no encontrado")
+        files = conn.execute("""SELECT file_name,local_path FROM archive_files
+            WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL""", (identifier,)).fetchall()
+    if not files:
+        raise HTTPException(status_code=422, detail="Primero consulta el inventario y descarga un fichero de texto OCR o un PDF.")
+    examined = 0
+    inserted = 0
+    for frow in files:
+        path = Path(frow["local_path"])
+        if not path.exists():
+            continue
+        text_content = ""
+        try:
+            if path.suffix.lower() == ".txt":
+                text_content = path.read_text(encoding="utf-8", errors="replace")
+            elif path.suffix.lower() == ".pdf":
+                from pypdf import PdfReader
+                reader = PdfReader(str(path))
+                pages = []
+                for page_no, pdf_page in enumerate(reader.pages, 1):
+                    page_text = pdf_page.extract_text() or ""
+                    pages.append(f"\\n[PAGE {page_no}]\\n" + page_text)
+                text_content = "\\n".join(pages)
+        except Exception:
+            continue
+        if not text_content.strip():
+            continue
+        examined += 1
+        with db() as conn:
+            for line_no, candidate in extract_text_candidates(text_content):
+                cur = conn.execute("""INSERT OR IGNORE INTO archive_content_suggestions
+                    (identifier,source_file,line_number,suggestion_text,status,created_at)
+                    VALUES(?,?,?,?, 'pending', ?)""",
+                    (identifier, frow["file_name"], line_no, candidate, now()))
+                inserted += cur.rowcount
+    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
+
+
+@app.post("/items/{identifier}/content-analysis/suggestions/{suggestion_id}/accept")
+def accept_content_suggestion(identifier: str, suggestion_id: int):
+    with db() as conn:
+        suggestion = conn.execute("""SELECT * FROM archive_content_suggestions
+            WHERE id=? AND identifier=? AND status='pending'""", (suggestion_id, identifier)).fetchone()
+        if not suggestion:
+            raise HTTPException(status_code=404, detail="Sugerencia pendiente no encontrada")
+        ordinal = int(conn.execute("SELECT COALESCE(MAX(ordinal),0)+1 FROM archive_item_contents WHERE identifier=?", (identifier,)).fetchone()[0])
+        conn.execute("""INSERT INTO archive_item_contents
+            (identifier,ordinal,title,source_file,page_range,evidence,notes,created_at)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            (identifier, ordinal, suggestion["suggestion_text"], suggestion["source_file"],
+             f"línea {suggestion['line_number']}", "Sugerencia automática extraída de texto/OCR; aceptada por una persona.",
+             "Revisar el título y asignar compositor si se conoce.", now()))
+        conn.execute("UPDATE archive_content_suggestions SET status='accepted' WHERE id=?", (suggestion_id,))
     return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
