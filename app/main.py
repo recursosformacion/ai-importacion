@@ -60,6 +60,18 @@ def init_db():
           local_path TEXT, sha256 TEXT, downloaded_bytes INTEGER, download_error TEXT,
           UNIQUE(identifier,file_name));
         CREATE INDEX IF NOT EXISTS idx_archive_title ON archive_items(title);
+        CREATE TABLE IF NOT EXISTS archive_content_assessments(
+          identifier TEXT PRIMARY KEY REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          scope TEXT NOT NULL DEFAULT 'uncertain',
+          rationale TEXT NOT NULL DEFAULT '',
+          assessed_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS archive_item_contents(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          ordinal INTEGER NOT NULL, title TEXT NOT NULL, creator TEXT NOT NULL DEFAULT '',
+          source_file TEXT NOT NULL DEFAULT '', page_range TEXT NOT NULL DEFAULT '',
+          evidence TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'candidate',
+          notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE(identifier, ordinal));
         """)
 
 
@@ -226,7 +238,8 @@ def item_detail(identifier: str):
     item = dict(item)
     body = f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
     body += "<p><a href=\"/files/" + esc(identifier) + "\">Consultar inventario de ficheros y descargar</a></p>"
-    body += "<section class='panel'><h2>Ficha local</h2>"
+    body += "<p><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar si contiene una o varias obras</a></p>"
+  body += "<section class='panel'><h2>Ficha local</h2>"
     for label, key in [("Identificador","identifier"),("Creador","creator_json"),("Fecha","item_date"),("Tipo","mediatype"),("Visto por primera vez","first_seen_at"),("Última observación","last_seen_at"),("Declaración de derechos de origen","rights_json")]:
         body += f"<p><b>{label}:</b> {esc(item[key] or '—')}</p>"
     body += f"<p><b>Revisión de derechos:</b> {esc(item['rights_status'])}</p><form method='post' action='/items/{esc(identifier)}/rights-status'><select name='status'>"
@@ -246,3 +259,92 @@ def rights_status(identifier: str, status: Annotated[str, Form()] = "unreviewed"
         if not cur.rowcount:
             raise HTTPException(status_code=404, detail="Elemento no encontrado")
     return RedirectResponse(url="/items/" + identifier, status_code=303)
+
+
+CONTENT_SCOPES = {
+    "one_work": "Una obra musical",
+    "multiple_works": "Varias obras / recopilación de partituras",
+    "collection": "Colección o volumen; contenido por determinar",
+    "not_music": "No parece contener partituras musicales",
+    "uncertain": "Pendiente de determinar",
+}
+
+
+@app.get("/items/{identifier}/content-analysis", response_class=HTMLResponse)
+def content_analysis(identifier: str):
+    with db() as conn:
+        item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
+        if not item:
+            raise HTTPException(status_code=404, detail="Elemento no encontrado")
+        assessment = conn.execute("SELECT * FROM archive_content_assessments WHERE identifier=?", (identifier,)).fetchone()
+        units = conn.execute("SELECT * FROM archive_item_contents WHERE identifier=? ORDER BY ordinal", (identifier,)).fetchall()
+        files = conn.execute("SELECT file_name,archive_format,size_bytes,relevant FROM archive_files WHERE identifier=? ORDER BY relevant DESC,file_name", (identifier,)).fetchall()
+    scope = assessment["scope"] if assessment else "uncertain"
+    rationale = assessment["rationale"] if assessment else ""
+    body = f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
+    body += "<p>Esta fase determina qué representa el elemento de Internet Archive. Puede ser una sola partitura, un volumen con muchas obras o un contenedor de archivos. Aquí no se crean ni exportan obras OSAP.</p>"
+    body += "<section class='panel'><h2>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
+    for value, label in CONTENT_SCOPES.items():
+        body += f"<option value='{value}' {'selected' if scope == value else ''}>{label}</option>"
+    body += "</select></label><p><label>Justificación / evidencias consultadas<br><textarea name='rationale' rows='3' style='width:95%'>{esc(rationale)}</textarea></label></p><button>Guardar clasificación</button></form></section>"
+    body += "<section class='panel'><h2>Ficheros conocidos</h2>"
+    if not files:
+        body += "<p>No hay inventario de ficheros todavía. <a href='/files/" + esc(identifier) + "'>Consultar el inventario</a> para identificar PDF, MusicXML, MIDI, ZIP o imágenes.</p>"
+    else:
+        body += "<table><tr><th>Nombre</th><th>Formato</th><th>Tamaño</th><th>Candidato</th></tr>"
+        for frow in files:
+            body += f"<tr><td>{esc(frow['file_name'])}</td><td>{esc(frow['archive_format'] or '—')}</td><td>{esc(frow['size_bytes'] if frow['size_bytes'] is not None else '—')}</td><td>{'Sí' if frow['relevant'] else 'No'}</td></tr>"
+        body += "</table>"
+    body += "<p class='muted'>La lista de ficheros es una pista, no una prueba de cuántas obras contiene el elemento.</p></section>"
+    body += "<section class='panel'><h2>Obras o unidades de contenido identificadas</h2><p>Registra cada obra visible dentro de un PDF, volumen o conjunto. El fichero y las páginas son opcionales, pero ayudan a localizarla después.</p>"
+    body += "<form method='post' action='/items/" + esc(identifier) + "/content-analysis/units'><p><label>Título de la obra o unidad *<br><input type='text' name='title' required></label></p><p><label>Compositor / creador<br><input type='text' name='creator'></label></p><p><label>Fichero de origen<br><input type='text' name='source_file'></label></p><p><label>Páginas / rango / localizador<br><input type='text' name='page_range' placeholder='p. 1–8, pistas 3–5, páginas del PDF'></label></p><p><label>Evidencia (índice, portada, contenido, OCR...)<br><input type='text' name='evidence' style='width:90%'></label></p><p><label>Notas<br><textarea name='notes' rows='2' style='width:95%'></textarea></label></p><button>Añadir obra candidata</button></form>"
+    if units:
+        body += "<h3>Contenido registrado</h3><table><tr><th>#</th><th>Título / creador</th><th>Localizador</th><th>Evidencia / notas</th><th>Estado</th></tr>"
+        for unit in units:
+            body += f"<tr><td>{unit['ordinal']}</td><td><b>{esc(unit['title'])}</b><br>{esc(unit['creator'] or 'Creador desconocido')}</td><td>{esc(unit['source_file'])}<br>{esc(unit['page_range'])}</td><td>{esc(unit['evidence'])}<br>{esc(unit['notes'])}</td><td>{esc(unit['status'])}</td></tr>"
+        body += "</table>"
+    else:
+        body += "<p>Todavía no se han registrado obras candidatas. No se infiere automáticamente que el elemento equivalga a una sola obra.</p>"
+    body += "</section>"
+    return page("Análisis de contenido", body)
+
+
+@app.post("/items/{identifier}/content-analysis/scope")
+def save_content_scope(identifier: str, scope: Annotated[str, Form()], rationale: Annotated[str, Form()] = ""):
+    if scope not in CONTENT_SCOPES:
+        raise HTTPException(status_code=422, detail="Clasificación no válida")
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
+            raise HTTPException(status_code=404, detail="Elemento no encontrado")
+        conn.execute("""INSERT INTO archive_content_assessments(identifier,scope,rationale,assessed_at)
+            VALUES(?,?,?,?) ON CONFLICT(identifier) DO UPDATE SET scope=excluded.scope,
+            rationale=excluded.rationale,assessed_at=excluded.assessed_at""",
+            (identifier, scope, rationale.strip()[:5000], now()))
+    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
+
+
+@app.post("/items/{identifier}/content-analysis/units")
+def add_content_unit(
+    identifier: str, title: Annotated[str, Form()], creator: Annotated[str, Form()] = "",
+    source_file: Annotated[str, Form()] = "", page_range: Annotated[str, Form()] = "",
+    evidence: Annotated[str, Form()] = "", notes: Annotated[str, Form()] = "",
+):
+    title = title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="El título es obligatorio")
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
+            raise HTTPException(status_code=404, detail="Elemento no encontrado")
+        ordinal = int(conn.execute("SELECT COALESCE(MAX(ordinal),0)+1 FROM archive_item_contents WHERE identifier=?", (identifier,)).fetchone()[0])
+        conn.execute("""INSERT INTO archive_item_contents
+            (identifier,ordinal,title,creator,source_file,page_range,evidence,notes,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (identifier, ordinal, title[:1000], creator.strip()[:500], source_file.strip()[:1000],
+             page_range.strip()[:500], evidence.strip()[:2000], notes.strip()[:3000], now()))
+        count = int(conn.execute("SELECT COUNT(*) FROM archive_item_contents WHERE identifier=?", (identifier,)).fetchone()[0])
+        assessment = conn.execute("SELECT scope FROM archive_content_assessments WHERE identifier=?", (identifier,)).fetchone()
+        if count >= 2 and (assessment is None or assessment["scope"] == "uncertain"):
+            conn.execute("""INSERT INTO archive_content_assessments(identifier,scope,rationale,assessed_at)
+                VALUES(?,?,?,?) ON CONFLICT(identifier) DO UPDATE SET scope=excluded.scope,assessed_at=excluded.assessed_at""",
+                (identifier, "multiple_works", "Clasificación sugerida al registrar dos o más obras candidatas; requiere revisión humana.", now()))
+    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
