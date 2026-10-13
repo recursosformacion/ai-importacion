@@ -154,7 +154,7 @@ GLOBAL_DISCOVERY_QUERIES = (
     ("scores_subjects", "Materias musicales y notación",
      '(subject:"sheet music" OR subject:"musical scores" OR subject:"music notation" OR subject:"choral music" OR subject:"hymns" OR subject:"scores")'),
     ("notation_formats", "Formatos y programas de notación",
-     '(title:musicxml OR description:musicxml OR title:lilypond OR description:lilypond OR title:".mxl" OR title:"musical notation")'),
+     '(title:musicxml OR description:musicxml OR title:lilypond OR description:lilypond OR format:MusicXML OR format:MXL OR title:"musical notation")'),
     ("vocal_music", "Música vocal, coral y litúrgica",
      '(title:choir OR title:choral OR title:hymn OR title:motet OR title:madrigal OR title:cantata OR title:psalm OR title:mass OR title:opera OR title:oratorio OR subject:"vocal music")'),
     ("instrumental_music", "Música instrumental y partituras",
