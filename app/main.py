@@ -120,6 +120,41 @@ async def archive_search(query: str, rows: int) -> dict:
     return {"total": int(data.get("numFound", 0)), "docs": data.get("docs", [])}
 
 
+GLOBAL_MUSIC_QUERY = '(title:"sheet music" OR title:"musical score" OR title:"partitura" OR title:"partituras" OR title:"choral score" OR title:"vocal score" OR subject:"sheet music" OR subject:"musical scores" OR subject:"music notation" OR subject:"choral music" OR subject:"partitions musicales" OR description:"sheet music")'
+
+MUSIC_POSITIVE_TERMS = (
+    "sheet music", "musical score", "music score", "score", "scores", "partitura",
+    "partituras", "notenschrift", "noten", "choral", "chorus", "choir", "hymn",
+    "hymns", "vocal score", "piano score", "music notation", "musicxml", "lilypond",
+    "cantata", "motet", "madrigal", "mass", "missa", "psalm", "symphony", "sonata",
+    "concerto", "quartet", "trio", "opera", "oratorio", "sheet-music"
+)
+MUSIC_NEGATIVE_TERMS = (
+    "video game", "minecraft", "software", "dvd cover", "movie poster", "politics",
+    "political", "casino", "scientific review", "systematic review", "medical",
+    "glioblastoma", "news broadcast", "podcast", "house music mix", "dj mix"
+)
+
+
+def music_candidate_score(doc: dict) -> tuple[int, str]:
+    """Conservative metadata triage; never treats a score as proof of musical content."""
+    fields = []
+    for key in ("title", "subject", "description", "collection", "format"):
+        value = doc.get(key)
+        fields.extend(value if isinstance(value, list) else [value] if value else [])
+    text = " ".join(str(value) for value in fields).casefold()
+    if any(term in text for term in MUSIC_NEGATIVE_TERMS):
+        return 0, "Descartado por indicios de contenido ajeno a partituras"
+    hits = [term for term in MUSIC_POSITIVE_TERMS if term in text]
+    if not hits:
+        return 0, "Sin indicios musicales suficientes en los metadatos"
+    # Exact score/notation terms carry more weight than generic genre words.
+    strong = {"sheet music", "musical score", "music score", "partitura", "partituras",
+              "vocal score", "music notation", "musicxml", "lilypond"}
+    score = sum(3 if term in strong else 1 for term in hits)
+    return score, "Indicios: " + ", ".join(hits[:6])
+
+
 def display(value):
     if value is None:
         return None
@@ -182,9 +217,11 @@ def home(request: Request):
                   conn.execute("SELECT COUNT(*) FROM archive_items WHERE review_status='pending'").fetchone()[0]]
         items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 20").fetchall()
         runs = conn.execute("SELECT * FROM search_runs ORDER BY id DESC LIMIT 8").fetchall()
-    body = "<h1>Captación de partituras</h1><p>Busca por título, compositor u otros términos. Los resultados se guardan en la base de datos local para revisarlos antes de cualquier futura exportación a OSAP.</p>"
+    body = "<h1>Captación de partituras</h1><p>La exploración global localiza candidatos musicales sin exigir un compositor ni un título. Los metadatos se filtran automáticamente; la revisión del contenido y de los derechos sigue siendo necesaria.</p>"
     body += "<div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value}</h2></div>" for label, value in zip(["Elementos catalogados","Búsquedas realizadas","Pendientes de revisión"], counts)) + "</div>"
-    body += "<section class='panel'><h2>Nueva búsqueda en Internet Archive</h2><form method='post' action='/search'><input name='query' type='text' required placeholder='Bach, Ave Maria, piano sonata'> <label>Buscar en <select name='scope'><option value='all' selected>Todos los tipos de material</option><option value='texts'>Solo textos / libros digitalizados</option></select></label> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar en Internet Archive</button></form><p class='muted'>Busca en metadatos (título, creador, materias y descripción). Por defecto incluye todos los tipos de material; puedes limitar a textos/libros si lo necesitas. La búsqueda de metadatos no lee todavía el contenido de los PDF.</p></section>"
+    body += "<section class='panel'><h2>Exploración global de material musical</h2><p>Busca en Internet Archive por señales de partituras y notación musical, sin introducir nombres. Los resultados que no muestran indicios musicales se excluyen de este catálogo de candidatos.</p><form method='post' action='/discover'><label>Lote de resultados <select name='rows'>" + "".join(f"<option {'selected' if n==100 else ''}>{n}</option>" for n in [25,50,100]) + "</select></label> <button>Iniciar exploración global</button></form><p class='muted'>Es una primera exploración por metadatos, no un rastreo exhaustivo de todo Internet Archive. No descarga ficheros automáticamente.</p></section>"
+    body += "<section class='panel'><h2>Búsqueda manual opcional</h2><form method='post' action='/search'><input name='query' type='text' required placeholder='Título, compositor o término musical'> <label>Buscar en <select name='scope'><option value='all' selected>Todos los tipos de material</option><option value='texts'>Solo textos / libros digitalizados</option></select></label> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar</button></form></section>"
+</section>"
     body += "<section class='panel'><h2>Catálogo local reciente</h2>" + item_table(items) + "<p><a href='/items'>Ver todo el catálogo →</a></p></section>"
     body += "<section class='panel'><h2>Últimas búsquedas</h2><table><tr><th>Consulta</th><th>Resultados</th><th>Estado</th><th>Inicio</th></tr>"
     for run in runs:
@@ -200,6 +237,55 @@ def item_table(items):
     for item in items:
         body += f"<tr><td><a href='/items/{esc(item['identifier'])}'>{esc(item['title'] or item['identifier'])}</a><br><span class='muted'>{esc(item['identifier'])}</span></td><td>{esc(item['creator_json'])}</td><td>{esc(item['item_date'] or '—')}</td><td>{esc(item['rights_status'])}</td></tr>"
     return body + "</table>"
+
+
+@app.post("/discover", response_class=HTMLResponse)
+async def discover(rows: Annotated[int, Form()] = 100):
+    rows = max(1, min(int(rows), 100))
+    query = "Exploración global de material musical"
+    with db() as conn:
+        run_id = conn.execute(
+            "INSERT INTO search_runs(query_text,archive_query,rows_requested,started_at) VALUES(?,?,?,?)",
+            (query, GLOBAL_MUSIC_QUERY, rows, now()),
+        ).lastrowid
+    try:
+        result = await archive_search(GLOBAL_MUSIC_QUERY, rows)
+        candidates = []
+        for doc in result["docs"]:
+            score, reason = music_candidate_score(doc)
+            if score > 0:
+                doc = dict(doc)
+                doc["_ai_music_score"] = score
+                doc["_ai_music_reason"] = reason
+                candidates.append(doc)
+        candidates.sort(key=lambda doc: doc["_ai_music_score"], reverse=True)
+        saved = save_results(run_id, candidates)
+        with db() as conn:
+            conn.execute(
+                "UPDATE search_runs SET total_found=?,result_count=?,status='completed',completed_at=? WHERE id=?",
+                (result["total"], saved, now(), run_id),
+            )
+            items = conn.execute(
+                """SELECT ai.* FROM archive_items ai JOIN search_run_items sri
+                   ON sri.identifier=ai.identifier WHERE sri.search_run_id=?
+                   ORDER BY sri.result_rank LIMIT 100""", (run_id,)
+            ).fetchall()
+    except Exception as exc:
+        with db() as conn:
+            conn.execute(
+                "UPDATE search_runs SET status='error',error_text=?,completed_at=? WHERE id=?",
+                (str(exc)[:1000], now(), run_id),
+            )
+        return page("Error de exploración", f"<h1>No se pudo completar la exploración</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
+    body = (
+        f"<section class='panel'><h2>Exploración global completada</h2>"
+        f"<p>Internet Archive informa de <b>{result['total']}</b> coincidencias para la consulta musical. "
+        f"En este lote se han recibido {len(result['docs'])} registros y <b>{saved}</b> han superado el filtro inicial.</p>"
+        "<p>El filtro se basa en metadatos y puede dejar fuera partituras mal descritas o incluir falsos positivos. "
+        "Revisa los ficheros y el contenido antes de aceptar una obra.</p><p><a href='/'>Volver al inicio</a></p></section>"
+        f"<section class='panel'><h2>Candidatos musicales priorizados</h2>{item_table(items)}</section>"
+    )
+    return page("Exploración global", body)
 
 
 @app.post("/search", response_class=HTMLResponse)
