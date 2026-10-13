@@ -1,6 +1,7 @@
 import json
 from fastapi.testclient import TestClient
 import app.main as main
+import app.file_catalog as file_catalog
 
 
 def test_query_builder():
@@ -225,3 +226,32 @@ def test_batch_inventory_records_zero_files_and_retries_errors(tmp_path, monkeyp
         with main.db() as conn:
             assert conn.execute("SELECT status FROM archive_item_inventories WHERE identifier='retry-inventory-test'").fetchone()["status"] == "ok"
         assert calls["retry-inventory-test"] == 2
+
+
+def test_download_requires_successful_inventory(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "download-guard.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    main.init_db()
+    with main.db() as conn:
+        stamp = main.now()
+        conn.execute("""INSERT INTO archive_items
+            (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+            VALUES(?,?,?,?,?,?)""",
+            ("guard-test", "Guard test", "https://archive.org/details/guard-test",
+             json.dumps({"identifier": "guard-test"}), stamp, stamp))
+        conn.execute("""INSERT INTO archive_files
+            (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,relevant,inventory_seen_at)
+            VALUES(?,?,?,?,?,?,1,?)""",
+            ("guard-test", "score.pdf", "score.pdf",
+             "https://archive.org/download/guard-test/score.pdf", 10, "PDF", stamp))
+        file_id = conn.execute("SELECT id FROM archive_files WHERE identifier='guard-test'").fetchone()[0]
+
+    with TestClient(main.app) as client:
+        response = client.post(f"/files/download/{file_id}", follow_redirects=False)
+        assert response.status_code == 409
+        assert "inventario correcto registrado" in response.json()["detail"]
+        with main.db() as conn:
+            assert conn.execute(
+                "SELECT download_status FROM archive_files WHERE id=?", (file_id,)
+            ).fetchone()["download_status"] == "not_downloaded"
