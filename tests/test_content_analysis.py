@@ -874,3 +874,64 @@ def test_batch_processing_analyzes_downloaded_items_without_per_file_actions(tmp
             "SELECT suggestion_text FROM archive_content_suggestions WHERE identifier='anthology-test'"
         ).fetchone()
     assert row["suggestion_text"] == "Prelude in C"
+
+
+
+def test_midi_analysis_records_tracks_instruments_and_timing(tmp_path, monkeypatch):
+    import json
+    import mido
+
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "midi-analysis.sqlite3"))
+    midi_path = tmp_path / "example.mid"
+    midi = mido.MidiFile()
+    meta_track = mido.MidiTrack()
+    midi.tracks.append(meta_track)
+    meta_track.extend([
+        mido.MetaMessage("track_name", name="Example piece", time=0),
+        mido.MetaMessage("set_tempo", tempo=500000, time=0),
+        mido.MetaMessage("time_signature", numerator=3, denominator=4, time=0),
+        mido.MetaMessage("key_signature", key="G", time=0),
+        mido.MetaMessage("end_of_track", time=0),
+    ])
+    music_track = mido.MidiTrack()
+    midi.tracks.append(music_track)
+    music_track.extend([
+        mido.Message("program_change", channel=0, program=40, time=0),
+        mido.Message("note_on", channel=0, note=67, velocity=80, time=0),
+        mido.Message("note_off", channel=0, note=67, velocity=0, time=480),
+        mido.MetaMessage("end_of_track", time=0),
+    ])
+    midi.save(midi_path)
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path,sha256)
+                VALUES(?,?,?,?,?,'downloaded',?,?)""",
+                ("anthology-test", "example.mid", "example.mid",
+                 "https://archive.org/download/anthology-test/example.mid",
+                 main.now(), str(midi_path), "test-midi-sha256"),
+            )
+        response = client.post(
+            "/items/anthology-test/content-analysis/analyze-files", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert "analizados=1" in response.headers["location"]
+
+    with main.db() as conn:
+        row = conn.execute(
+            "SELECT analysis_type,status,analysis_json FROM archive_file_analyses WHERE identifier=?",
+            ("anthology-test",),
+        ).fetchone()
+    result = json.loads(row["analysis_json"])
+    assert row["analysis_type"] == "midi"
+    assert row["status"] == "ok"
+    assert result["track_count"] == 2
+    assert result["track_names"] == ["Example piece"]
+    assert result["note_on_count"] == 1
+    assert result["time_signatures"] == [{"numerator": 3, "denominator": 4}]
+    assert result["key_signatures"] == ["G"]
+    assert result["instruments"][0]["program"] == 40
+    assert result["duration_seconds"] == 0.5
