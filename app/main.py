@@ -367,7 +367,7 @@ def home(request: Request):
         query_states = conn.execute(
             "SELECT label,status,scanned_count FROM global_discovery_queries ORDER BY query_key"
         ).fetchall()
-    body = "<h1>Captación musical</h1>"
+    body = "<h1>Captación de partituras</h1>"
     body += "<p>La aplicación busca en Internet Archive, identifica material probablemente musical, inventaría los archivos disponibles, descarga formatos útiles y analiza su contenido. Solo te pedirá intervenir cuando no pueda determinar qué contiene un archivo.</p>"
     body += "<section class='panel'><h2>Continuar captación</h2><p>Procesa el siguiente lote de búsquedas, inventarios, descargas y análisis. Se conserva el progreso entre ejecuciones.</p>"
     body += "<form method='post' action='/capture/run'><button style='font-size:1.1rem;padding:.9rem 1.2rem'>Continuar captación automática</button></form>"
