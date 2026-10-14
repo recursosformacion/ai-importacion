@@ -667,8 +667,6 @@ def item_detail(identifier: str):
     body = workflow_nav(identifier, 2)
     body += f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
     body += "<section class='panel'><h2>¿Qué quieres hacer ahora?</h2><p>Empieza por consultar los archivos disponibles. Después podrás analizarlos y revisar las obras que aparezcan.</p><p><a href='/files/" + esc(identifier) + "'>Siguiente paso: consultar archivos →</a> &nbsp; <a href='/items/" + esc(identifier) + "/content-analysis'>Ir al análisis →</a></p></section>"
-    body += "<p><a href=\"/files/" + esc(identifier) + "\">Consultar inventario de ficheros y descargar</a></p>"
-    body += "<p><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar si contiene una o varias obras</a></p>"
     body += "<section class='panel'><h2>Ficha local</h2>"
     for label, key in [("Identificador","identifier"),("Creador","creator_json"),("Fecha","item_date"),("Tipo","mediatype"),("Visto por primera vez","first_seen_at"),("Última observación","last_seen_at"),("Declaración de derechos de origen","rights_json")]:
         body += f"<p><b>{label}:</b> {esc(item[key] or '—')}</p>"
