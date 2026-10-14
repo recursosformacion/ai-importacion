@@ -43,6 +43,40 @@ def test_health_and_home(tmp_path, monkeypatch):
 
 
 
+def test_review_shows_unsupported_downloaded_format_with_real_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "review.sqlite3"))
+    with TestClient(main.app) as client:
+        with main.db() as conn:
+            stamp = main.now()
+            conn.execute(
+                """INSERT INTO archive_items
+                   (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                   VALUES(?,?,?,?,?,?)""",
+                ("score-sibelius", "Partitura Sibelius", "https://archive.org/details/score-sibelius",
+                 json.dumps({"identifier": "score-sibelius"}), stamp, stamp),
+            )
+            conn.execute(
+                """INSERT INTO global_discovery_seen
+                   (identifier,first_query_key,score,reason,seen_at)
+                   VALUES(?,?,?,?,?)""",
+                ("score-sibelius", "test-query", 80, "Metadatos de partitura", stamp),
+            )
+            conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,archive_format,relevant,
+                    inventory_seen_at,download_status,local_path)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("score-sibelius", "score.sib", "score.sib",
+                 "https://archive.org/download/score-sibelius/score.sib", "Sibelius", 1,
+                 stamp, "downloaded", str(tmp_path / "score.sib")),
+            )
+        response = client.get("/review")
+        assert response.status_code == 200
+        assert "Partitura Sibelius" in response.text
+        assert "formato todavía no puede interpretar automáticamente" in response.text
+        assert "Disponible para descargar" not in response.text
+
+
 def test_music_candidate_filter_rejects_irrelevant_and_prioritizes_scores():
     score, reason = main.music_candidate_score({
         "title": "Choral sheet music for mixed voices",
