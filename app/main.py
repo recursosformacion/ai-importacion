@@ -591,7 +591,7 @@ def review_uncertain_material():
                        WHERE fa.identifier=a.identifier AND fa.status='error') AS analysis_failures,
                       (SELECT COUNT(*) FROM archive_pdf_extractions pe
                        WHERE pe.identifier=a.identifier
-                         AND pe.status IN ('error','ocr_error','ocr_unavailable','image_ocr_no_text')) AS extraction_failures
+                         AND pe.status IN ('error','ocr_error','ocr_unavailable','image_ocr_no_text','text_error')) AS extraction_failures
                FROM archive_items a
                JOIN global_discovery_seen s ON s.identifier=a.identifier
                WHERE s.score>0 AND EXISTS (
@@ -995,12 +995,12 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel' id='ocr'><h2>Buscar títulos dentro de los archivos</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI, MuseScore (.mscx/.mscz) y metadatos XML explícitos de paquetes Capella (.capx), y extraer texto de PDF. Si un PDF no tiene texto seleccionable, intenta OCR local en hasta las primeras cinco páginas cuando PyMuPDF, Pillow, pytesseract y el ejecutable Tesseract estén disponibles. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Leer texto y buscar posibles títulos</button></form>";
+    body += "<section class='panel' id='ocr'><h2>Buscar títulos dentro de los archivos</h2><p>La aplicación lee TXT/OCR y formatos de notación compatibles, extrae texto de PDF y aplica OCR local a PDF escaneados e imágenes de partituras (PNG, JPG, TIFF y otros formatos compatibles). Las sugerencias de títulos detectados en texto normal requieren confirmación; los títulos explícitos de los formatos de notación se registran automáticamente como candidatos.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Leer texto y buscar posibles títulos</button></form>";
     if any(value is not None for value in (pdf_con_texto, pdf_ocr, pdf_ocr_realizados, pdf_ocr_sin_texto, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida, imagenes_ocr, imagenes_sin_texto, imagenes_leidas)):
         body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que aún necesitan OCR: " + esc(pdf_ocr or 0) + " · OCR realizado en PDF: " + esc(pdf_ocr_realizados or 0) + " · PDF sin texto legible: " + esc(pdf_ocr_sin_texto or 0) + " · Imágenes leídas por OCR: " + esc(imagenes_leidas or 0) + " · Imágenes con texto detectado: " + esc(imagenes_ocr or 0) + " · Imágenes sin texto legible: " + esc(imagenes_sin_texto or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>El OCR se limita a las primeras cinco páginas de cada PDF y reduce las imágenes grandes antes de leerlas. El procesamiento es local: los archivos no se envían a servicios externos.</p></div>";
     if pdf_extractions:
         body += "<h3>Estado de lectura de documentos e imágenes</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
-        pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Necesita OCR", "ocr_completed": "OCR realizado", "ocr_no_text": "OCR realizado; sin texto legible", "image_ocr_completed": "Imagen leída por OCR", "image_ocr_no_text": "Imagen sin texto legible", "ocr_unavailable": "OCR no disponible", "ocr_error": "Error durante el OCR", "error": "Error de lectura"}
+        pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Necesita OCR", "ocr_completed": "OCR realizado", "ocr_no_text": "OCR realizado; sin texto legible", "image_ocr_completed": "Imagen leída por OCR", "image_ocr_no_text": "Imagen sin texto legible", "text_checked": "Lectura de texto realizada", "text_no_content": "Sin texto extraíble", "text_error": "Error al leer el archivo", "ocr_unavailable": "OCR no disponible", "ocr_error": "Error durante el OCR", "error": "Error de lectura"}
         for pdf_result in pdf_extractions:
             body += f"<tr><td>{esc(pdf_result['file_name'])}</td><td>{esc(pdf_status_labels.get(pdf_result['status'], pdf_result['status']))}{('<br>' + esc(pdf_result['error_text'])) if pdf_result['error_text'] else ''}</td><td>{esc(pdf_result['page_count'])}</td><td>{esc(pdf_result['extracted_characters'])}</td><td>{esc(pdf_result['analyzed_at'])}</td></tr>"
         body += "</table>"
@@ -1354,8 +1354,12 @@ def extract_content_suggestions(identifier: str):
             continue
         if not path.is_file():
             extraction_errors += 1
-            if suffix == ".pdf" or suffix in image_suffixes:
+            if suffix == ".pdf":
                 record_pdf_result(frow, "error", error_text="No existe el fichero en la ruta local registrada.")
+            elif suffix in image_suffixes:
+                record_pdf_result(frow, "ocr_error", error_text="No existe el fichero en la ruta local registrada.")
+            elif suffix in text_suffixes:
+                record_pdf_result(frow, "text_error", error_text="No existe el fichero en la ruta local registrada.")
             continue
         text_content = ""
         if (suffix == ".pdf" or suffix in image_suffixes or suffix in text_suffixes) and frow["sha256"]:
@@ -1641,6 +1645,32 @@ def process_downloaded_batch():
                      OR lower(f.file_name) LIKE '%.tiff' OR lower(f.file_name) LIKE '%.bmp'
                      OR lower(f.file_name) LIKE '%.jp2' OR lower(f.file_name) LIKE '%.musicxml'
                      OR lower(f.file_name) LIKE '%.mxl' OR lower(f.file_name) LIKE '%.xml'
+                   )
+               ) AND EXISTS (
+                 SELECT 1 FROM archive_files f
+                 WHERE f.identifier=a.identifier AND f.download_status='downloaded'
+                   AND (
+                     (lower(f.file_name) LIKE '%.txt' OR lower(f.file_name) LIKE '%.ocr'
+                      OR lower(f.file_name) LIKE '%.pdf' OR lower(f.file_name) LIKE '%.abc'
+                      OR lower(f.file_name) LIKE '%.ly' OR lower(f.file_name) LIKE '%.mei'
+                      OR lower(f.file_name) LIKE '%.mscx' OR lower(f.file_name) LIKE '%.mscz'
+                      OR lower(f.file_name) LIKE '%.capx' OR lower(f.file_name) LIKE '%.png'
+                      OR lower(f.file_name) LIKE '%.jpg' OR lower(f.file_name) LIKE '%.jpeg'
+                      OR lower(f.file_name) LIKE '%.webp' OR lower(f.file_name) LIKE '%.tif'
+                      OR lower(f.file_name) LIKE '%.tiff' OR lower(f.file_name) LIKE '%.bmp'
+                      OR lower(f.file_name) LIKE '%.jp2')
+                     AND NOT EXISTS (
+                       SELECT 1 FROM archive_pdf_extractions pe
+                       WHERE pe.file_id=f.id AND pe.sha256=f.sha256
+                     )
+                     OR
+                     (lower(f.file_name) LIKE '%.musicxml' OR lower(f.file_name) LIKE '%.mxl'
+                      OR lower(f.file_name) LIKE '%.xml' OR lower(f.file_name) LIKE '%.mid'
+                      OR lower(f.file_name) LIKE '%.midi' OR lower(f.file_name) LIKE '%.kar')
+                     AND NOT EXISTS (
+                       SELECT 1 FROM archive_file_analyses fa
+                       WHERE fa.file_id=f.id AND fa.sha256=f.sha256
+                     )
                    )
                )
                ORDER BY (
