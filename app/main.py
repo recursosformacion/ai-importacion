@@ -793,7 +793,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             body += f"<tr><td>{esc(other_file['file_name'])}</td><td>{esc(other_file['archive_format'] or 'No indicado')}</td><td>{esc(size_label)}</td></tr>"
         body += "</table>"
     with db() as conn:
-        suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
+        suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? AND status='pending' ORDER BY source_file,line_number,id", (identifier,)).fetchall()
     if suggestions:
         body += "<h3>Sugerencias para revisar</h3><table><tr><th>Texto detectado</th><th>Origen</th><th>Estado / acción</th></tr>"
         for suggestion in suggestions:
@@ -1275,7 +1275,21 @@ def extract_content_suggestions(identifier: str):
         )
         structured_title_source = suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
         auto_titles = []
+        candidate_keys = {(line_no, candidate) for line_no, candidate in candidate_rows}
         with db() as conn:
+            # Reprocessing may improve OCR filtering. Keep old decisions auditable,
+            # but stop showing stale pending fragments that no longer pass the filter.
+            previous_pending = conn.execute(
+                """SELECT id,line_number,suggestion_text FROM archive_content_suggestions
+                   WHERE identifier=? AND source_file=? AND status='pending'""",
+                (identifier, frow["file_name"]),
+            ).fetchall()
+            for previous_suggestion in previous_pending:
+                if (previous_suggestion["line_number"], previous_suggestion["suggestion_text"]) not in candidate_keys:
+                    conn.execute(
+                        "UPDATE archive_content_suggestions SET status='filtered_noise' WHERE id=?",
+                        (previous_suggestion["id"],),
+                    )
             for line_no, candidate in candidate_rows:
                 cur = conn.execute("""INSERT OR IGNORE INTO archive_content_suggestions
                     (identifier,source_file,line_number,suggestion_text,status,created_at)
