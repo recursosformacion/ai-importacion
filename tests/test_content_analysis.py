@@ -63,3 +63,25 @@ def test_two_candidates_suggest_multiple_works_when_unclassified(tmp_path, monke
             ).fetchone()
         assert row["scope"] == "multiple_works"
         assert "requiere revisión humana" in row["rationale"]
+
+
+def test_guided_workflow_navigation_links_item_steps(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "workflow.sqlite3"))
+    with TestClient(main.app) as client:
+        seed_item()
+
+        detail = client.get("/items/anthology-test")
+        assert detail.status_code == 200
+        assert "Captación musical · paso 2 de 5" in detail.text
+        assert "href='/files/anthology-test'" in detail.text
+        assert "Siguiente paso: consultar archivos" in detail.text
+
+        files = client.get("/files/anthology-test")
+        assert files.status_code == 200
+        assert "Captación musical · paso 3 de 5" in files.text
+        assert "href='/items/anthology-test/content-analysis#analisis'" in files.text
+
+        review = client.get("/items/anthology-test/content-analysis?step=5")
+        assert review.status_code == 200
+        assert "Captación musical · paso 5 de 5" in review.text
+        assert "id='obras'" in review.text
