@@ -774,10 +774,6 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
     body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
     if any(value is not None for value in (pdf_con_texto, pdf_ocr, errores_extraccion, sugerencias_nuevas, txt_leidos)):
         body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
-    with db() as conn:
-        pdf_extractions = conn.execute("""SELECT e.*, f.file_name FROM archive_pdf_extractions e
-            JOIN archive_files f ON f.id=e.file_id
-            WHERE e.identifier=? ORDER BY f.file_name""", (identifier,)).fetchall()
     if pdf_extractions:
         body += "<h3>Estado de extracción por PDF</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
         pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Probablemente necesita OCR", "error": "Error de lectura"}
