@@ -1065,6 +1065,18 @@ def extract_content_suggestions(identifier: str):
                 record_pdf_result(frow, "error", error_text="No existe el fichero en la ruta local registrada.")
             continue
         text_content = ""
+        if suffix == ".pdf" and frow["sha256"]:
+            with db() as conn:
+                previous_pdf = conn.execute(
+                    "SELECT status,sha256 FROM archive_pdf_extractions WHERE file_id=?",
+                    (frow["id"],),
+                ).fetchone()
+            if (
+                previous_pdf
+                and previous_pdf["sha256"] == frow["sha256"]
+                and previous_pdf["status"] in {"text_available", "ocr_completed", "ocr_no_text"}
+            ):
+                continue
         try:
             if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx"}:
                 text_content = path.read_text(encoding="utf-8-sig", errors="replace")
@@ -1252,7 +1264,10 @@ def process_downloaded_batch():
                      OR lower(f.file_name) LIKE '%.mxl' OR lower(f.file_name) LIKE '%.xml'
                    )
                )
-               ORDER BY a.last_seen_at DESC LIMIT 10"""
+               ORDER BY (
+                 SELECT MAX(f2.id) FROM archive_files f2
+                 WHERE f2.identifier=a.identifier AND f2.download_status='downloaded'
+               ) DESC LIMIT 10"""
         ).fetchall()
 
     results = []
