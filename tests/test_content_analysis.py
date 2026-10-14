@@ -562,6 +562,9 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         ("scores-text.pdf", "scores-text.pdf"),
         ("scores-scan.pdf", "scores-scan.pdf"),
         ("archive.ocr", "archive.ocr"),
+        ("score.abc", "score.abc"),
+        ("score.ly", "score.ly"),
+        ("score.mei", "score.mei"),
         ("broken.pdf", "broken.pdf"),
     ]
     for _, name in seed_files:
@@ -600,6 +603,12 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
                      stamp, str(tmp_path / local_name)),
                 )
         (tmp_path / "archive.ocr").write_text("Mass in G minor", encoding="utf-8")
+        (tmp_path / "score.abc").write_text("X:1\nT:Chorale in F\nC:Someone\nK:F\n", encoding="utf-8")
+        (tmp_path / "score.ly").write_text('\\header {\n  title = "Prelude in C"\n}\n', encoding="utf-8")
+        (tmp_path / "score.mei").write_text(
+            "<mei><meiHead><fileDesc><titleStmt><title>Motet in D</title></titleStmt></fileDesc></mei>",
+            encoding="utf-8",
+        )
 
         response = client.post("/items/anthology-test/content-analysis/extract", follow_redirects=False)
         assert response.status_code == 303
@@ -607,7 +616,8 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "pdf_ocr=1" in response.headers["location"]
         assert "txt_leidos=1" in response.headers["location"]
         assert "errores_extraccion=1" in response.headers["location"]
-        assert "sugerencias_nuevas=2" in response.headers["location"]
+        assert "notacion_leida=3" in response.headers["location"]
+        assert "sugerencias_nuevas=5" in response.headers["location"]
 
         page = client.get(response.headers["location"])
         assert "PDF con texto extraíble: 1" in page.text
@@ -617,6 +627,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "scores-text.pdf" in page.text
         assert "scores-scan.pdf" in page.text
         assert "Probablemente necesita OCR" in page.text
+        assert "Archivos ABC/LilyPond/MEI leídos: 3" in page.text
 
     with main.db() as conn:
         suggestions = conn.execute(
@@ -627,7 +638,9 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
             FROM archive_pdf_extractions e JOIN archive_files f ON f.id=e.file_id
             ORDER BY f.file_name"""
         ).fetchall()
-    assert [row["suggestion_text"] for row in suggestions] == ["Mass in G minor", "Sonata for Violin and Piano"]
+    assert [row["suggestion_text"] for row in suggestions] == [
+        "Chorale in F", "Mass in G minor", "Motet in D", "Prelude in C", "Sonata for Violin and Piano"
+    ]
     statuses = {row["file_name"]: row["status"] for row in pdf_results}
     assert statuses == {
         "broken.pdf": "error",
