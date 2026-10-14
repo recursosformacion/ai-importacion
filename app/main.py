@@ -704,7 +704,7 @@ CONTENT_SCOPES = {
 
 
 @app.get("/items/{identifier}/content-analysis", response_class=HTMLResponse)
-def content_analysis(identifier: str, step: int = 4):
+def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None):
     with db() as conn:
         item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
         if not item:
@@ -719,6 +719,13 @@ def content_analysis(identifier: str, step: int = 4):
     body += "<p class='muted'>Este flujo es independiente: no se crean ni exportan obras OSAP.</p>"
     body += f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
     body += "<p>Clasifica el elemento, analiza los archivos disponibles y revisa las obras sugeridas. No tienes que completar todos los análisis técnicos: usa solo los que correspondan a los archivos descargados.</p>"
+    if analizados is not None or omitidos is not None or fallidos is not None:
+        body += (
+            "<section class='panel'><h2>Resultado de la última ejecución</h2><p>"
+            + "Analizados ahora: <b>" + esc(analizados or 0) + "</b> · "
+            + "Omitidos por estar actualizados: <b>" + esc(omitidos or 0) + "</b> · "
+            + "Fallidos: <b>" + esc(fallidos or 0) + "</b></p></section>"
+        )
     body += "<section class='panel' id='clasificacion'><h2><span class='step-number'>1</span>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
     for value, label in CONTENT_SCOPES.items():
         body += f"<option value='{value}' {'selected' if scope == value else ''}>{label}</option>"
@@ -855,6 +862,9 @@ def analyze_downloaded_musicxml(identifier: str):
             AND lower(file_name) LIKE '%.xml'""", (identifier, identifier, identifier)).fetchall()
     if not files:
         raise HTTPException(status_code=422, detail="No hay archivos MusicXML/MXL descargados para analizar.")
+    analyzed_count = 0
+    skipped_count = 0
+    failed_count = 0
     for file_row in files:
         # Do not repeat successful analysis when the downloaded content is unchanged.
         # Failed analyses remain eligible for retry, and files without a digest are
@@ -870,6 +880,7 @@ def analyze_downloaded_musicxml(identifier: str):
             and file_row["sha256"]
             and previous["sha256"] == file_row["sha256"]
         ):
+            skipped_count += 1
             continue
 
         path = Path(file_row["local_path"])
@@ -883,6 +894,9 @@ def analyze_downloaded_musicxml(identifier: str):
             analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
             status = "error"
             error_text = str(exc)[:1000]
+        analyzed_count += 1
+        if status == "error":
+            failed_count += 1
         with db() as conn:
             conn.execute("""INSERT INTO archive_file_analyses
                 (file_id,identifier,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
@@ -893,7 +907,15 @@ def analyze_downloaded_musicxml(identifier: str):
                 analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
                 (file_row["id"], identifier, status, json.dumps(analysis, ensure_ascii=False),
                  error_text, now(), file_row["sha256"]))
-    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
+    return RedirectResponse(
+        url=(
+            "/items/" + identifier + "/content-analysis"
+            + "?analizados=" + str(analyzed_count)
+            + "&omitidos=" + str(skipped_count)
+            + "&fallidos=" + str(failed_count)
+        ),
+        status_code=303,
+    )
 
 
 @app.post("/items/{identifier}/content-analysis/extract")
