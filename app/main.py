@@ -391,7 +391,7 @@ def home(request: Request):
     body += "</table></details>"
     body += "<section class='panel'><h2>Material descargado</h2>"
     body += item_table(review_items)
-    body += "<p><a href='/items'>Ver todo el material encontrado</a> · <a href='/intake'>Ver actividad y archivos</a></p></section>"
+    body += "<p><a href='/review'>Revisar casos dudosos</a> · <a href='/items'>Ver todo el material encontrado</a> · <a href='/intake'>Ver actividad y archivos</a></p></section>"
     body += "<details class='panel'><summary>Búsqueda manual (opcional)</summary><form method='post' action='/search'><input name='query' type='text' required placeholder='Título, compositor o término musical'> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar</button></form></details>"
     return page("Captación musical", body)
 
@@ -527,6 +527,73 @@ async def discover(rows: Annotated[int, Form()] = 100):
         return page("Error de exploración", f"<h1>No se pudo completar la exploración</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
 
 
+
+
+@app.get("/review", response_class=HTMLResponse)
+def review_uncertain_material():
+    """Show only downloaded candidates whose content still needs a human look."""
+    with db() as conn:
+        items = conn.execute(
+            """SELECT a.identifier,COALESCE(a.title,a.identifier) AS title,
+                      s.score,s.reason,
+                      (SELECT COUNT(*) FROM archive_item_contents c
+                       WHERE c.identifier=a.identifier) AS known_units,
+                      (SELECT COUNT(*) FROM archive_content_suggestions cs
+                       WHERE cs.identifier=a.identifier AND cs.status='pending') AS pending_suggestions
+               FROM archive_items a
+               JOIN global_discovery_seen s ON s.identifier=a.identifier
+               WHERE s.score>0 AND EXISTS (
+                   SELECT 1 FROM archive_files f
+                   WHERE f.identifier=a.identifier AND f.download_status='downloaded'
+               ) AND (
+                   NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
+                   OR EXISTS (SELECT 1 FROM archive_content_suggestions cs
+                              WHERE cs.identifier=a.identifier AND cs.status='pending')
+               )
+               ORDER BY s.score DESC,a.last_seen_at DESC LIMIT 50"""
+        ).fetchall()
+    body = "<h1>Casos que necesitan una mirada</h1>"
+    body += "<p>Solo aparecen materiales descargados que aún no tienen una obra candidata identificada o conservan sugerencias dudosas. Abre el PDF o consulta el archivo original; no tienes que rellenar una ficha técnica.</p>"
+    if not items:
+        body += "<section class='panel'><p>No hay casos pendientes en este momento. Puedes continuar la captación automática.</p><p><a href='/'>Volver a captación</a></p></section>"
+        return page("Revisión de material dudoso", body)
+    for item in items:
+        identifier = item["identifier"]
+        with db() as conn:
+            files = conn.execute(
+                """SELECT id,file_name,archive_format,size_bytes,download_status,relevant
+                   FROM archive_files WHERE identifier=? ORDER BY relevant DESC,size_bytes,file_name""",
+                (identifier,),
+            ).fetchall()
+            suggestions = conn.execute(
+                """SELECT source_file,line_number,suggestion_text FROM archive_content_suggestions
+                   WHERE identifier=? AND status='pending' ORDER BY source_file,line_number LIMIT 8""",
+                (identifier,),
+            ).fetchall()
+        body += "<section class='panel'><h2>" + esc(item["title"]) + "</h2>"
+        body += "<p><a href='/items/" + esc(identifier) + "'>Ficha de Internet Archive</a> · <a href='/items/" + esc(identifier) + "/content-analysis'>Ver análisis completo</a></p>"
+        body += "<p><b>Por qué se seleccionó:</b> " + esc(item["reason"] or "Metadatos que parecen musicales") + " <span class='muted'>(prioridad " + str(item["score"]) + ")</span></p>"
+        body += "<h3>Archivos disponibles</h3><ul>"
+        for file_row in files:
+            label = esc(file_row["file_name"]) + " — " + esc(file_row["archive_format"] or "formato no indicado")
+            if file_row["size_bytes"] is not None:
+                label += " (" + esc(f"{file_row['size_bytes']:,}") + " bytes)"
+            if file_row["download_status"] == "downloaded":
+                suffix = Path(file_row["file_name"].lower()).suffix
+                action = "Vista previa" if suffix in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".txt", ".ocr"} else "Abrir / descargar"
+                body += "<li>" + label + " · <a href='/files/view/" + str(file_row["id"]) + "'>" + action + "</a></li>"
+            elif file_row["relevant"]:
+                body += "<li>" + label + " · <a href='/files/" + esc(identifier) + "'>Disponible para descargar</a></li>"
+            else:
+                body += "<li>" + label + " · <span class='muted'>Registrado; aún no descargado</span></li>"
+        body += "</ul>"
+        if suggestions:
+            body += "<h3>Indicios extraídos automáticamente</h3><ul>"
+            body += "".join("<li>" + esc(s["suggestion_text"]) + " <span class='muted'>(" + esc(s["source_file"]) + ", línea/página " + str(s["line_number"]) + ")</span></li>" for s in suggestions)
+            body += "</ul>"
+        body += "<p class='muted'>Estas pistas no se consideran una identificación definitiva. Si no basta con la vista previa, el análisis completo conserva las evidencias y permite registrar la unidad musical.</p></section>"
+    body += "<p><a href='/'>Volver a captación</a></p>"
+    return page("Revisión de material dudoso", body)
 
 
 @app.post("/capture/run", response_class=HTMLResponse)
