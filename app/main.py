@@ -1237,8 +1237,14 @@ def process_downloaded_batch():
                WHERE EXISTS (
                  SELECT 1 FROM archive_files f
                  WHERE f.identifier=a.identifier AND f.download_status='downloaded'
-                   AND lower(f.file_name) GLOB '*.*'
-                   AND lower(f.file_name) LIKE '%'
+                   AND (
+                     lower(f.file_name) LIKE '%.txt' OR lower(f.file_name) LIKE '%.ocr'
+                     OR lower(f.file_name) LIKE '%.pdf' OR lower(f.file_name) LIKE '%.abc'
+                     OR lower(f.file_name) LIKE '%.ly' OR lower(f.file_name) LIKE '%.mei'
+                     OR lower(f.file_name) LIKE '%.mscx' OR lower(f.file_name) LIKE '%.mscz'
+                     OR lower(f.file_name) LIKE '%.capx' OR lower(f.file_name) LIKE '%.musicxml'
+                     OR lower(f.file_name) LIKE '%.mxl' OR lower(f.file_name) LIKE '%.xml'
+                   )
                )
                ORDER BY a.last_seen_at DESC LIMIT 10"""
         ).fetchall()
