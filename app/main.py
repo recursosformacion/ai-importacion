@@ -763,7 +763,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             ORDER BY file_name""", (identifier,)).fetchall()
     auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
     unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
-    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
+    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de archivos musicales</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados para extraer metadatos disponibles, estructura, instrumentos y duración. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos musicales descargados</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
         for result in analyses:
