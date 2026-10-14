@@ -300,6 +300,26 @@ def esc(value) -> str:
     return html.escape("" if value is None else str(value))
 
 
+def workflow_nav(identifier: str | None = None, active: int = 1) -> str:
+    """Persistent five-step guide; steps remain visible across the item workflow."""
+    ident = quote(identifier or "", safe="")
+    links = [
+        (1, "Buscar", "/", None),
+        (2, "Elegir elemento", f"/items/{ident}" if identifier else "/items", None),
+        (3, "Archivos", f"/files/{ident}" if identifier else "/items", None),
+        (4, "Analizar", f"/items/{ident}/content-analysis#analisis" if identifier else "/items", "analisis"),
+        (5, "Revisar obras", f"/items/{ident}/content-analysis#obras" if identifier else "/items", "obras"),
+    ]
+    parts = []
+    for number, label, href, _anchor in links:
+        cls = "active" if number == active else ""
+        parts.append(f"<a class='{cls}' href='{href}'><span>{number}</span> {label}</a>")
+    return ("<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso "
+            + str(active) + " de 5</b><div class='workflow-steps'>" + "".join(parts) +
+            "</div><p class='workflow-help'>Sigue los pasos de izquierda a derecha. Puedes volver a cualquiera sin perder lo guardado. "
+            "Todo permanece en esta aplicación local; no se crean ni exportan obras a OSAP.</p></nav>")
+
+
 def page(title: str, body: str) -> HTMLResponse:
     style = """<style>
     body{font:16px system-ui,sans-serif;color:#20242a;background:#f4f6f8;margin:0}
@@ -312,7 +332,7 @@ def page(title: str, body: str) -> HTMLResponse:
     th{background:#edf1f5}.muted{color:#5d6977;font-size:.9rem}.metrics{display:flex;gap:1rem;flex-wrap:wrap}
     .metric{background:white;border:1px solid #dce2e8;border-radius:8px;padding:1rem;min-width:130px}
     a{color:#175ca8}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f4f6;padding:1rem}
-    .workflow{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:1rem;margin:1rem 0}.workflow-steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.8rem 0}.workflow-steps a{display:block;padding:.65rem .85rem;border:1px solid #cbd5e1;border-radius:8px;text-decoration:none;background:#f8fafc;color:#174f89}.workflow-steps a.active{background:#174f89;color:#fff;border-color:#174f89;font-weight:700}.workflow-help{margin:.4rem 0;color:#5d6977}.section-nav{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-top:1rem;padding-top:.7rem;border-top:1px solid #e1e6eb}.section-nav a{font-weight:600}.step-number{display:inline-block;background:#e8eef5;border-radius:50%;padding:.15rem .5rem;margin-right:.35rem}
+    .workflow{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:1rem;margin:1rem 0}.workflow-steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.8rem 0}.workflow-steps a{display:block;padding:.65rem .85rem;border:1px solid #cbd5e1;border-radius:8px;text-decoration:none;background:#f8fafc;color:#174f89}.workflow-steps a span{display:inline-grid;place-items:center;border-radius:50%;background:#e5ebf2;min-width:1.5rem;height:1.5rem;margin-right:.25rem}.workflow-steps a.active{background:#174f89;color:#fff;border-color:#174f89;font-weight:700}.workflow-steps a.active span{background:#fff;color:#174f89}.workflow-help{margin:.4rem 0;color:#5d6977}.section-nav{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-top:1rem;padding-top:.7rem;border-top:1px solid #e1e6eb}.section-nav a{font-weight:600}.step-number{display:inline-block;background:#e8eef5;border-radius:50%;padding:.15rem .5rem;margin-right:.35rem}
     </style>\"\"\"
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + esc(title) + "</title>" + style + "<header><b><a href='/'>AI Importación</a></b><a href='/items'>Catálogo local</a><a href='/intake'>Captación integrada</a><span>Captación independiente · sin altas en OSAP</span></header><main>" + body + "<p class='muted'>La disponibilidad de un archivo no confirma por sí sola que su reutilización esté permitida.</p></main></html>")
 
@@ -631,7 +651,9 @@ def item_detail(identifier: str):
     if not item:
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
     item = dict(item)
-    body = f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
+    body = workflow_nav(identifier, 2)
+    body += f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
+    body += "<section class='panel'><h2>¿Qué quieres hacer ahora?</h2><p>Empieza por consultar los archivos disponibles. Después podrás analizarlos y revisar las obras que aparezcan.</p><p><a href='/files/" + esc(identifier) + "'>Siguiente paso: consultar archivos →</a> &nbsp; <a href='/items/" + esc(identifier) + "/content-analysis'>Ir al análisis →</a></p></section>"
     body += "<p><a href=\"/files/" + esc(identifier) + "\">Consultar inventario de ficheros y descargar</a></p>"
     body += "<p><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar si contiene una o varias obras</a></p>"
     body += "<section class='panel'><h2>Ficha local</h2>"
@@ -676,9 +698,9 @@ def content_analysis(identifier: str):
         files = conn.execute("SELECT file_name,archive_format,size_bytes,relevant FROM archive_files WHERE identifier=? ORDER BY relevant DESC,file_name", (identifier,)).fetchall()
     scope = assessment["scope"] if assessment else "uncertain"
     rationale = assessment["rationale"] if assessment else ""
-    body = f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
-    body += "<p>Esta fase determina qué representa el elemento de Internet Archive. Puede ser una sola partitura, un volumen con muchas obras o un contenedor de archivos. Aquí no se crean ni exportan obras OSAP.</p>"
-    body += "<nav class='workflow' aria-label='Pasos de captación'><b>Flujo de trabajo · paso 3 de 4</b><div class='workflow-steps'><a href='/items/" + esc(identifier) + "'>1. Elemento</a><a href='/files/" + esc(identifier) + "'>2. Archivos</a><a class='active' href='#analisis'>3. Analizar</a><a href='#obras'>4. Revisar obras</a></div><p class='workflow-help'>Puedes saltar directamente a cualquier paso. Los datos se guardan localmente; no se crean ni exportan obras a OSAP.</p></nav>"
+    body = workflow_nav(identifier, 4)
+    body += f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
+    body += "<p>Clasifica el elemento, analiza los archivos disponibles y revisa las obras sugeridas. No tienes que completar todos los análisis técnicos: usa solo los que correspondan a los archivos descargados.</p>"
     body += "<section class='panel' id='clasificacion'><h2><span class='step-number'>1</span>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
     for value, label in CONTENT_SCOPES.items():
         body += f"<option value='{value}' {'selected' if scope == value else ''}>{label}</option>"
