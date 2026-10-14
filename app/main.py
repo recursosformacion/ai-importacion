@@ -714,7 +714,7 @@ CONTENT_SCOPES = {
 
 
 @app.get("/items/{identifier}/content-analysis", response_class=HTMLResponse)
-def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None, pdf_con_texto: int | None = None, pdf_ocr: int | None = None, errores_extraccion: int | None = None, sugerencias_nuevas: int | None = None, txt_leidos: int | None = None):
+def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None, pdf_con_texto: int | None = None, pdf_ocr: int | None = None, errores_extraccion: int | None = None, sugerencias_nuevas: int | None = None, txt_leidos: int | None = None, notacion_leida: int | None = None):
     with db() as conn:
         item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
         if not item:
@@ -772,8 +772,8 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
         body += "</table>"
     body += "</section>"
     body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
-    if any(value is not None for value in (pdf_con_texto, pdf_ocr, errores_extraccion, sugerencias_nuevas, txt_leidos)):
-        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
+    if any(value is not None for value in (pdf_con_texto, pdf_ocr, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida)):
+        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
     if pdf_extractions:
         body += "<h3>Estado de extracción por PDF</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
         pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Probablemente necesita OCR", "error": "Error de lectura"}
@@ -867,6 +867,41 @@ def extract_text_candidates(text: str) -> list[tuple[int, str]]:
         if 4 <= len(line) <= 140 and line not in {value for _, value in candidates}:
             candidates.append((line_no, line))
     return candidates[:300]
+
+
+def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int, str]]:
+    """Extract explicit title metadata from text-based music notation formats."""
+    import html
+
+    found = []
+    if suffix == ".abc":
+        for line_no, raw in enumerate(text.splitlines(), 1):
+            match = re.match(r"^\s*T\s*:\s*(.*?)\s*$", raw)
+            if match:
+                title = match.group(1).strip()
+                if 4 <= len(title) <= 140:
+                    found.append((line_no, title))
+    elif suffix == ".ly":
+        for line_no, raw in enumerate(text.splitlines(), 1):
+            match = re.search(r'\btitle\s*=\s*"([^"]{4,140})"', raw)
+            if match:
+                found.append((line_no, match.group(1).strip()))
+    elif suffix == ".mei":
+        pattern = re.compile(r"<(?:[A-Za-z_][\\w.-]*:)?title\\b[^>]*>(.*?)</(?:[A-Za-z_][\\w.-]*:)?title\\s*>", re.IGNORECASE | re.DOTALL)
+        for match in pattern.finditer(text):
+            title = re.sub(r"<[^>]+>", " ", match.group(1))
+            title = " ".join(html.unescape(title).split())
+            if 4 <= len(title) <= 140:
+                line_no = text.count(chr(10), 0, match.start()) + 1
+                found.append((line_no, title))
+    unique = []
+    seen = set()
+    for line_no, title in found:
+        key = title.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append((line_no, title))
+    return unique[:100]
 
 
 @app.post("/items/{identifier}/content-analysis/analyze-files")
@@ -964,11 +999,12 @@ def extract_content_suggestions(identifier: str):
     pdf_needs_ocr = 0
     extraction_errors = 0
     text_files_read = 0
+    notation_files_read = 0
     inserted = 0
     for frow in files:
         path = Path(frow["local_path"])
         suffix = path.suffix.lower()
-        if suffix not in {".txt", ".ocr", ".pdf"}:
+        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei"}:
             continue
         if not path.is_file():
             extraction_errors += 1
@@ -977,10 +1013,13 @@ def extract_content_suggestions(identifier: str):
             continue
         text_content = ""
         try:
-            if suffix in {".txt", ".ocr"}:
-                text_content = path.read_text(encoding="utf-8", errors="replace")
+            if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei"}:
+                text_content = path.read_text(encoding="utf-8-sig", errors="replace")
                 if text_content.strip():
-                    text_files_read += 1
+                    if suffix in {".abc", ".ly", ".mei"}:
+                        notation_files_read += 1
+                    else:
+                        text_files_read += 1
             elif suffix == ".pdf":
                 from pypdf import PdfReader
                 reader = PdfReader(str(path))
@@ -1005,8 +1044,13 @@ def extract_content_suggestions(identifier: str):
             continue
         if not text_content.strip():
             continue
+        candidate_rows = (
+            extract_notation_title_candidates(text_content, suffix)
+            if suffix in {".abc", ".ly", ".mei"}
+            else extract_text_candidates(text_content)
+        )
         with db() as conn:
-            for line_no, candidate in extract_text_candidates(text_content):
+            for line_no, candidate in candidate_rows:
                 cur = conn.execute("""INSERT OR IGNORE INTO archive_content_suggestions
                     (identifier,source_file,line_number,suggestion_text,status,created_at)
                     VALUES(?,?,?,?, 'pending', ?)""",
@@ -1019,6 +1063,7 @@ def extract_content_suggestions(identifier: str):
             + "?pdf_con_texto=" + str(pdf_with_text)
             + "&pdf_ocr=" + str(pdf_needs_ocr)
             + "&txt_leidos=" + str(text_files_read)
+            + "&notacion_leida=" + str(notation_files_read)
             + "&errores_extraccion=" + str(extraction_errors)
             + "&sugerencias_nuevas=" + str(inserted)
         ),
