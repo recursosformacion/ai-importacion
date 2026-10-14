@@ -634,5 +634,5 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         "scores-scan.pdf": "ocr_needed",
         "scores-text.pdf": "text_available",
     }
-    assert all(row["page_count"] == 1 for row in pdf_results)
+    assert {row["file_name"]: row["page_count"] for row in pdf_results} == {\n        "broken.pdf": 0, "scores-scan.pdf": 1, "scores-text.pdf": 1,\n    }
 
