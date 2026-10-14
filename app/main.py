@@ -1095,7 +1095,13 @@ def extract_content_suggestions(identifier: str):
                         with fitz.open(str(path)) as document:
                             for page_index in range(min(len(reader.pages), 5)):
                                 page = document[page_index]
-                                pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                                page_dimension = max(
+                                    float(page.rect.width), float(page.rect.height), 1.0
+                                )
+                                scale = min(2.0, 2500.0 / page_dimension)
+                                pixmap = page.get_pixmap(
+                                    matrix=fitz.Matrix(scale, scale), alpha=False
+                                )
                                 image = Image.open(io.BytesIO(pixmap.tobytes("png")))
                                 recognized = pytesseract.image_to_string(image, lang="eng")
                                 ocr_pages.append(recognized or "")
