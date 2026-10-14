@@ -828,7 +828,7 @@ def add_content_unit(
 
 def extract_text_candidates(text: str) -> list[tuple[int, str]]:
     """Conservative title-like lines from OCR/text; suggestions always require human review."""
-    ignored = ("internet archive", "table of contents", "contents", "copyright", "all rights reserved",
+    ignored = ("internet archive", "table of contents", "contents", "[page ", "copyright", "all rights reserved",
                "public domain", "digitized by", "scanned by", "www.", "http://", "https://")
     candidates = []
     for line_no, raw in enumerate(text.splitlines(), 1):
