@@ -144,3 +144,38 @@ def test_search_error_keeps_guided_navigation_and_retry_action(tmp_path, monkeyp
         ).fetchone()
     assert run["status"] == "error"
     assert "<fallo remoto>" in run["error_text"]
+
+
+def test_inventory_error_keeps_recovery_link_and_escapes_detail(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "inventory-error.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+
+    class FailedResponse:
+        def raise_for_status(self):
+            raise RuntimeError("<red no disponible>")
+
+    class FailedClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return FailedResponse()
+
+    monkeypatch.setattr(file_catalog.httpx, "AsyncClient", FailedClient)
+    with TestClient(main.app) as client:
+        seed_item()
+        response = client.post("/items/anthology-test/inspect-files")
+
+    assert response.status_code == 502
+    assert "Captación musical · paso 3 de 5" in response.text
+    assert "No se pudo actualizar el inventario" in response.text
+    assert "Volver al inventario y reintentar" in response.text
+    assert "&lt;red no disponible&gt;" in response.text
+    assert "<red no disponible>" not in response.text
