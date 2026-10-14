@@ -763,7 +763,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             ORDER BY file_name""", (identifier,)).fetchall()
     auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
     unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
-    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de archivos musicales</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados para extraer metadatos disponibles, estructura, instrumentos y duración. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos musicales descargados</button></form>"
+    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de archivos musicales</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados. Los títulos explícitos de formatos editables se preparan automáticamente como obras candidatas; solo el texto/OCR dudoso queda para revisión. No se exporta nada a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos musicales descargados</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
         for result in analyses:
@@ -964,6 +964,44 @@ def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int,
     return unique[:100]
 
 
+def register_auto_work_candidate(
+    identifier: str, title: str, creator: str = "", source_file: str = "", evidence: str = ""
+) -> bool:
+    """Register a provisional local candidate from explicit machine-readable metadata."""
+    title = " ".join((title or "").split()).strip()
+    creator = " ".join((creator or "").split()).strip()
+    if not 4 <= len(title) <= 1000:
+        return False
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT id,creator FROM archive_item_contents WHERE identifier=? AND lower(title)=lower(?) LIMIT 1",
+            (identifier, title),
+        ).fetchone()
+        if existing:
+            if creator and not existing["creator"]:
+                conn.execute(
+                    "UPDATE archive_item_contents SET creator=? WHERE id=?",
+                    (creator[:500], existing["id"]),
+                )
+            return False
+        ordinal = int(conn.execute(
+            "SELECT COALESCE(MAX(ordinal),0)+1 FROM archive_item_contents WHERE identifier=?",
+            (identifier,),
+        ).fetchone()[0])
+        conn.execute(
+            """INSERT INTO archive_item_contents
+               (identifier,ordinal,title,creator,source_file,page_range,evidence,status,notes,created_at)
+               VALUES(?,?,?,?,?,'',?,'candidate',?,?)""",
+            (
+                identifier, ordinal, title, creator[:500], source_file[:1000],
+                evidence[:2000] or "Título explícito de metadatos del archivo.",
+                "Candidato creado automáticamente desde metadatos explícitos; aún no exportado a OSAP.",
+                now(),
+            ),
+        )
+    return True
+
+
 @app.post("/items/{identifier}/content-analysis/analyze-files")
 def analyze_downloaded_musicxml(identifier: str):
     with db() as conn:
@@ -988,7 +1026,7 @@ def analyze_downloaded_musicxml(identifier: str):
         # deliberately rechecked because their identity cannot be verified safely.
         with db() as conn:
             previous = conn.execute(
-                "SELECT status,sha256 FROM archive_file_analyses WHERE file_id=?",
+                "SELECT status,sha256,analysis_json FROM archive_file_analyses WHERE file_id=?",
                 (file_row["id"],),
             ).fetchone()
         if (
@@ -997,6 +1035,17 @@ def analyze_downloaded_musicxml(identifier: str):
             and file_row["sha256"]
             and previous["sha256"] == file_row["sha256"]
         ):
+            try:
+                previous_analysis = json.loads(previous["analysis_json"] or "{}")
+                if previous_analysis.get("title"):
+                    creators = previous_analysis.get("creators") or []
+                    creator = creators[0].get("name", "") if creators and isinstance(creators[0], dict) else ""
+                    register_auto_work_candidate(
+                        identifier, previous_analysis["title"], creator, file_row["file_name"],
+                        "Título explícito de metadatos MusicXML/MXL; análisis anterior sin cambios.",
+                    )
+            except (TypeError, json.JSONDecodeError, AttributeError):
+                pass
             skipped_count += 1
             continue
 
@@ -1017,6 +1066,13 @@ def analyze_downloaded_musicxml(identifier: str):
         analyzed_count += 1
         if status == "error":
             failed_count += 1
+        if status == "ok" and analysis.get("title"):
+            creators = analysis.get("creators") or []
+            creator = creators[0].get("name", "") if creators and isinstance(creators[0], dict) else ""
+            register_auto_work_candidate(
+                identifier, analysis["title"], creator, file_row["file_name"],
+                "Título explícito de metadatos MusicXML/MXL; estructura analizada localmente.",
+            )
         with db() as conn:
             conn.execute("""INSERT INTO archive_file_analyses
                 (file_id,identifier,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
@@ -1217,6 +1273,8 @@ def extract_content_suggestions(identifier: str):
             if suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
             else extract_text_candidates(text_content)
         )
+        structured_title_source = suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
+        auto_titles = []
         with db() as conn:
             for line_no, candidate in candidate_rows:
                 cur = conn.execute("""INSERT OR IGNORE INTO archive_content_suggestions
@@ -1224,6 +1282,23 @@ def extract_content_suggestions(identifier: str):
                     VALUES(?,?,?,?, 'pending', ?)""",
                     (identifier, frow["file_name"], line_no, candidate, now()))
                 inserted += cur.rowcount
+                if structured_title_source:
+                    suggestion = conn.execute(
+                        """SELECT id,status FROM archive_content_suggestions
+                           WHERE identifier=? AND source_file=? AND line_number=? AND suggestion_text=?""",
+                        (identifier, frow["file_name"], line_no, candidate),
+                    ).fetchone()
+                    if suggestion and suggestion["status"] == "pending":
+                        conn.execute(
+                            "UPDATE archive_content_suggestions SET status='auto_accepted' WHERE id=?",
+                            (suggestion["id"],),
+                        )
+                        auto_titles.append(candidate)
+        for candidate in auto_titles:
+            register_auto_work_candidate(
+                identifier, candidate, source_file=frow["file_name"],
+                evidence=f"Título explícito extraído de metadatos del formato {suffix}.",
+            )
 
     return RedirectResponse(
         url=(
