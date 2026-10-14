@@ -324,6 +324,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
     inventoried_items: list[tuple[str, str]] = []
     inventory_errors: list[str] = []
     downloaded_now = 0
+    download_attempts = 0
     download_errors: list[str] = []
 
     # First inventory only a small batch of candidates not yet inventoried successfully.
@@ -387,7 +388,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
                 ORDER BY s.score DESC,f.id ASC""").fetchall()
         ranked = sorted(all_files, key=lambda row: _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"]), reverse=True)
         for row in ranked:
-            if downloaded_now >= downloads:
+            if download_attempts >= downloads:
                 break
             priority = _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"])
             if priority <= 0:
@@ -396,6 +397,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
                 with db() as conn:
                     conn.execute("UPDATE archive_files SET download_status='too_large',download_error=? WHERE id=?", ("Supera el límite configurado", row["id"]))
                 continue
+            download_attempts += 1
             await download_file(int(row["id"]))
             with db() as conn:
                 result = conn.execute("SELECT download_status FROM archive_files WHERE id=?", (row["id"],)).fetchone()
@@ -404,7 +406,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
             else:
                 download_errors.append(f"{row['identifier']} / {row['file_name']}: descarga fallida")
 
-    summary = f"<h1>Resultado de captación</h1><p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Descargas correctas en esta ejecución: <b>{downloaded_now}</b> de un máximo de {downloads}.</p>"
+    summary = f"<h1>Resultado de captación</h1><p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Intentos de descarga realizados: <b>{download_attempts}</b> de un máximo de {downloads}; descargas correctas: <b>{downloaded_now}</b>.</p>"
     if inventoried_items:
         summary += "<h3>Continuar con los elementos inventariados</h3>" + _intake_item_links(inventoried_items)
     if inventory_errors:
