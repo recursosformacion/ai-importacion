@@ -760,7 +760,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
         downloaded_files = conn.execute("""SELECT file_name,archive_format,size_bytes FROM archive_files
             WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
             ORDER BY file_name""", (identifier,)).fetchall()
-    auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz"}
+    auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
     unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
     body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
     if analyses:
@@ -776,7 +776,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI y MuseScore (.mscx/.mscz), y extraer texto de PDF. Si un PDF no tiene texto seleccionable, intenta OCR local en hasta las primeras cinco páginas cuando PyMuPDF, Pillow, pytesseract y el ejecutable Tesseract estén disponibles. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI, MuseScore (.mscx/.mscz) y metadatos XML explícitos de paquetes Capella (.capx), y extraer texto de PDF. Si un PDF no tiene texto seleccionable, intenta OCR local en hasta las primeras cinco páginas cuando PyMuPDF, Pillow, pytesseract y el ejecutable Tesseract estén disponibles. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
     if any(value is not None for value in (pdf_con_texto, pdf_ocr, pdf_ocr_realizados, pdf_ocr_sin_texto, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida)):
         body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que aún necesitan OCR: " + esc(pdf_ocr or 0) + " · OCR realizado: " + esc(pdf_ocr_realizados or 0) + " · OCR sin texto legible: " + esc(pdf_ocr_sin_texto or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>El OCR se limita a las primeras cinco páginas por archivo. Si Tesseract no está instalado o no está disponible, la ficha indica qué requisito falta; los archivos no se envían a servicios externos.</p></div>";
     if pdf_extractions:
@@ -905,13 +905,20 @@ def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int,
             if 4 <= len(title) <= 140:
                 line_no = text.count(chr(10), 0, match.start()) + 1
                 found.append((line_no, title))
-    elif suffix == ".mscx":
-        pattern = re.compile(r'<metaTag\s+name=["\'](?:workTitle|movementTitle)["\']\s*>(.*?)</metaTag\s*>', re.IGNORECASE | re.DOTALL)
+    elif suffix in {".mscx", ".capx"}:
+        pattern = re.compile(r'<metaTag\s+name=["\'](?:workTitle|movementTitle|title)["\']\s*>(.*?)</metaTag\s*>', re.IGNORECASE | re.DOTALL)
         for match in pattern.finditer(text):
             title = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", match.group(1))).split())
             if 4 <= len(title) <= 140:
                 line_no = text.count(chr(10), 0, match.start()) + 1
                 found.append((line_no, title))
+        if suffix == ".capx":
+            title_pattern = re.compile(r"<(?:[A-Za-z_][\w.-]*:)?title\b[^>]*>(.*?)</(?:[A-Za-z_][\w.-]*:)?title\s*>", re.IGNORECASE | re.DOTALL)
+            for match in title_pattern.finditer(text):
+                title = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", match.group(1))).split())
+                if 4 <= len(title) <= 140:
+                    line_no = text.count(chr(10), 0, match.start()) + 1
+                    found.append((line_no, title))
     unique = []
     seen = set()
     for line_no, title in found:
@@ -1036,22 +1043,26 @@ def extract_content_suggestions(identifier: str):
             if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx"}:
                 text_content = path.read_text(encoding="utf-8-sig", errors="replace")
                 if text_content.strip():
-                    if suffix in {".abc", ".ly", ".mei", ".mscx"}:
+                    if suffix in {".abc", ".ly", ".mei", ".mscx", ".capx"}:
                         notation_files_read += 1
                     else:
                         text_files_read += 1
-            elif suffix == ".mscz":
+            elif suffix in {".mscz", ".capx"}:
                 import zipfile
                 member_limit = 20 * 1024 * 1024
                 with zipfile.ZipFile(path) as archive:
                     candidates = [
                         info for info in archive.infolist()
-                        if info.filename.lower().endswith(".mscx")
+                        if (
+                            info.filename.lower().endswith(".mscx") if suffix == ".mscz"
+                            else info.filename.lower().endswith((".xml", ".capella", ".capx"))
+                        )
                         and not info.filename.startswith("/")
                         and ".." not in Path(info.filename).parts
                     ]
                     if not candidates:
-                        raise ValueError("El paquete MSCZ no contiene un archivo MSCX.")
+                        expected = "un archivo MSCX" if suffix == ".mscz" else "un XML de partitura reconocible"
+                        raise ValueError("El paquete no contiene " + expected + ".")
                     member = candidates[0]
                     if member.file_size > member_limit:
                         raise ValueError("El archivo MSCX interno supera el límite de 20 MiB.")
