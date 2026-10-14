@@ -83,6 +83,7 @@ def test_guided_workflow_navigation_links_item_steps(tmp_path, monkeypatch):
         assert files.status_code == 200
         assert "Captación musical · paso 3 de 5" in files.text
         assert "href='/items/anthology-test/content-analysis#analisis'" in files.text
+        assert "href='/items/anthology-test/content-analysis?step=5#obras'" in files.text
 
         review = client.get("/items/anthology-test/content-analysis?step=5")
         assert review.status_code == 200
