@@ -639,7 +639,8 @@ async def search(query: Annotated[str, Form()], rows: Annotated[int, Form()] = 2
         items = conn.execute("""SELECT ai.* FROM archive_items ai
             JOIN search_run_items sri ON sri.identifier=ai.identifier
             WHERE sri.search_run_id=? ORDER BY sri.result_rank LIMIT 100""", (run_id,)).fetchall()
-    body = f"<section class='panel'><h2>Resultado de búsqueda: {esc(query)}</h2><p>Internet Archive informa de <b>{result['total']}</b> coincidencias. Se han recibido y guardado <b>{saved}</b> elementos en esta búsqueda.</p><p><a href='/'>Volver al inicio</a></p></section><section class='panel'><h2>Resultados encontrados</h2>{item_table(items)}</section>"
+    body = workflow_nav(None, 2)
+    body += f"<section class='panel'><h2>Resultados de búsqueda: {esc(query)}</h2><p>Internet Archive informa de <b>{result['total']}</b> coincidencias. Se han recibido y guardado <b>{saved}</b> elementos en esta búsqueda.</p><p>Elige un resultado para abrir su ficha y continuar con el inventario de archivos.</p><p><a href='/'>← Volver a buscar</a></p></section><section class='panel'><h2>Resultados encontrados</h2>{item_table(items)}</section>"
     return page("Resultado de búsqueda", body)
 
 
