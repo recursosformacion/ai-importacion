@@ -727,7 +727,13 @@ def test_scanned_pdf_ocr_extracts_text_and_creates_suggestion(tmp_path, monkeypa
 
     monkeypatch.setattr(pypdf, "PdfReader", Reader)
     monkeypatch.setattr(pytesseract, "get_tesseract_version", lambda: "5.0")
-    monkeypatch.setattr(pytesseract, "image_to_string", lambda image, lang: "Prelude in C")
+    monkeypatch.setenv("AI_IMPORTACION_OCR_LANG", "eng+spa")
+
+    def recognize(image, lang):
+        assert lang == "eng+spa"
+        return "Prelude in C"
+
+    monkeypatch.setattr(pytesseract, "image_to_string", recognize)
     monkeypatch.setattr(fitz, "open", lambda path: Document())
 
     with TestClient(main.app) as client:
