@@ -63,7 +63,7 @@ def analyze_midi(path: str | Path) -> dict:
                     instruments.append({
                         "channel": channel,
                         "program": program,
-                        "name": "Percussion" if channel == 9 else mido.get_instrument_name(program),
+                        "name": "Percusión" if channel == 9 else f"Programa GM {program + 1}",
                     })
 
     return {
