@@ -775,3 +775,60 @@ def test_capx_title_candidates_only_use_explicit_xml_metadata():
     candidates = extract_notation_title_candidates(xml, ".capx")
     assert [title for _, title in candidates] == ["A Capella Work", "Motet in G"]
     assert extract_notation_title_candidates("<score><composer>Unknown</composer></score>", ".capx") == []
+
+
+
+def test_ocr_candidate_filter_drops_obvious_noise_and_credit_lines():
+    from app.main import extract_text_candidates
+
+    text = """SPIRIT OF THE AIR FORCE
+aS SS
+= cs S|
+Ae sos Shea
+Words and Music by
+Col. WILLIAM J. CLINCH
+MEXICO
+THE THREE CABALLEROS
+"""
+    candidates = [title for _, title in extract_text_candidates(text)]
+    assert "SPIRIT OF THE AIR FORCE" in candidates
+    assert "Col. WILLIAM J. CLINCH" in candidates
+    assert "MEXICO" in candidates
+    assert "THE THREE CABALLEROS" in candidates
+    assert "aS SS" not in candidates
+    assert "= cs S|" not in candidates
+    assert "Ae sos Shea" not in candidates
+    assert "Words and Music by" not in candidates
+
+
+def test_capx_files_are_included_in_local_content_extraction(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capx-extract.sqlite3"))
+    capx_path = tmp_path / "score.capx"
+    with __import__("zipfile").ZipFile(capx_path, "w") as archive:
+        archive.writestr(
+            "score.xml",
+            '<score><title>Motet in G</title></score>',
+        )
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path)
+                VALUES(?,?,?,?,?,'downloaded',?)""",
+                ("anthology-test", "score.capx", "score.capx",
+                 "https://archive.org/download/anthology-test/score.capx",
+                 main.now(), str(capx_path)),
+            )
+        response = client.post(
+            "/items/anthology-test/content-analysis/extract", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert "notacion_leida=1" in response.headers["location"]
+
+    with main.db() as conn:
+        suggestions = conn.execute(
+            "SELECT suggestion_text FROM archive_content_suggestions"
+        ).fetchall()
+    assert [row["suggestion_text"] for row in suggestions] == ["Motet in G"]
