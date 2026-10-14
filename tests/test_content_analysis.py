@@ -179,3 +179,46 @@ def test_inventory_error_keeps_recovery_link_and_escapes_detail(tmp_path, monkey
     assert "Volver al inventario y reintentar" in response.text
     assert "&lt;red no disponible&gt;" in response.text
     assert "<red no disponible>" not in response.text
+
+
+def test_file_inventory_localizes_download_states_and_avoids_oversized_retry(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "download-states.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            conn.execute(
+                "INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status) VALUES(?,?,?,?)",
+                ("anthology-test", stamp, 2, "ok"),
+            )
+            common = (
+                "anthology-test", "score.pdf", "score.pdf",
+                "https://archive.org/download/anthology-test/score.pdf",
+                1024, "PDF", "abc", "def", 1, stamp,
+            )
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at,download_status)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (*common, "too_large"),
+            )
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at,download_status)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                ("anthology-test", "editable.mxl", "editable.mxl",
+                 "https://archive.org/download/anthology-test/editable.mxl",
+                 512, "MusicXML", None, None, 1, stamp, "not_downloaded"),
+            )
+
+        response = client.get("/files/anthology-test")
+
+    assert response.status_code == 200
+    assert "No descargado: supera el límite configurado" in response.text
+    assert "Pendiente de descarga" in response.text
+    assert "No disponible por el límite de tamaño" in response.text
+    # The oversized row has no retry form; only the pending MXL row has a download action.
+    assert response.text.count("<button>Descargar</button>") == 1
+    assert "download_status" not in response.text
