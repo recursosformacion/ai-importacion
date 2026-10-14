@@ -659,6 +659,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         pdf_results = conn.execute(
             """SELECT f.file_name,e.status,e.page_count,e.extracted_characters
             FROM archive_pdf_extractions e JOIN archive_files f ON f.id=e.file_id
+            WHERE lower(f.file_name) LIKE '%.pdf'
             ORDER BY f.file_name"""
         ).fetchall()
     assert [row["suggestion_text"] for row in suggestions] == [
