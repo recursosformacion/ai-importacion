@@ -757,6 +757,11 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
         pdf_extractions = conn.execute("""SELECT e.*, f.file_name FROM archive_pdf_extractions e
             JOIN archive_files f ON f.id=e.file_id
             WHERE e.identifier=? ORDER BY f.file_name""", (identifier,)).fetchall()
+        downloaded_files = conn.execute("""SELECT file_name,archive_format,size_bytes FROM archive_files
+            WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
+            ORDER BY file_name""", (identifier,)).fetchall()
+    auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz"}
+    unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
     body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
@@ -779,6 +784,12 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
         pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Probablemente necesita OCR", "error": "Error de lectura"}
         for pdf_result in pdf_extractions:
             body += f"<tr><td>{esc(pdf_result['file_name'])}</td><td>{esc(pdf_status_labels.get(pdf_result['status'], pdf_result['status']))}{('<br>' + esc(pdf_result['error_text'])) if pdf_result['error_text'] else ''}</td><td>{esc(pdf_result['page_count'])}</td><td>{esc(pdf_result['extracted_characters'])}</td><td>{esc(pdf_result['analyzed_at'])}</td></tr>"
+        body += "</table>"
+    if unparsed_files:
+        body += "<h3>Otros formatos descargados, pendientes de análisis automático</h3><p>Estos archivos están guardados localmente, pero esta versión todavía no extrae sus metadatos. Que aparezcan aquí no significa que sean inválidos.</p><table><tr><th>Archivo</th><th>Formato declarado</th><th>Tamaño</th></tr>"
+        for other_file in unparsed_files:
+            size_label = f"{other_file['size_bytes']:,} bytes" if other_file["size_bytes"] is not None else "—"
+            body += f"<tr><td>{esc(other_file['file_name'])}</td><td>{esc(other_file['archive_format'] or 'No indicado')}</td><td>{esc(size_label)}</td></tr>"
         body += "</table>"
     with db() as conn:
         suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
