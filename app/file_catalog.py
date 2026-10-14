@@ -256,6 +256,10 @@ def _intake_item_links(items: list[tuple[str, str]]) -> str:
     ) + "</ul>"
 
 
+def _intake_error_link(identifier: str, label: str, detail: str) -> str:
+    url = "/files/" + quote(identifier, safe="")
+    return "<li><a href='" + url + "'>" + esc(label) + " · revisar / reintentar</a>: " + esc(detail) + "</li>"
+
 def _intake_priority(name: str, fmt: str, size: int | None) -> int:
     suffix = Path(name.lower()).suffix
     f = (fmt or "").casefold()
@@ -322,10 +326,10 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
     downloads = max(0, min(int(downloads), 10))
     inventoried_now = 0
     inventoried_items: list[tuple[str, str]] = []
-    inventory_errors: list[str] = []
+    inventory_errors: list[tuple[str, str]] = []
     downloaded_now = 0
     download_attempts = 0
-    download_errors: list[str] = []
+    download_errors: list[tuple[str, str, str]] = []
 
     # First inventory only a small batch of candidates not yet inventoried successfully.
     with db() as conn:
@@ -372,7 +376,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
             inventoried_now += 1
             inventoried_items.append((identifier, target['title'] or identifier))
         except Exception as exc:
-            inventory_errors.append(f"{identifier}: {str(exc)[:180]}")
+            inventory_errors.append((identifier, str(exc)[:180]))
             with db() as conn:
                 conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
                     VALUES(?,?,0,'error',?) ON CONFLICT(identifier) DO UPDATE SET checked_at=excluded.checked_at,
@@ -400,18 +404,18 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
             download_attempts += 1
             await download_file(int(row["id"]))
             with db() as conn:
-                result = conn.execute("SELECT download_status FROM archive_files WHERE id=?", (row["id"],)).fetchone()
+                result = conn.execute("SELECT download_status,download_error FROM archive_files WHERE id=?", (row["id"],)).fetchone()
             if result and result["download_status"] == "downloaded":
                 downloaded_now += 1
             else:
-                download_errors.append(f"{row['identifier']} / {row['file_name']}: descarga fallida")
+                download_errors.append((row["identifier"], row["file_name"], result["download_error"] if result and result["download_error"] else "Descarga fallida; se puede reintentar."))
 
     summary = f"<h1>Resultado de captación</h1><p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Intentos de descarga realizados: <b>{download_attempts}</b> de un máximo de {downloads}; descargas correctas: <b>{downloaded_now}</b>.</p>"
     if inventoried_items:
         summary += "<h3>Continuar con los elementos inventariados</h3>" + _intake_item_links(inventoried_items)
     if inventory_errors:
-        summary += "<h3>Errores de inventario</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in inventory_errors) + "</ul>"
+        summary += "<h3>Errores de inventario · se pueden reintentar</h3><ul>" + "".join(_intake_error_link(identifier, identifier, detail) for identifier, detail in inventory_errors) + "</ul>"
     if download_errors:
-        summary += "<h3>Errores de descarga</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in download_errors) + "</ul>"
+        summary += "<h3>Errores de descarga · revisar o reintentar</h3><ul>" + "".join(_intake_error_link(identifier, file_name, detail) for identifier, file_name, detail in download_errors) + "</ul>"
     summary += "<p>Los inventarios y descargas se guardan en SQLite y en la carpeta local de descargas. No se ha escrito en OSAP.</p><p><a href='/intake'>Ver captación integrada</a> · <a href='/'>Inicio</a></p>"
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Resultado de captación</title><body style='font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem'>" + summary + "</body></html>")
