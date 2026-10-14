@@ -650,14 +650,34 @@ async def run_capture_pipeline():
         candidates = conn.execute("SELECT COUNT(*) FROM global_discovery_seen WHERE score>0").fetchone()[0]
         inventoried = conn.execute("SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok'").fetchone()[0]
         downloaded = conn.execute("SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded'").fetchone()[0]
-        pending = conn.execute("SELECT COUNT(*) FROM archive_content_suggestions WHERE status='pending'").fetchone()[0]
+        pending = conn.execute(
+            """SELECT COUNT(*) FROM archive_items a
+               JOIN global_discovery_seen s ON s.identifier=a.identifier
+               WHERE s.score>0
+                 AND EXISTS (SELECT 1 FROM archive_files f
+                             WHERE f.identifier=a.identifier AND f.download_status='downloaded')
+                 AND (
+                   EXISTS (SELECT 1 FROM archive_content_suggestions cs
+                           WHERE cs.identifier=a.identifier AND cs.status='pending')
+                   OR (
+                     NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
+                     AND (
+                       EXISTS (SELECT 1 FROM archive_file_analyses fa
+                               WHERE fa.identifier=a.identifier AND fa.status='ok')
+                       OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
+                                  WHERE pe.identifier=a.identifier
+                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text'))
+                     )
+                   )
+                 )"""
+        ).fetchone()[0]
     body = "<h1>Lote de captación terminado</h1><p>La aplicación ha continuado la búsqueda y ha intentado inventariar, descargar y analizar material musical sin requerir decisiones para cada elemento.</p>"
     body += "<div class='metrics'>" + "".join(
         f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>"
         for label, value in [
             ("Elementos examinados", scanned), ("Candidatos musicales", candidates),
             ("Inventarios completados", inventoried), ("Archivos descargados", downloaded),
-            ("Casos por revisar", pending),
+            ("Casos que necesitan revisión", pending),
         ]
     ) + "</div>"
     if discovery_error or intake_error:
@@ -867,11 +887,11 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             + "Omitidos por estar actualizados: <b>" + esc(omitidos or 0) + "</b> · "
             + "Fallidos: <b>" + esc(fallidos or 0) + "</b></p></section>"
         )
-    body += "<section class='panel' id='clasificacion'><h2><span class='step-number'>1</span>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
+    body += "<section class='panel' id='clasificacion'><h2>Qué parece contener este material</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
     for value, label in CONTENT_SCOPES.items():
         body += f"<option value='{value}' {'selected' if scope == value else ''}>{label}</option>"
     body += f"</select></label><p><label>Justificación / evidencias consultadas<br><textarea name='rationale' rows='3' style='width:95%'>{esc(rationale)}</textarea></label></p><button>Guardar clasificación</button></form></section>"
-    body += "<section class='panel' id='archivos'><h2><span class='step-number'>2</span>Ficheros conocidos</h2>"
+    body += "<section class='panel' id='archivos'><h2>Archivos encontrados</h2>"
     if not files:
         body += "<p>No hay inventario de ficheros todavía. <a href='/files/" + esc(identifier) + "'>Consultar el inventario</a> para identificar PDF, MusicXML, MIDI, ZIP o imágenes.</p>"
     else:
@@ -893,7 +913,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             ORDER BY file_name""", (identifier,)).fetchall()
     auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
     unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
-    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de archivos musicales</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados. Los títulos explícitos de formatos editables se preparan automáticamente como obras candidatas; solo el texto/OCR dudoso queda para revisión. No se exporta nada a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos musicales descargados</button></form>"
+    body += "<section class='panel' id='analisis'><h2>Qué ha podido leer la aplicación</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados. Los títulos explícitos de formatos editables se preparan automáticamente como obras candidatas; solo el texto/OCR dudoso queda para revisión. No se exporta nada a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Volver a comprobar los archivos</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
         for result in analyses:
@@ -907,7 +927,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI, MuseScore (.mscx/.mscz) y metadatos XML explícitos de paquetes Capella (.capx), y extraer texto de PDF. Si un PDF no tiene texto seleccionable, intenta OCR local en hasta las primeras cinco páginas cuando PyMuPDF, Pillow, pytesseract y el ejecutable Tesseract estén disponibles. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    body += "<section class='panel' id='ocr'><h2>Buscar títulos dentro de los archivos</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI, MuseScore (.mscx/.mscz) y metadatos XML explícitos de paquetes Capella (.capx), y extraer texto de PDF. Si un PDF no tiene texto seleccionable, intenta OCR local en hasta las primeras cinco páginas cuando PyMuPDF, Pillow, pytesseract y el ejecutable Tesseract estén disponibles. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Leer texto y buscar posibles títulos</button></form>";
     if any(value is not None for value in (pdf_con_texto, pdf_ocr, pdf_ocr_realizados, pdf_ocr_sin_texto, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida)):
         body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que aún necesitan OCR: " + esc(pdf_ocr or 0) + " · OCR realizado: " + esc(pdf_ocr_realizados or 0) + " · OCR sin texto legible: " + esc(pdf_ocr_sin_texto or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>El OCR se limita a las primeras cinco páginas por archivo. Si Tesseract no está instalado o no está disponible, la ficha indica qué requisito falta; los archivos no se envían a servicios externos.</p></div>";
     if pdf_extractions:
