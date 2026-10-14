@@ -948,10 +948,21 @@ def extract_content_suggestions(identifier: str):
     with db() as conn:
         if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
             raise HTTPException(status_code=404, detail="Elemento no encontrado")
-        files = conn.execute("""SELECT file_name,local_path FROM archive_files
+        files = conn.execute("""SELECT id,file_name,local_path,sha256 FROM archive_files
             WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL""", (identifier,)).fetchall()
     if not files:
         raise HTTPException(status_code=422, detail="Primero consulta el inventario y descarga un fichero de texto OCR o un PDF.")
+
+    def record_pdf_result(file_row, status, page_count=0, extracted_characters=0, error_text=None):
+        with db() as conn:
+            conn.execute("""INSERT INTO archive_pdf_extractions
+                (file_id,identifier,status,page_count,extracted_characters,error_text,analyzed_at,sha256)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(file_id) DO UPDATE SET identifier=excluded.identifier,status=excluded.status,
+                page_count=excluded.page_count,extracted_characters=excluded.extracted_characters,
+                error_text=excluded.error_text,analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
+                (file_row["id"], identifier, status, page_count, extracted_characters,
+                 error_text, now(), file_row["sha256"]))
 
     pdf_with_text = 0
     pdf_needs_ocr = 0
@@ -965,6 +976,8 @@ def extract_content_suggestions(identifier: str):
             continue
         if not path.is_file():
             extraction_errors += 1
+            if suffix == ".pdf":
+                record_pdf_result(frow, "error", error_text="No existe el fichero en la ruta local registrada.")
             continue
         text_content = ""
         try:
@@ -982,12 +995,17 @@ def extract_content_suggestions(identifier: str):
                     page_texts.append(page_text)
                     pages.append(chr(10) + f"[PAGE {page_no}]" + chr(10) + page_text)
                 text_content = chr(10).join(pages)
+                extracted_characters = sum(len(page_text) for page_text in page_texts)
                 if any(page_text.strip() for page_text in page_texts):
                     pdf_with_text += 1
+                    record_pdf_result(frow, "text_available", len(reader.pages), extracted_characters)
                 else:
                     pdf_needs_ocr += 1
-        except Exception:
+                    record_pdf_result(frow, "ocr_needed", len(reader.pages), extracted_characters)
+        except Exception as exc:
             extraction_errors += 1
+            if suffix == ".pdf":
+                record_pdf_result(frow, "error", error_text=str(exc)[:1000])
             continue
         if not text_content.strip():
             continue
