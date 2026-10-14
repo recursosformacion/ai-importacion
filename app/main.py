@@ -371,7 +371,7 @@ def home(request: Request):
                                WHERE fa.identifier=a.identifier AND fa.status='ok')
                        OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                                   WHERE pe.identifier=a.identifier
-                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text'))
+                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed'))
                      )
                    )
                  )"""
@@ -578,12 +578,20 @@ def review_uncertain_material():
                          AND lower(f.file_name) NOT LIKE '%.xml'
                          AND lower(f.file_name) NOT LIKE '%.mid'
                          AND lower(f.file_name) NOT LIKE '%.midi'
-                         AND lower(f.file_name) NOT LIKE '%.kar') AS unsupported_files,
+                         AND lower(f.file_name) NOT LIKE '%.kar'
+                         AND lower(f.file_name) NOT LIKE '%.png'
+                         AND lower(f.file_name) NOT LIKE '%.jpg'
+                         AND lower(f.file_name) NOT LIKE '%.jpeg'
+                         AND lower(f.file_name) NOT LIKE '%.webp'
+                         AND lower(f.file_name) NOT LIKE '%.tif'
+                         AND lower(f.file_name) NOT LIKE '%.tiff'
+                         AND lower(f.file_name) NOT LIKE '%.bmp'
+                         AND lower(f.file_name) NOT LIKE '%.jp2') AS unsupported_files,
                       (SELECT COUNT(*) FROM archive_file_analyses fa
                        WHERE fa.identifier=a.identifier AND fa.status='error') AS analysis_failures,
                       (SELECT COUNT(*) FROM archive_pdf_extractions pe
                        WHERE pe.identifier=a.identifier
-                         AND pe.status IN ('error','ocr_error','ocr_unavailable')) AS extraction_failures
+                         AND pe.status IN ('error','ocr_error','ocr_unavailable','image_ocr_no_text')) AS extraction_failures
                FROM archive_items a
                JOIN global_discovery_seen s ON s.identifier=a.identifier
                WHERE s.score>0 AND EXISTS (
@@ -599,14 +607,14 @@ def review_uncertain_material():
                                    WHERE fa.identifier=a.identifier AND fa.status='ok')
                            OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                                       WHERE pe.identifier=a.identifier
-                                        AND pe.status IN ('text_available','ocr_completed','ocr_no_text'))
+                                        AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed'))
                        )
                    )
                    OR EXISTS (SELECT 1 FROM archive_file_analyses fa
                               WHERE fa.identifier=a.identifier AND fa.status='error')
                    OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                               WHERE pe.identifier=a.identifier
-                                AND pe.status IN ('error','ocr_error','ocr_unavailable'))
+                                AND pe.status IN ('error','ocr_error','ocr_unavailable','image_ocr_no_text'))
                    OR EXISTS (SELECT 1 FROM archive_files f
                               WHERE f.identifier=a.identifier AND f.relevant=1
                                 AND f.download_status='downloaded'
@@ -624,7 +632,15 @@ def review_uncertain_material():
                                 AND lower(f.file_name) NOT LIKE '%.xml'
                                 AND lower(f.file_name) NOT LIKE '%.mid'
                                 AND lower(f.file_name) NOT LIKE '%.midi'
-                                AND lower(f.file_name) NOT LIKE '%.kar')
+                                AND lower(f.file_name) NOT LIKE '%.kar'
+                         AND lower(f.file_name) NOT LIKE '%.png'
+                         AND lower(f.file_name) NOT LIKE '%.jpg'
+                         AND lower(f.file_name) NOT LIKE '%.jpeg'
+                         AND lower(f.file_name) NOT LIKE '%.webp'
+                         AND lower(f.file_name) NOT LIKE '%.tif'
+                         AND lower(f.file_name) NOT LIKE '%.tiff'
+                         AND lower(f.file_name) NOT LIKE '%.bmp'
+                         AND lower(f.file_name) NOT LIKE '%.jp2')
                )
                ORDER BY pending_suggestions DESC,s.score DESC,a.last_seen_at DESC LIMIT 50"""
         ).fetchall()
@@ -718,7 +734,7 @@ async def run_capture_pipeline():
                                WHERE fa.identifier=a.identifier AND fa.status='ok')
                        OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                                   WHERE pe.identifier=a.identifier
-                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text'))
+                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed'))
                      )
                    )
                  )"""
