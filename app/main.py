@@ -356,7 +356,25 @@ def home(request: Request):
             "SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded'"
         ).fetchone()[0]
         pending_count = conn.execute(
-            "SELECT COUNT(*) FROM archive_content_suggestions WHERE status='pending'"
+            """SELECT COUNT(*) FROM archive_items a
+               JOIN global_discovery_seen s ON s.identifier=a.identifier
+               WHERE s.score>0
+                 AND EXISTS (SELECT 1 FROM archive_files f
+                             WHERE f.identifier=a.identifier AND f.download_status='downloaded')
+                 AND (
+                   EXISTS (SELECT 1 FROM archive_content_suggestions cs
+                           WHERE cs.identifier=a.identifier AND cs.status='pending')
+                   OR (
+                     NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
+                     AND (
+                       EXISTS (SELECT 1 FROM archive_file_analyses fa
+                               WHERE fa.identifier=a.identifier AND fa.status='ok')
+                       OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
+                                  WHERE pe.identifier=a.identifier
+                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text'))
+                     )
+                   )
+                 )"""
         ).fetchone()[0]
         review_items = conn.execute(
             """SELECT a.identifier,a.title,a.creator_json,a.item_date,a.rights_status
@@ -377,7 +395,7 @@ def home(request: Request):
         ("Candidatos musicales", candidate_count),
         ("Inventarios completados", inventory_count),
         ("Archivos descargados", downloaded_count),
-        ("Sugerencias por revisar", pending_count),
+        ("Casos que necesitan revisión", pending_count),
     ]
     body += "<div class='metrics'>" + "".join(
         f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>"
