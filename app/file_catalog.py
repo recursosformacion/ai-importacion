@@ -246,6 +246,16 @@ async def download_file(file_id: int):
 
 
 # Integrated intake: inventory new candidates and download a small number of likely score files.
+def _intake_item_links(items: list[tuple[str, str]]) -> str:
+    """Render safe links to resume inventory and analysis for successful items."""
+    return "<ul>" + "".join(
+        "<li><a href='/files/" + quote(identifier, safe="") + "'>" + esc(title) +
+        " · ver archivos</a> | <a href='/items/" + quote(identifier, safe="") +
+        "/content-analysis'>analizar</a></li>"
+        for identifier, title in items
+    ) + "</ul>"
+
+
 def _intake_priority(name: str, fmt: str, size: int | None) -> int:
     suffix = Path(name.lower()).suffix
     f = (fmt or "").casefold()
@@ -396,10 +406,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
 
     summary = f"<h1>Resultado de captación</h1><p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Descargas correctas en esta ejecución: <b>{downloaded_now}</b> de un máximo de {downloads}.</p>"
     if inventoried_items:
-        summary += "<h3>Continuar con los elementos inventariados</h3><ul>" + "".join(
-            "<li><a href='/files/" + quote(identifier, safe="") + "'>" + esc(title) + " · ver archivos</a> | <a href='/items/" + quote(identifier, safe="") + "/content-analysis'>analizar</a></li>"
-            for identifier, title in inventoried_items
-        ) + "</ul>"
+        summary += "<h3>Continuar con los elementos inventariados</h3>" + _intake_item_links(inventoried_items)
     if inventory_errors:
         summary += "<h3>Errores de inventario</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in inventory_errors) + "</ul>"
     if download_errors:
