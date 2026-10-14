@@ -1028,3 +1028,48 @@ def test_explicit_notation_title_is_registered_as_candidate_automatically(tmp_pa
     assert unit["status"] == "candidate"
     assert "metadatos del formato .abc" in unit["evidence"]
     assert suggestion["status"] == "auto_accepted"
+
+
+
+def test_reanalysis_hides_stale_ocr_suggestions_without_deleting_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "refresh-suggestions.sqlite3"))
+    text_path = tmp_path / "archive.ocr"
+    text_path.write_text("SPIRIT OF THE AIR FORCE\n", encoding="utf-8")
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            file_id = conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path)
+                VALUES(?,?,?,?,?,'downloaded',?)""",
+                ("anthology-test", "archive.ocr", "archive.ocr",
+                 "https://archive.org/download/anthology-test/archive.ocr",
+                 stamp, str(text_path)),
+            ).lastrowid
+            conn.execute(
+                """INSERT INTO archive_content_suggestions
+                (identifier,source_file,line_number,suggestion_text,status,created_at)
+                VALUES(?,?,?,?, 'pending', ?)""",
+                ("anthology-test", "archive.ocr", 1, "aS SS", stamp),
+            )
+
+        response = client.post(
+            "/items/anthology-test/content-analysis/extract", follow_redirects=False
+        )
+        assert response.status_code == 303
+        page = client.get(response.headers["location"])
+        assert "SPIRIT OF THE AIR FORCE" in page.text
+        assert "aS SS" not in page.text
+
+    with main.db() as conn:
+        statuses = {
+            row["suggestion_text"]: row["status"]
+            for row in conn.execute(
+                "SELECT suggestion_text,status FROM archive_content_suggestions WHERE identifier=?",
+                ("anthology-test",),
+            ).fetchall()
+        }
+    assert statuses["aS SS"] == "filtered_noise"
+    assert statuses["SPIRIT OF THE AIR FORCE"] == "pending"
