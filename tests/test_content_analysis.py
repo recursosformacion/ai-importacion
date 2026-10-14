@@ -1107,3 +1107,87 @@ def test_capture_pipeline_route_runs_discovery_then_integrated_intake(tmp_path, 
     assert response.status_code == 200
     assert calls == [("discover", 100), ("intake", 10, 3)]
     assert "Lote de captación terminado" in response.text
+
+
+
+def test_review_queue_shows_uncertain_item_files_and_evidence(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "review-queue.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    download_dir = tmp_path / "downloads"
+    monkeypatch.setattr(file_catalog, "DOWNLOAD_DIR", download_dir)
+    local_dir = download_dir / "anthology-test"
+    local_dir.mkdir(parents=True)
+    pdf = local_dir / "score.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            conn.execute(
+                """INSERT INTO global_discovery_seen
+                   (identifier,first_query_key,score,reason,seen_at)
+                   VALUES(?,?,?,?,?)""",
+                ("anthology-test", "test-query", 90, "Descripción menciona sheet music", stamp),
+            )
+            conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,archive_format,relevant,
+                    inventory_seen_at,download_status,local_path)
+                   VALUES(?,?,?,?,?,1,?,'downloaded',?)""",
+                ("anthology-test", "score.pdf", "score.pdf",
+                 "https://archive.org/download/anthology-test/score.pdf", "PDF", stamp, str(pdf)),
+            )
+            conn.execute(
+                """INSERT INTO archive_content_suggestions
+                   (identifier,source_file,line_number,suggestion_text,status,created_at)
+                   VALUES(?,?,?,?,'pending',?)""",
+                ("anthology-test", "score_djvu.txt", 1, "MOTET IN G", stamp),
+            )
+        response = client.get("/review")
+    assert response.status_code == 200
+    assert "Casos que necesitan una mirada" in response.text
+    assert "Descripción menciona sheet music" in response.text
+    assert "MOTET IN G" in response.text
+    assert "/files/view/" in response.text
+
+
+def test_local_preview_opens_pdf_inline_and_serves_mxl_as_download(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "local-preview.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    download_dir = tmp_path / "downloads"
+    monkeypatch.setattr(file_catalog, "DOWNLOAD_DIR", download_dir)
+    local_dir = download_dir / "anthology-test"
+    local_dir.mkdir(parents=True)
+    pdf = local_dir / "score.pdf"
+    pdf.write_bytes(b"%PDF-1.4 preview")
+    mxl = local_dir / "score.mxl"
+    mxl.write_bytes(b"PK fake mxl")
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            pdf_id = conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,inventory_seen_at,
+                    download_status,local_path) VALUES(?,?,?,?,?,'downloaded',?)""",
+                ("anthology-test", "score.pdf", "score.pdf",
+                 "https://archive.org/download/anthology-test/score.pdf", stamp, str(pdf)),
+            ).lastrowid
+            mxl_id = conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,inventory_seen_at,
+                    download_status,local_path) VALUES(?,?,?,?,?,'downloaded',?)""",
+                ("anthology-test", "score.mxl", "score.mxl",
+                 "https://archive.org/download/anthology-test/score.mxl", stamp, str(mxl)),
+            ).lastrowid
+        pdf_response = client.get(f"/files/view/{pdf_id}")
+        mxl_response = client.get(f"/files/view/{mxl_id}")
+
+    assert pdf_response.status_code == 200
+    assert pdf_response.headers["content-type"].startswith("application/pdf")
+    assert pdf_response.headers["content-disposition"].startswith("inline;")
+    assert mxl_response.status_code == 200
+    assert mxl_response.headers["content-disposition"].startswith("attachment;")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import os
 import re
 import sqlite3
@@ -10,7 +11,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 DOWNLOAD_DIR = Path(os.getenv("AI_IMPORTACION_DOWNLOAD_DIR", "downloads"))
@@ -319,6 +320,45 @@ def intake_page():
         body += f"<tr><td><a href='/files/{quote(row['identifier'], safe='')}'>{esc(row['title'] or row['identifier'])}</a><br><small>{esc(row['file_name'])}</small></td><td>{esc(row['archive_format'] or Path(row['file_name']).suffix or 'Desconocido')}</td><td>{esc(size)}</td><td>{esc(download_status_label(row['download_status']))}</td><td><code>{esc(row['sha256'] or '—')}</code></td></tr>"
     body += "</table>"
     return HTMLResponse(body)
+
+
+@router.get("/files/view/{file_id}")
+def view_downloaded_file(file_id: int):
+    """Preview safe local PDFs/images/text; serve proprietary/compressed formats as downloads."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT identifier,file_name,local_path,download_status FROM archive_files WHERE id=?",
+            (file_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    if row["download_status"] != "downloaded" or not row["local_path"]:
+        raise HTTPException(status_code=409, detail="El fichero todavía no está descargado")
+    path = Path(row["local_path"]).resolve()
+    allowed_root = (DOWNLOAD_DIR / row["identifier"]).resolve()
+    try:
+        path.relative_to(allowed_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="La ruta del fichero no está dentro del almacenamiento de descargas")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="El fichero local ya no existe")
+    suffix = Path(row["file_name"].lower()).suffix
+    inline_types = {
+        ".pdf": "application/pdf",
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".tif": "image/tiff", ".tiff": "image/tiff",
+        ".txt": "text/plain", ".ocr": "text/plain", ".xml": "application/xml",
+        ".musicxml": "application/xml", ".mei": "application/xml",
+        ".abc": "text/plain", ".ly": "text/plain", ".nwctxt": "text/plain",
+    }
+    media_type = inline_types.get(suffix, mimetypes.guess_type(row["file_name"])[0] or "application/octet-stream")
+    disposition = "inline" if suffix in inline_types else "attachment"
+    filename = safe_filename(row["file_name"]).replace('"', "")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"', "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/intake/run", response_class=HTMLResponse)
