@@ -460,6 +460,11 @@ def test_global_discovery_retries_failed_query_without_losing_cursor(tmp_path, m
         assert first.status_code == 200
         assert "temporary archive outage" in first.text
         with main.db() as conn:
+            run_state = conn.execute(
+                "SELECT status,error_text FROM search_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert run_state["status"] == "partial"
+            assert "temporary archive outage" in run_state["error_text"]
             state = conn.execute(
                 "SELECT cursor,status,scanned_count FROM global_discovery_queries WHERE query_key=?",
                 (failing_key,),
