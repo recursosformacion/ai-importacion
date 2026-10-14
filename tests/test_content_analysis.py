@@ -552,3 +552,71 @@ def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path
         assert "omitidos=1" in third.headers["location"]
         assert "fallidos=0" in third.headers["location"]
         assert len(calls) == 2
+
+def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
+    import pypdf
+
+    db_path = str(tmp_path / "pdf-extraction.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    seed_files = [
+        ("scores-text.pdf", "scores-text.pdf"),
+        ("scores-scan.pdf", "scores-scan.pdf"),
+        ("archive.ocr", "archive.ocr"),
+        ("broken.pdf", "broken.pdf"),
+    ]
+    for _, name in seed_files:
+        (tmp_path / name).write_bytes(b"fixture")
+
+    class Page:
+        def __init__(self, text):
+            self.text = text
+
+        def extract_text(self):
+            return self.text
+
+    class Reader:
+        def __init__(self, path):
+            if str(path).endswith("broken.pdf"):
+                raise ValueError("invalid PDF fixture")
+            if str(path).endswith("scores-text.pdf"):
+                self.pages = [Page("Sonata for Violin and Piano")]
+            elif str(path).endswith("scores-scan.pdf"):
+                self.pages = [Page("")]
+            else:
+                raise AssertionError("TXT/OCR files should not use PdfReader")
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            for name, local_name in seed_files:
+                conn.execute(
+                    """INSERT INTO archive_files
+                    (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path)
+                    VALUES(?,?,?,?,?,'downloaded',?)""",
+                    ("anthology-test", name, local_name, "https://archive.org/download/anthology-test/" + name,
+                     stamp, str(tmp_path / local_name)),
+                )
+        (tmp_path / "archive.ocr").write_text("Mass in G minor", encoding="utf-8")
+
+        response = client.post("/items/anthology-test/content-analysis/extract", follow_redirects=False)
+        assert response.status_code == 303
+        assert "pdf_con_texto=1" in response.headers["location"]
+        assert "pdf_ocr=1" in response.headers["location"]
+        assert "txt_leidos=1" in response.headers["location"]
+        assert "errores_extraccion=1" in response.headers["location"]
+        assert "sugerencias_nuevas=2" in response.headers["location"]
+
+        page = client.get(response.headers["location"])
+        assert "PDF con texto extraíble: 1" in page.text
+        assert "PDF que probablemente necesitan OCR: 1" in page.text
+        assert "no se han reconocido mediante OCR" in page.text
+
+    with main.db() as conn:
+        suggestions = conn.execute(
+            "SELECT suggestion_text FROM archive_content_suggestions ORDER BY suggestion_text"
+        ).fetchall()
+    assert [row["suggestion_text"] for row in suggestions] == ["Mass in G minor", "Sonata for Violin and Piano"]
+
