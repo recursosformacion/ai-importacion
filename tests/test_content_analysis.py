@@ -75,19 +75,19 @@ def test_guided_workflow_navigation_links_item_steps(tmp_path, monkeypatch):
 
         detail = client.get("/items/anthology-test")
         assert detail.status_code == 200
-        assert "Captación musical · paso 2 de 5" in detail.text
+        assert "Captación musical · paso 2 de 5" not in detail.text
         assert "href='/files/anthology-test'" in detail.text
         assert "Siguiente paso: consultar archivos" in detail.text
 
         files = client.get("/files/anthology-test")
         assert files.status_code == 200
-        assert "Captación musical · paso 3 de 5" in files.text
+        assert "Captación musical · paso 3 de 5" not in files.text
         assert "href='/items/anthology-test/content-analysis#analisis'" in files.text
         assert "href='/items/anthology-test/content-analysis?step=5#obras'" in files.text
 
         review = client.get("/items/anthology-test/content-analysis?step=5")
         assert review.status_code == 200
-        assert "Captación musical · paso 5 de 5" in review.text
+        assert "Captación musical · paso 5 de 5" not in review.text
         assert "id='obras'" in review.text
 
 
@@ -114,7 +114,7 @@ def test_search_results_show_next_workflow_step(tmp_path, monkeypatch):
         response = client.post("/search", data={"query": "motet", "rows": "10", "scope": "all"})
 
     assert response.status_code == 200
-    assert "Captación musical · paso 2 de 5" in response.text
+    assert "Captación musical · paso 2 de 5" not in response.text
     assert "Elige un resultado para abrir su ficha" in response.text
     assert "href='/items/motet-test'" in response.text
 
@@ -133,7 +133,7 @@ def test_search_error_keeps_guided_navigation_and_retry_action(tmp_path, monkeyp
         )
 
     assert response.status_code == 200
-    assert "Captación musical · paso 1 de 5" in response.text
+    assert "Captación musical · paso 1 de 5" not in response.text
     assert "No se pudo completar la búsqueda" in response.text
     assert "Volver al buscador y reintentar" in response.text
     assert "&lt;fallo remoto&gt;" in response.text
@@ -174,7 +174,7 @@ def test_inventory_error_keeps_recovery_link_and_escapes_detail(tmp_path, monkey
         response = client.post("/items/anthology-test/inspect-files")
 
     assert response.status_code == 502
-    assert "Captación musical · paso 3 de 5" in response.text
+    assert "Captación musical · paso 3 de 5" not in response.text
     assert "No se pudo actualizar el inventario" in response.text
     assert "Volver al inventario y reintentar" in response.text
     assert "&lt;red no disponible&gt;" in response.text
@@ -1073,3 +1073,37 @@ def test_reanalysis_hides_stale_ocr_suggestions_without_deleting_history(tmp_pat
         }
     assert statuses["aS SS"] == "filtered_noise"
     assert statuses["SPIRIT OF THE AIR FORCE"] == "pending"
+
+
+
+def test_homepage_is_a_single_capture_workbench(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capture-workbench.sqlite3"))
+    with TestClient(main.app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    assert "Continuar captación automática" in response.text
+    assert "Captación musical · paso" not in response.text
+    assert "Procesa el siguiente lote de búsquedas, inventarios, descargas y análisis" in response.text
+
+
+def test_capture_pipeline_route_runs_discovery_then_integrated_intake(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capture-pipeline.sqlite3"))
+    calls = []
+
+    async def fake_discover(rows=100):
+        calls.append(("discover", rows))
+        return HTMLResponse("discovery complete")
+
+    async def fake_intake(items=10, downloads=3):
+        calls.append(("intake", items, downloads))
+        return HTMLResponse("intake complete")
+
+    import app.file_catalog as file_catalog
+    monkeypatch.setattr(main, "discover", fake_discover)
+    monkeypatch.setattr(file_catalog, "run_integrated_intake", fake_intake)
+
+    with TestClient(main.app) as client:
+        response = client.post("/capture/run")
+    assert response.status_code == 200
+    assert calls == [("discover", 100), ("intake", 10, 3)]
+    assert "Lote de captación terminado" in response.text
