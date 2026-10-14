@@ -116,7 +116,9 @@ async def inspect_files(identifier: str):
     except HTTPException:
         raise
     except Exception as exc:
-        return HTMLResponse("<h1>Error al consultar Internet Archive</h1><p>" + esc(str(exc)) + "</p><p><a href='/files/" + esc(identifier) + "'>Volver</a></p>", status_code=502)
+        body = "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><p>Todo permanece en esta aplicación local; no se crean ni exportan obras OSAP.</p></nav>"
+        body += "<section><h1>No se pudo actualizar el inventario</h1><p>Internet Archive no ha respondido correctamente. No se ha confirmado un inventario nuevo; puedes volver a intentarlo.</p><p>Detalle técnico: " + esc(str(exc)) + "</p><p><a href='/files/" + esc(identifier) + "'>← Volver al inventario y reintentar</a></p></section>"
+        return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><title>Error de inventario</title><body>" + body + "</body></html>", status_code=502)
 
 
 @router.get("/files/{identifier}", response_class=HTMLResponse)
