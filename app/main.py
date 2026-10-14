@@ -38,13 +38,15 @@ def count_review_cases(conn) -> int:
                  NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
                  AND (
                    EXISTS (SELECT 1 FROM archive_file_analyses fa
-                           WHERE fa.identifier=a.identifier AND fa.status IN ('ok','error'))
+                           WHERE fa.identifier=a.identifier AND fa.status='ok')
                    OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                               WHERE pe.identifier=a.identifier
                                 AND pe.status IN ('text_available','ocr_completed','ocr_no_text',
                                                   'image_ocr_completed','text_checked'))
                  )
                )
+               OR EXISTS (SELECT 1 FROM archive_file_analyses fa
+                          WHERE fa.identifier=a.identifier AND fa.status='error')
                OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                           WHERE pe.identifier=a.identifier
                             AND pe.status IN ('error','ocr_error','ocr_unavailable',
