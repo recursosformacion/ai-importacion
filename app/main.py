@@ -856,6 +856,22 @@ def analyze_downloaded_musicxml(identifier: str):
     if not files:
         raise HTTPException(status_code=422, detail="No hay archivos MusicXML/MXL descargados para analizar.")
     for file_row in files:
+        # Do not repeat successful analysis when the downloaded content is unchanged.
+        # Failed analyses remain eligible for retry, and files without a digest are
+        # deliberately rechecked because their identity cannot be verified safely.
+        with db() as conn:
+            previous = conn.execute(
+                "SELECT status,sha256 FROM archive_file_analyses WHERE file_id=?",
+                (file_row["id"],),
+            ).fetchone()
+        if (
+            previous
+            and previous["status"] == "ok"
+            and file_row["sha256"]
+            and previous["sha256"] == file_row["sha256"]
+        ):
+            continue
+
         path = Path(file_row["local_path"])
         status = "ok"
         error_text = None
