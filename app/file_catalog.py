@@ -418,5 +418,19 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
         summary += "<h3>Errores de inventario · se pueden reintentar</h3><ul>" + "".join(_intake_error_link(identifier, identifier, detail) for identifier, detail in inventory_errors) + "</ul>"
     if download_errors:
         summary += "<h3>Errores de descarga · revisar o reintentar</h3><ul>" + "".join(_intake_error_link(identifier, file_name, detail) for identifier, file_name, detail in download_errors) + "</ul>"
-    summary += "<p>Los inventarios y descargas se guardan en SQLite y en la carpeta local de descargas. No se ha escrito en OSAP.</p><p><a href='/intake'>Ver captación integrada</a> · <a href='/'>Inicio</a></p>"
+    # Automatically analyze downloaded files after the inventory/download phase.
+    # Import at request time: the FastAPI app and its routes are fully initialized by then.
+    try:
+        from app.main import process_downloaded_batch
+        analysis_response = process_downloaded_batch()
+        analysis_html = analysis_response.body.decode("utf-8", errors="replace")
+        analysis_start = analysis_html.find("<h1>Resultado del análisis automático</h1>")
+        analysis_end = analysis_html.rfind("</body>")
+        if analysis_start >= 0 and analysis_end > analysis_start:
+            summary += "<section style='padding:1rem;margin:1rem 0;background:#fff;border:1px solid #ddd;border-radius:8px'>" + analysis_html[analysis_start:analysis_end] + "</section>"
+        else:
+            summary += "<p>La descarga terminó; el análisis automático no devolvió un resumen reconocible. Puedes abrir /intake/process para reintentarlo.</p>"
+    except Exception as exc:
+        summary += "<section><h2>Análisis automático pendiente</h2><p>Las descargas se han conservado. No se pudo completar el análisis en esta ejecución; puedes reintentarlo desde Captación integrada.</p><p>" + esc(str(exc)[:250]) + "</p></section>"
+    summary += "<p>Los inventarios, descargas y análisis se guardan localmente. No se ha escrito en OSAP.</p><p><a href='/intake'>Ver captación integrada</a> · <a href='/'>Inicio</a></p>"
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Resultado de captación</title><body style='font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem'>" + summary + "</body></html>")
