@@ -634,7 +634,12 @@ async def search(query: Annotated[str, Form()], rows: Annotated[int, Form()] = 2
     except Exception as exc:
         with db() as conn:
             conn.execute("UPDATE search_runs SET status='error',error_text=?,completed_at=? WHERE id=?", (str(exc)[:1000], now(), run_id))
-        return page("Error de búsqueda", f"<h1>No se pudo completar la búsqueda</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
+        body = workflow_nav(None, 1)
+        body += ("<section class='panel'><h1>No se pudo completar la búsqueda</h1>"
+                 "<p>Internet Archive no ha respondido correctamente. Los resultados de esta búsqueda no se han guardado como completados; puedes volver al buscador e intentarlo de nuevo.</p>"
+                 f"<p class='muted'>Detalle técnico: {esc(exc)}</p>"
+                 "<p><a href='/'>← Volver al buscador y reintentar</a></p></section>")
+        return page("Error de búsqueda", body)
     with db() as conn:
         items = conn.execute("""SELECT ai.* FROM archive_items ai
             JOIN search_run_items sri ON sri.identifier=ai.identifier
