@@ -560,15 +560,7 @@ def review_uncertain_material():
                        WHERE cs.identifier=a.identifier AND cs.status='pending') AS pending_suggestions,
                       (SELECT COUNT(*) FROM archive_files f
                        WHERE f.identifier=a.identifier AND f.relevant=1
-                         AND f.download_status='downloaded') AS downloaded_candidates,
-                      (SELECT COUNT(*) FROM archive_files f
-                       WHERE f.identifier=a.identifier AND f.relevant=1
                          AND f.download_status!='downloaded') AS not_downloaded_candidates,
-                      (SELECT COUNT(*) FROM archive_file_analyses fa
-                       WHERE fa.identifier=a.identifier AND fa.status='ok') AS successful_analyses,
-                      (SELECT COUNT(*) FROM archive_pdf_extractions pe
-                       WHERE pe.identifier=a.identifier
-                         AND pe.status IN ('text_available','ocr_completed','ocr_no_text')) AS pdf_checks
                FROM archive_items a
                JOIN global_discovery_seen s ON s.identifier=a.identifier
                WHERE s.score>0 AND EXISTS (
@@ -619,7 +611,7 @@ def review_uncertain_material():
             review_reason = "Hay información extraída que requiere confirmación."
         body += "<p><b>Por qué requiere revisión:</b> " + esc(review_reason) + "</p>"
         body += "<p class='muted'>Indicios musicales de origen: " + esc(item["reason"] or "Metadatos musicales") + ".</p>"
-        body += "<h3>Archivos descargados y analizados</h3><ul>"
+        body += "<h3>Archivos descargados para consultar</h3><ul>"
         for file_row in files:
             label = esc(file_row["file_name"]) + " — " + esc(file_row["archive_format"] or "formato no indicado")
             if file_row["size_bytes"] is not None:
