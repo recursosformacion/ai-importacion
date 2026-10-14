@@ -568,6 +568,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         ("score.mei", "score.mei"),
         ("score.mscx", "score.mscx"),
         ("score.mscz", "score.mscz"),
+        ("score.sib", "score.sib"),
         ("broken.pdf", "broken.pdf"),
     ]
     for _, name in seed_files:
@@ -640,6 +641,9 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "scores-scan.pdf" in page.text
         assert "Probablemente necesita OCR" in page.text
         assert "Archivos ABC/LilyPond/MEI/MuseScore leídos: 5" in page.text
+        assert "Otros formatos descargados, pendientes de análisis automático" in page.text
+        assert "score.sib" in page.text
+        assert "todavía no extrae sus metadatos" in page.text
 
     with main.db() as conn:
         suggestions = conn.execute(
