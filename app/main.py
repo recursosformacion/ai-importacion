@@ -913,7 +913,7 @@ def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int,
                 line_no = text.count(chr(10), 0, match.start()) + 1
                 found.append((line_no, title))
         if suffix == ".capx":
-            title_pattern = re.compile(r"<(?:[A-Za-z_][\\w.-]*:)?title\\b[^>]*>(.*?)</(?:[A-Za-z_][\\w.-]*:)?title\\s*>", re.IGNORECASE | re.DOTALL)
+            title_pattern = re.compile(r"<(?:[A-Za-z_][\w.-]*:)?title\b[^>]*>(.*?)</(?:[A-Za-z_][\w.-]*:)?title\s*>", re.IGNORECASE | re.DOTALL)
             for match in title_pattern.finditer(text):
                 title = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", match.group(1))).split())
                 if 4 <= len(title) <= 140:
@@ -1043,7 +1043,7 @@ def extract_content_suggestions(identifier: str):
             if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx"}:
                 text_content = path.read_text(encoding="utf-8-sig", errors="replace")
                 if text_content.strip():
-                    if suffix in {".abc", ".ly", ".mei", ".mscx"}:
+                    if suffix in {".abc", ".ly", ".mei", ".mscx", ".capx"}:
                         notation_files_read += 1
                     else:
                         text_files_read += 1
