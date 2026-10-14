@@ -953,11 +953,13 @@ def extract_content_suggestions(identifier: str):
                 from pypdf import PdfReader
                 reader = PdfReader(str(path))
                 pages = []
+                page_texts = []
                 for page_no, pdf_page in enumerate(reader.pages, 1):
                     page_text = pdf_page.extract_text() or ""
-                    pages.append(f"\\n[PAGE {page_no}]\\n" + page_text)
-                text_content = "\\n".join(pages)
-                if text_content.strip() and any((page.extract_text() or "").strip() for page in reader.pages):
+                    page_texts.append(page_text)
+                    pages.append(f"\n[PAGE {page_no}]\n" + page_text)
+                text_content = "\n".join(pages)
+                if any(page_text.strip() for page_text in page_texts):
                     pdf_with_text += 1
                 else:
                     pdf_needs_ocr += 1
