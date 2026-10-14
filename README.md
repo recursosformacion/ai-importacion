@@ -15,7 +15,7 @@ Aplicación independiente para localizar, registrar y revisar materiales musical
 - Registro de obras candidatas dentro de un elemento, con compositor, fichero, páginas/localizador y evidencia (índice, portada, OCR, etc.). Dos candidatas sugieren una recopilación, sin sustituir una decisión editorial explícita.
 - Extracción de títulos candidatos desde ficheros OCR `.txt`, texto extraíble de PDF y OCR local opcional en las primeras cinco páginas de PDF escaneados. Se filtran fragmentos breves de OCR y frases editoriales comunes para reducir ruido; aun así, los resultados son indicios y no se convierten automáticamente en obras. El OCR requiere Tesseract instalado en el sistema además de las dependencias Python.
 - Análisis conservador de paquetes Capella `.capx`: busca títulos explícitos dentro del XML, con límites de tamaño. Los formatos binarios sin analizador específico permanecen identificados como pendientes.
-- Análisis local de MusicXML/MXL descargados: extrae título, creadores, partes/instrumentos y compases; guarda el resultado y los errores en SQLite, sin alterar los archivos ni escribir en OSAP.
+- Análisis local de MusicXML/MXL descargados: extrae título, creadores, partes/instrumentos y compases. También analiza MIDI/KAR para registrar pistas, instrumentos, eventos de nota, duración, compás y tonalidad cuando están declarados. Los resultados y errores quedan en SQLite, sin alterar los archivos ni escribir en OSAP.
 - Esta fase es solo de catalogación: no crea ni exporta obras OSAP. El OCR se ejecuta localmente y no envía documentos a servicios externos.
 
 ## Requisitos y arranque

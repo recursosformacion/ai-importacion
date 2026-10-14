@@ -132,6 +132,7 @@ from app.file_catalog import (
 )
 from urllib.parse import quote
 from app.musicxml_analysis import analyze_musicxml
+from app.midi_analysis import analyze_midi
 app.include_router(file_catalog_router)
 
 
@@ -762,7 +763,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             ORDER BY file_name""", (identifier,)).fetchall()
     auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
     unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
-    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
+    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de archivos musicales</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados para extraer metadatos disponibles, estructura, instrumentos y duración. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos musicales descargados</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
         for result in analyses:
@@ -956,13 +957,14 @@ def analyze_downloaded_musicxml(identifier: str):
             raise HTTPException(status_code=404, detail="Elemento no encontrado")
         files = conn.execute("""SELECT id,file_name,local_path,sha256 FROM archive_files
             WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
-            AND lower(file_name) LIKE '%.musicxml' OR
-                identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
-            AND lower(file_name) LIKE '%.mxl' OR
-                identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
-            AND lower(file_name) LIKE '%.xml'""", (identifier, identifier, identifier)).fetchall()
+            AND (lower(file_name) LIKE '%.musicxml'
+                 OR lower(file_name) LIKE '%.mxl'
+                 OR lower(file_name) LIKE '%.xml'
+                 OR lower(file_name) LIKE '%.mid'
+                 OR lower(file_name) LIKE '%.midi'
+                 OR lower(file_name) LIKE '%.kar')""", (identifier,)).fetchall()
     if not files:
-        raise HTTPException(status_code=422, detail="No hay archivos MusicXML/MXL descargados para analizar.")
+        raise HTTPException(status_code=422, detail="No hay archivos MusicXML/MXL o MIDI descargados para analizar.")
     analyzed_count = 0
     skipped_count = 0
     failed_count = 0
@@ -990,7 +992,10 @@ def analyze_downloaded_musicxml(identifier: str):
         try:
             if not path.is_file():
                 raise FileNotFoundError("El archivo descargado no existe en la ruta local registrada.")
-            analysis = analyze_musicxml(path)
+            if path.suffix.lower() in {".mid", ".midi", ".kar"}:
+                analysis = analyze_midi(path)
+            else:
+                analysis = analyze_musicxml(path)
         except Exception as exc:
             analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
             status = "error"
@@ -1001,13 +1006,14 @@ def analyze_downloaded_musicxml(identifier: str):
         with db() as conn:
             conn.execute("""INSERT INTO archive_file_analyses
                 (file_id,identifier,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
-                VALUES(?,?, 'musicxml', ?,?,?,?,?)
+                VALUES(?,?, ?, ?,?,?,?,?)
                 ON CONFLICT(file_id) DO UPDATE SET identifier=excluded.identifier,
                 analysis_type=excluded.analysis_type,status=excluded.status,
                 analysis_json=excluded.analysis_json,error_text=excluded.error_text,
                 analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
-                (file_row["id"], identifier, status, json.dumps(analysis, ensure_ascii=False),
-                 error_text, now(), file_row["sha256"]))
+                (file_row["id"], identifier,
+                 "midi" if path.suffix.lower() in {".mid", ".midi", ".kar"} else "musicxml",
+                 status, json.dumps(analysis, ensure_ascii=False), error_text, now(), file_row["sha256"]))
     return RedirectResponse(
         url=(
             "/items/" + identifier + "/content-analysis"
@@ -1265,7 +1271,7 @@ def process_downloaded_batch():
                 "SELECT COUNT(*) FROM archive_content_suggestions WHERE identifier=?", (identifier,)
             ).fetchone()[0]
         extraction_suffixes = (".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx")
-        musicxml_suffixes = (".musicxml", ".mxl", ".xml")
+        musicxml_suffixes = (".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar")
         errors = []
         try:
             if any(name.endswith(extraction_suffixes) for name in file_names):
