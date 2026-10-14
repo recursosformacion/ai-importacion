@@ -857,15 +857,21 @@ def add_content_unit(
 
 
 def extract_text_candidates(text: str) -> list[tuple[int, str]]:
-    """Conservative title-like lines from OCR/text; suggestions always require human review."""
-    ignored = ("internet archive", "table of contents", "contents", "[page ", "copyright", "all rights reserved",
-               "public domain", "digitized by", "scanned by", "www.", "http://", "https://")
+    """Return plausible title-like lines while filtering common OCR debris and credits."""
+    ignored = (
+        "internet archive", "table of contents", "contents", "[page ", "copyright",
+        "all rights reserved", "all rights reserved", "public domain", "digitized by",
+        "scanned by", "www.", "http://", "https://", "words and music by",
+        "music and words by", "published by", "printed in", "walt disney production",
+        "for sale", "price ", "copyrighted", "rights of public performance",
+    )
     candidates = []
+    seen = set()
     for line_no, raw in enumerate(text.splitlines(), 1):
         line = " ".join(raw.replace("\x0c", " ").split()).strip(" .·—-")
         if not 4 <= len(line) <= 140:
             continue
-        low = line.lower()
+        low = line.casefold()
         if any(token in low for token in ignored):
             continue
         if re.fullmatch(r"[\W_\d]+", line) or len(re.findall(r"\d", line)) > len(line) * 0.35:
@@ -875,7 +881,21 @@ def extract_text_candidates(text: str) -> list[tuple[int, str]]:
         # Contents pages often end in dotted leaders and a page number.
         line = re.sub(r"\s*[.·_]{2,}\s*\d{1,4}\s*$", "", line).strip(" .·—-")
         line = re.sub(r"^\s*(?:no?\.?\s*)?\d{1,3}[.)]\s*", "", line).strip()
-        if 4 <= len(line) <= 140 and line not in {value for _, value in candidates}:
+        if not 4 <= len(line) <= 140:
+            continue
+        letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", line)
+        words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", line)
+        # Short OCR fragments such as "aS SS" or "aero e" are not useful
+        # title candidates. Keep plausible one-word titles (e.g. "MEXICO").
+        if len(letters) < 6 or not words:
+            continue
+        if sum(len(word) >= 5 for word in words) == 0 and len(letters) < 12:
+            continue
+        if len(letters) / max(1, len(re.sub(r"\s", "", line))) < 0.60:
+            continue
+        key = line.casefold()
+        if key not in seen:
+            seen.add(key)
             candidates.append((line_no, line))
     return candidates[:300]
 
@@ -1031,7 +1051,7 @@ def extract_content_suggestions(identifier: str):
     for frow in files:
         path = Path(frow["local_path"])
         suffix = path.suffix.lower()
-        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz"}:
+        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}:
             continue
         if not path.is_file():
             extraction_errors += 1
@@ -1162,7 +1182,7 @@ def extract_content_suggestions(identifier: str):
             continue
         candidate_rows = (
             extract_notation_title_candidates(text_content, ".mscx" if suffix == ".mscz" else suffix)
-            if suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz"}
+            if suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
             else extract_text_candidates(text_content)
         )
         with db() as conn:
