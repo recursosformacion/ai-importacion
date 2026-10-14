@@ -222,3 +222,74 @@ def test_file_inventory_localizes_download_states_and_avoids_oversized_retry(tmp
     # The oversized row has no retry form; only the pending MXL row has a download action.
     assert response.text.count("<button>Descargar</button>") == 1
     assert "download_status" not in response.text
+
+
+def test_downloads_with_same_sanitized_name_do_not_overwrite_each_other(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "filename-collision.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DOWNLOAD_DIR", tmp_path / "downloads")
+
+    class FakeResponse:
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self, chunk_size):
+            yield b"music score content"
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(file_catalog.httpx, "AsyncClient", FakeClient)
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            conn.execute(
+                "INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status) VALUES(?,?,?,?)",
+                ("anthology-test", stamp, 2, "ok"),
+            )
+            for name in ("score:final.pdf", "score_final.pdf"):
+                conn.execute(
+                    """INSERT INTO archive_files
+                    (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,relevant,inventory_seen_at)
+                    VALUES(?,?,?,?,?,?,?,?)""",
+                    ("anthology-test", name, file_catalog.safe_filename(name),
+                     "https://archive.org/download/anthology-test/" + name, 100, "PDF", 1, stamp),
+                )
+            ids = [row[0] for row in conn.execute(
+                "SELECT id FROM archive_files WHERE identifier=? ORDER BY file_name",
+                ("anthology-test",),
+            ).fetchall()]
+
+        for file_id in ids:
+            response = client.post(f"/files/download/{file_id}", follow_redirects=False)
+            assert response.status_code == 303
+
+        with main.db() as conn:
+            rows = conn.execute(
+                "SELECT file_name,local_path,download_status FROM archive_files WHERE identifier=? ORDER BY file_name",
+                ("anthology-test",),
+            ).fetchall()
+        assert all(row["download_status"] == "downloaded" for row in rows)
+        assert rows[0]["local_path"] != rows[1]["local_path"]
+        paths = [__import__("pathlib").Path(row["local_path"]) for row in rows]
+        assert all(path.read_bytes() == b"music score content" for path in paths)
