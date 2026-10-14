@@ -519,6 +519,8 @@ def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path
             follow_redirects=False,
         )
         assert first.status_code == 303
+        assert "analizados=1" in first.headers["location"]
+        assert "fallidos=1" in first.headers["location"]
         with main.db() as conn:
             result = conn.execute(
                 "SELECT status,error_text,sha256 FROM archive_file_analyses"
@@ -531,6 +533,8 @@ def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path
             follow_redirects=False,
         )
         assert second.status_code == 303
+        assert "analizados=1" in second.headers["location"]
+        assert "fallidos=0" in second.headers["location"]
         with main.db() as conn:
             result = conn.execute(
                 "SELECT status,error_text,sha256 FROM archive_file_analyses"
@@ -544,4 +548,7 @@ def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path
             follow_redirects=False,
         )
         assert third.status_code == 303
+        assert "analizados=0" in third.headers["location"]
+        assert "omitidos=1" in third.headers["location"]
+        assert "fallidos=0" in third.headers["location"]
         assert len(calls) == 2
