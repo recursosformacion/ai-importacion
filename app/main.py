@@ -917,7 +917,7 @@ CONTENT_SCOPES = {
 
 
 @app.get("/items/{identifier}/content-analysis", response_class=HTMLResponse)
-def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None, pdf_con_texto: int | None = None, pdf_ocr: int | None = None, pdf_ocr_realizados: int | None = None, pdf_ocr_sin_texto: int | None = None, errores_extraccion: int | None = None, sugerencias_nuevas: int | None = None, txt_leidos: int | None = None, notacion_leida: int | None = None):
+def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None, pdf_con_texto: int | None = None, pdf_ocr: int | None = None, pdf_ocr_realizados: int | None = None, pdf_ocr_sin_texto: int | None = None, errores_extraccion: int | None = None, sugerencias_nuevas: int | None = None, txt_leidos: int | None = None, notacion_leida: int | None = None, imagenes_ocr: int | None = None, imagenes_sin_texto: int | None = None, imagenes_leidas: int | None = None):
     with db() as conn:
         item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
         if not item:
@@ -980,11 +980,11 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
         body += "</table>"
     body += "</section>"
     body += "<section class='panel' id='ocr'><h2>Buscar títulos dentro de los archivos</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI, MuseScore (.mscx/.mscz) y metadatos XML explícitos de paquetes Capella (.capx), y extraer texto de PDF. Si un PDF no tiene texto seleccionable, intenta OCR local en hasta las primeras cinco páginas cuando PyMuPDF, Pillow, pytesseract y el ejecutable Tesseract estén disponibles. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Leer texto y buscar posibles títulos</button></form>";
-    if any(value is not None for value in (pdf_con_texto, pdf_ocr, pdf_ocr_realizados, pdf_ocr_sin_texto, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida)):
-        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que aún necesitan OCR: " + esc(pdf_ocr or 0) + " · OCR realizado: " + esc(pdf_ocr_realizados or 0) + " · OCR sin texto legible: " + esc(pdf_ocr_sin_texto or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>El OCR se limita a las primeras cinco páginas por archivo. Si Tesseract no está instalado o no está disponible, la ficha indica qué requisito falta; los archivos no se envían a servicios externos.</p></div>";
+    if any(value is not None for value in (pdf_con_texto, pdf_ocr, pdf_ocr_realizados, pdf_ocr_sin_texto, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida, imagenes_ocr, imagenes_sin_texto, imagenes_leidas)):
+        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que aún necesitan OCR: " + esc(pdf_ocr or 0) + " · OCR realizado en PDF: " + esc(pdf_ocr_realizados or 0) + " · PDF sin texto legible: " + esc(pdf_ocr_sin_texto or 0) + " · Imágenes leídas por OCR: " + esc(imagenes_leidas or 0) + " · Imágenes con texto detectado: " + esc(imagenes_ocr or 0) + " · Imágenes sin texto legible: " + esc(imagenes_sin_texto or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>El OCR se limita a las primeras cinco páginas de cada PDF y reduce las imágenes grandes antes de leerlas. El procesamiento es local: los archivos no se envían a servicios externos.</p></div>";
     if pdf_extractions:
-        body += "<h3>Estado de extracción por PDF</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
-        pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Necesita OCR", "ocr_completed": "OCR realizado", "ocr_no_text": "OCR realizado; sin texto legible", "ocr_unavailable": "OCR no disponible", "ocr_error": "Error durante el OCR", "error": "Error de lectura"}
+        body += "<h3>Estado de lectura de documentos e imágenes</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
+        pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Necesita OCR", "ocr_completed": "OCR realizado", "ocr_no_text": "OCR realizado; sin texto legible", "image_ocr_completed": "Imagen leída por OCR", "image_ocr_no_text": "Imagen sin texto legible", "ocr_unavailable": "OCR no disponible", "ocr_error": "Error durante el OCR", "error": "Error de lectura"}
         for pdf_result in pdf_extractions:
             body += f"<tr><td>{esc(pdf_result['file_name'])}</td><td>{esc(pdf_status_labels.get(pdf_result['status'], pdf_result['status']))}{('<br>' + esc(pdf_result['error_text'])) if pdf_result['error_text'] else ''}</td><td>{esc(pdf_result['page_count'])}</td><td>{esc(pdf_result['extracted_characters'])}</td><td>{esc(pdf_result['analyzed_at'])}</td></tr>"
         body += "</table>"
@@ -1322,22 +1322,26 @@ def extract_content_suggestions(identifier: str):
     pdf_needs_ocr = 0
     pdf_ocr_completed = 0
     pdf_ocr_no_text = 0
+    image_ocr_completed = 0
+    image_ocr_no_text = 0
+    images_read = 0
     extraction_errors = 0
     text_files_read = 0
     notation_files_read = 0
     inserted = 0
+    image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".jp2"}
     for frow in files:
         path = Path(frow["local_path"])
         suffix = path.suffix.lower()
-        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}:
+        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"} | image_suffixes:
             continue
         if not path.is_file():
             extraction_errors += 1
-            if suffix == ".pdf":
+            if suffix == ".pdf" or suffix in image_suffixes:
                 record_pdf_result(frow, "error", error_text="No existe el fichero en la ruta local registrada.")
             continue
         text_content = ""
-        if suffix == ".pdf" and frow["sha256"]:
+        if (suffix == ".pdf" or suffix in image_suffixes) and frow["sha256"]:
             with db() as conn:
                 previous_pdf = conn.execute(
                     "SELECT status,sha256 FROM archive_pdf_extractions WHERE file_id=?",
@@ -1346,7 +1350,7 @@ def extract_content_suggestions(identifier: str):
             if (
                 previous_pdf
                 and previous_pdf["sha256"] == frow["sha256"]
-                and previous_pdf["status"] in {"text_available", "ocr_completed", "ocr_no_text"}
+                and previous_pdf["status"] in {"text_available", "ocr_completed", "ocr_no_text", "image_ocr_completed", "image_ocr_no_text"}
             ):
                 continue
         try:
@@ -1383,6 +1387,40 @@ def extract_content_suggestions(identifier: str):
                     text_content = payload.decode("utf-8-sig", errors="replace")
                 if text_content.strip():
                     notation_files_read += 1
+            elif suffix in image_suffixes:
+                images_read += 1
+                try:
+                    import pytesseract
+                    from PIL import Image, ImageOps
+                except ImportError as dependency_error:
+                    extraction_errors += 1
+                    record_pdf_result(frow, "ocr_unavailable", error_text="OCR de imágenes no disponible: instala Pillow y pytesseract.")
+                    continue
+                try:
+                    try:
+                        pytesseract.get_tesseract_version()
+                    except Exception as availability_error:
+                        extraction_errors += 1
+                        record_pdf_result(frow, "ocr_unavailable", error_text="OCR de imágenes no disponible: instala Tesseract y comprueba que esté en PATH.")
+                        continue
+                    with Image.open(path) as source_image:
+                        image = ImageOps.exif_transpose(source_image)
+                        image.thumbnail((2500, 2500))
+                        if image.mode not in {"RGB", "L"}:
+                            image = image.convert("RGB")
+                        ocr_language = os.getenv("AI_IMPORTACION_OCR_LANG", "eng").strip() or "eng"
+                        text_content = pytesseract.image_to_string(image, lang=ocr_language) or ""
+                    extracted_characters = len(text_content)
+                    if text_content.strip():
+                        image_ocr_completed += 1
+                        record_pdf_result(frow, "image_ocr_completed", 1, extracted_characters)
+                    else:
+                        image_ocr_no_text += 1
+                        record_pdf_result(frow, "image_ocr_no_text", 1, 0, "El OCR no encontró texto legible en la imagen.")
+                except Exception as image_error:
+                    extraction_errors += 1
+                    record_pdf_result(frow, "ocr_error", error_text=str(image_error)[:1000])
+                    continue
             elif suffix == ".pdf":
                 from pypdf import PdfReader
                 reader = PdfReader(str(path))
@@ -1525,6 +1563,9 @@ def extract_content_suggestions(identifier: str):
             + "&pdf_ocr_sin_texto=" + str(pdf_ocr_no_text)
             + "&txt_leidos=" + str(text_files_read)
             + "&notacion_leida=" + str(notation_files_read)
+            + "&imagenes_ocr=" + str(image_ocr_completed)
+            + "&imagenes_sin_texto=" + str(image_ocr_no_text)
+            + "&imagenes_leidas=" + str(images_read)
             + "&errores_extraccion=" + str(extraction_errors)
             + "&sugerencias_nuevas=" + str(inserted)
         ),
@@ -1565,7 +1606,11 @@ def process_downloaded_batch():
                      OR lower(f.file_name) LIKE '%.pdf' OR lower(f.file_name) LIKE '%.abc'
                      OR lower(f.file_name) LIKE '%.ly' OR lower(f.file_name) LIKE '%.mei'
                      OR lower(f.file_name) LIKE '%.mscx' OR lower(f.file_name) LIKE '%.mscz'
-                     OR lower(f.file_name) LIKE '%.capx' OR lower(f.file_name) LIKE '%.musicxml'
+                     OR lower(f.file_name) LIKE '%.capx' OR lower(f.file_name) LIKE '%.png'
+                     OR lower(f.file_name) LIKE '%.jpg' OR lower(f.file_name) LIKE '%.jpeg'
+                     OR lower(f.file_name) LIKE '%.webp' OR lower(f.file_name) LIKE '%.tif'
+                     OR lower(f.file_name) LIKE '%.tiff' OR lower(f.file_name) LIKE '%.bmp'
+                     OR lower(f.file_name) LIKE '%.jp2' OR lower(f.file_name) LIKE '%.musicxml'
                      OR lower(f.file_name) LIKE '%.mxl' OR lower(f.file_name) LIKE '%.xml'
                    )
                )
@@ -1590,7 +1635,7 @@ def process_downloaded_batch():
             before_suggestions = conn.execute(
                 "SELECT COUNT(*) FROM archive_content_suggestions WHERE identifier=?", (identifier,)
             ).fetchone()[0]
-        extraction_suffixes = (".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx")
+        extraction_suffixes = (".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".jp2")
         musicxml_suffixes = (".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar")
         errors = []
         try:
