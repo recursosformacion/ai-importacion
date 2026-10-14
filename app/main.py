@@ -957,8 +957,8 @@ def extract_content_suggestions(identifier: str):
                 for page_no, pdf_page in enumerate(reader.pages, 1):
                     page_text = pdf_page.extract_text() or ""
                     page_texts.append(page_text)
-                    pages.append(f"\n[PAGE {page_no}]\n" + page_text)
-                text_content = "\n".join(pages)
+                    pages.append(chr(10) + f"[PAGE {page_no}]" + chr(10) + page_text)
+                text_content = chr(10).join(pages)
                 if any(page_text.strip() for page_text in page_texts):
                     pdf_with_text += 1
                 else:
