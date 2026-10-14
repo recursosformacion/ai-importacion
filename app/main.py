@@ -1349,7 +1349,8 @@ def extract_content_suggestions(identifier: str):
     for frow in files:
         path = Path(frow["local_path"])
         suffix = path.suffix.lower()
-        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"} | image_suffixes:
+        text_suffixes = {".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}
+        if suffix not in ({".pdf"} | text_suffixes | image_suffixes):
             continue
         if not path.is_file():
             extraction_errors += 1
@@ -1357,7 +1358,7 @@ def extract_content_suggestions(identifier: str):
                 record_pdf_result(frow, "error", error_text="No existe el fichero en la ruta local registrada.")
             continue
         text_content = ""
-        if (suffix == ".pdf" or suffix in image_suffixes) and frow["sha256"]:
+        if (suffix == ".pdf" or suffix in image_suffixes or suffix in text_suffixes) and frow["sha256"]:
             with db() as conn:
                 previous_pdf = conn.execute(
                     "SELECT status,sha256 FROM archive_pdf_extractions WHERE file_id=?",
@@ -1366,7 +1367,7 @@ def extract_content_suggestions(identifier: str):
             if (
                 previous_pdf
                 and previous_pdf["sha256"] == frow["sha256"]
-                and previous_pdf["status"] in {"text_available", "ocr_completed", "ocr_no_text", "image_ocr_completed", "image_ocr_no_text"}
+                and previous_pdf["status"] in {"text_available", "ocr_completed", "ocr_no_text", "image_ocr_completed", "image_ocr_no_text", "text_checked", "text_no_content"}
             ):
                 continue
         try:
@@ -1521,7 +1522,19 @@ def extract_content_suggestions(identifier: str):
             extraction_errors += 1
             if suffix == ".pdf":
                 record_pdf_result(frow, "error", error_text=str(exc)[:1000])
+            elif suffix in image_suffixes:
+                record_pdf_result(frow, "ocr_error", error_text=str(exc)[:1000])
+            elif suffix in text_suffixes:
+                record_pdf_result(frow, "text_error", error_text=str(exc)[:1000])
             continue
+        if suffix in text_suffixes:
+            record_pdf_result(
+                frow,
+                "text_checked" if text_content.strip() else "text_no_content",
+                0,
+                len(text_content),
+                None if text_content.strip() else "La lectura terminó sin texto extraíble.",
+            )
         if not text_content.strip():
             continue
         candidate_rows = (
