@@ -1078,16 +1078,24 @@ def extract_content_suggestions(identifier: str):
                     record_pdf_result(frow, "text_available", len(reader.pages), extracted_characters)
                 else:
                     # Raster PDFs need OCR; process only a small, bounded prefix locally.
+                    class OCRUnavailableError(RuntimeError):
+                        pass
+
                     try:
                         import io
-                        import fitz
-                        import pytesseract
-                        from PIL import Image
+                        try:
+                            import fitz
+                            import pytesseract
+                            from PIL import Image
+                        except ImportError as dependency_error:
+                            raise OCRUnavailableError(
+                                "OCR local no disponible: instala las dependencias Python del proyecto."
+                            ) from dependency_error
 
                         try:
                             pytesseract.get_tesseract_version()
                         except Exception as availability_error:
-                            raise RuntimeError(
+                            raise OCRUnavailableError(
                                 "OCR local no disponible: instala Tesseract y comprueba que esté en PATH."
                             ) from availability_error
 
@@ -1123,7 +1131,7 @@ def extract_content_suggestions(identifier: str):
                                 frow, "ocr_no_text", len(reader.pages), extracted_characters,
                                 "El OCR terminó, pero no encontró texto legible en las páginas procesadas.",
                             )
-                    except RuntimeError as ocr_unavailable:
+                    except OCRUnavailableError as ocr_unavailable:
                         pdf_needs_ocr += 1
                         record_pdf_result(
                             frow, "ocr_unavailable", len(reader.pages), 0, str(ocr_unavailable)
