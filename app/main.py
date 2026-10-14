@@ -350,7 +350,8 @@ def home(request: Request):
                   conn.execute("SELECT COUNT(*) FROM archive_items WHERE review_status='pending'").fetchone()[0]]
         items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 20").fetchall()
         runs = conn.execute("SELECT * FROM search_runs ORDER BY id DESC LIMIT 8").fetchall()
-    body = "<h1>Captación de partituras</h1><p>La exploración global localiza candidatos musicales sin exigir un compositor ni un título. Los metadatos se filtran automáticamente; la revisión del contenido y de los derechos sigue siendo necesaria.</p>"
+    body = workflow_nav(None, 1)
+    body += "<h1>Captación de partituras</h1><p>Empieza por localizar candidatos en Internet Archive. Después elige un elemento, consulta sus archivos, analiza el contenido y revisa las obras sugeridas.</p>"
     body += "<div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value}</h2></div>" for label, value in zip(["Elementos catalogados","Búsquedas realizadas","Pendientes de revisión"], counts)) + "</div>"
     ensure_global_discovery_queries()
     with db() as conn:
@@ -640,7 +641,8 @@ def items_page(q: str = ""):
             items = conn.execute("SELECT * FROM archive_items WHERE title LIKE ? OR creator_json LIKE ? OR identifier LIKE ? ORDER BY last_seen_at DESC LIMIT 500", (like, like, like)).fetchall()
         else:
             items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 500").fetchall()
-    body = "<h1>Catálogo local</h1><form method='get'><input type='text' name='q' value='" + esc(q) + "' placeholder='Título, identificador o creador'> <button>Filtrar</button></form><section class='panel'>" + item_table(items) + "</section>"
+    body = workflow_nav(None, 2)
+    body += "<h1>Catálogo local · elige un elemento</h1><p>Abre la ficha del elemento que quieras investigar. El catálogo conserva los resultados localmente y no crea obras en OSAP.</p><form method='get'><input type='text' name='q' value='" + esc(q) + "' placeholder='Título, identificador o creador'> <button>Filtrar</button></form><section class='panel'>" + item_table(items) + "</section>"
     return page("Catálogo local", body)
 
 
