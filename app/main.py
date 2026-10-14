@@ -1111,7 +1111,8 @@ def extract_content_suggestions(identifier: str):
                                     matrix=fitz.Matrix(scale, scale), alpha=False
                                 )
                                 image = Image.open(io.BytesIO(pixmap.tobytes("png")))
-                                recognized = pytesseract.image_to_string(image, lang="eng")
+                                ocr_language = os.getenv("AI_IMPORTACION_OCR_LANG", "eng").strip() or "eng"
+                                recognized = pytesseract.image_to_string(image, lang=ocr_language)
                                 ocr_pages.append(recognized or "")
                         text_content = chr(10).join(
                             chr(10) + f"[PAGE {page_index + 1} OCR]" + chr(10) + page_text
