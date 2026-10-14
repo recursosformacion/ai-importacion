@@ -990,3 +990,41 @@ def test_integrated_intake_runs_automatic_analysis_after_successful_download(tmp
         assert "Resultado del análisis automático" in response.text
         assert "Inventarios nuevos correctos" in response.text
         assert analyzed == ["anthology-test"]
+
+
+
+def test_explicit_notation_title_is_registered_as_candidate_automatically(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "auto-title.sqlite3"))
+    score_path = tmp_path / "score.abc"
+    score_path.write_text("X:1\nT:Chorale in F\nC:Composer Name\nK:F\n", encoding="utf-8")
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path)
+                VALUES(?,?,?,?,?,'downloaded',?)""",
+                ("anthology-test", "score.abc", "score.abc",
+                 "https://archive.org/download/anthology-test/score.abc",
+                 main.now(), str(score_path)),
+            )
+        response = client.post(
+            "/items/anthology-test/content-analysis/extract", follow_redirects=False
+        )
+        assert response.status_code == 303
+
+    with main.db() as conn:
+        unit = conn.execute(
+            "SELECT title,source_file,evidence,status FROM archive_item_contents WHERE identifier=?",
+            ("anthology-test",),
+        ).fetchone()
+        suggestion = conn.execute(
+            "SELECT status FROM archive_content_suggestions WHERE identifier=?",
+            ("anthology-test",),
+        ).fetchone()
+    assert unit["title"] == "Chorale in F"
+    assert unit["source_file"] == "score.abc"
+    assert unit["status"] == "candidate"
+    assert "metadatos del formato .abc" in unit["evidence"]
+    assert suggestion["status"] == "auto_accepted"
