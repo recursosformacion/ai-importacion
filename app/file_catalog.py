@@ -128,7 +128,9 @@ def file_catalog(identifier: str):
         files = conn.execute("SELECT * FROM archive_files WHERE identifier=? ORDER BY relevant DESC, size_bytes, file_name", (identifier,)).fetchall()
     if not item:
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
-    body = "<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Ficheros de origen</title><style>body{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem;color:#20242a}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.6rem;border-bottom:1px solid #ddd;vertical-align:top}button{padding:.5rem .7rem;cursor:pointer}small{color:#596575}code{overflow-wrap:anywhere}</style>"
+    body = "<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Ficheros de origen</title><style>body{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem;color:#20242a;background:#f4f6f8}table{width:100%;border-collapse:collapse;background:#fff}td,th{text-align:left;padding:.6rem;border-bottom:1px solid #ddd;vertical-align:top}button{padding:.5rem .7rem;cursor:pointer;background:#174f89;color:white;border:0;border-radius:6px;font:inherit}small{color:#596575}code{overflow-wrap:anywhere}a{color:#175ca8}.workflow{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:1rem;margin:1rem 0}.workflow-steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.8rem 0}.workflow-steps a{display:block;padding:.65rem .85rem;border:1px solid #cbd5e1;border-radius:8px;text-decoration:none;background:#f8fafc;color:#174f89}.workflow-steps a span{display:inline-grid;place-items:center;border-radius:50%;background:#e5ebf2;min-width:1.5rem;height:1.5rem;margin-right:.25rem}.workflow-steps a.active{background:#174f89;color:#fff;border-color:#174f89;font-weight:700}.workflow-steps a.active span{background:#fff;color:#174f89}.workflow-help{margin:.4rem 0;color:#5d6977}.section-nav{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding-top:.7rem;border-top:1px solid #e1e6eb}</style>"
+    ident = quote(identifier, safe="")
+    body += "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><div class='workflow-steps'><a href='/'> <span>1</span> Buscar</a><a href='/items/" + esc(ident) + "'><span>2</span> Elegir elemento</a><a class='active' href='/files/" + esc(ident) + "'><span>3</span> Archivos</a><a href='/items/" + esc(ident) + "/content-analysis#analisis'><span>4</span> Analizar</a><a href='/items/" + esc(ident) + "/content-analysis#obras'><span>5</span> Revisar obras</a></div><p class='workflow-help'>Sigue los pasos de izquierda a derecha. Puedes volver a cualquiera sin perder lo guardado. Todo permanece en esta aplicación local; no se exporta a OSAP.</p></nav>"
     body += "<p><a href='/items/" + esc(identifier) + "'>← Volver a la ficha</a></p><h1>Ficheros: " + esc(item["title"] or identifier) + "</h1>"
     body += "<p>Inventario de Internet Archive. Los ficheros descargados quedan en almacenamiento local; esta función no escribe en OSAP ni Storage.</p>"
     body += "<form method='post' action='/items/" + esc(identifier) + "/inspect-files'><button>Consultar / actualizar inventario</button></form>"
@@ -147,6 +149,7 @@ def file_catalog(identifier: str):
                 action = "<span>Guardado localmente</span>"
             body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(f['download_status'])}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
         body += "</table>"
+    body += "<div class='section-nav'><a href='/items/" + esc(identifier) + "'>← Paso anterior: elemento</a><a href='/items/" + esc(identifier) + "/content-analysis'>Siguiente: analizar contenido →</a></div>"
     body += "</html>"
     return HTMLResponse(body)
 
@@ -252,7 +255,7 @@ def intake_page():
             FROM archive_files f JOIN archive_items a ON a.identifier=f.identifier
             WHERE f.download_status IN ('downloaded','error','too_large')
             ORDER BY f.id DESC LIMIT 30""").fetchall()
-    body = "<p><a href='/'>← Inicio</a></p><h1>Captación integrada: inventariar y descargar</h1>"
+    body = "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 1 de 5</b><div class='workflow-steps'><a class='active' href='/'><span>1</span> Buscar</a><a href='/items'><span>2</span> Elegir elemento</a><a href='/items'><span>3</span> Archivos</a><a href='/items'><span>4</span> Analizar</a><a href='/items'><span>5</span> Revisar obras</a></div><p class='workflow-help'>Primero localiza candidatos. Después podrás seleccionar un elemento y continuar con sus archivos.</p></nav><p><a href='/'>← Inicio</a></p><h1>Captación integrada: inventariar y descargar</h1>"
     body += "<p>Este proceso combina ambas tareas: inventaría candidatos que aún no tienen inventario y descarga unos pocos archivos priorizados. No descarga en masa y no escribe en OSAP.</p>"
     body += "<div style='display:flex;gap:1rem;flex-wrap:wrap'>" + "".join(
         f"<div style='background:#f1f4f7;padding:1rem;border-radius:8px'><small>{label}</small><h2>{value or 0}</h2></div>"
