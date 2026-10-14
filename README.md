@@ -21,7 +21,7 @@ Aplicación independiente para localizar, registrar y revisar materiales musical
 
 Python 3.11 o posterior.
 
-Configuración opcional: `AI_IMPORTACION_DOWNLOAD_DIR` cambia el directorio de descarga; `AI_IMPORTACION_MAX_DOWNLOAD_BYTES` cambia el límite por fichero (por defecto 100 MiB).
+Configuración opcional: `AI_IMPORTACION_DOWNLOAD_DIR` cambia el directorio de descarga; `AI_IMPORTACION_MAX_DOWNLOAD_BYTES` cambia el límite por fichero (por defecto 100 MiB); `AI_IMPORTACION_OCR_LANG` define los idiomas Tesseract (por defecto `eng`; usa, por ejemplo, `eng+spa` solo si instalaste ambos paquetes de idioma).
 
 ```bash
 python -m venv .venv
@@ -33,6 +33,10 @@ uvicorn app.main:app --reload
 ```
 
 Abrir http://127.0.0.1:8000. La base de datos se crea en `data/ai-importacion.sqlite3`. Para cambiar la ruta, definir `AI_IMPORTACION_DB` antes de arrancar.
+
+### OCR de PDF escaneados en Windows
+
+El OCR es opcional y se ejecuta en el equipo local. `pip install -r requirements.txt` instala las bibliotecas Python, pero **no instala el ejecutable Tesseract**. Instala Tesseract OCR para Windows, añade la carpeta que contiene `tesseract.exe` al `PATH` y abre una nueva terminal. Comprueba la instalación con `tesseract --version`. Para verificar los idiomas disponibles, ejecuta `tesseract --list-langs`; configura `AI_IMPORTACION_OCR_LANG` solo con idiomas instalados. Si Tesseract no está disponible, la aplicación conserva el estado del PDF y lo indica en la ficha, sin enviar el documento a un servicio externo. El OCR procesa como máximo las primeras cinco páginas por PDF.
 
 ## Pruebas
 
