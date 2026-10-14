@@ -858,14 +858,20 @@ def add_content_unit(
 
 
 def extract_text_candidates(text: str) -> list[tuple[int, str]]:
-    """Return plausible title-like lines while filtering common OCR debris and credits."""
+    """Return likely title lines, excluding OCR fragments, lyrics-like lines and credits."""
     ignored = (
         "internet archive", "table of contents", "contents", "[page ", "copyright",
-        "all rights reserved", "all rights reserved", "public domain", "digitized by",
-        "scanned by", "www.", "http://", "https://", "words and music by",
-        "music and words by", "published by", "printed in", "walt disney production",
-        "for sale", "price ", "copyrighted", "rights of public performance",
+        "all rights reserved", "public domain", "digitized by", "scanned by", "www.",
+        "http://", "https://", "words and music by", "music and words by",
+        "lyrics by", "music by", "arranged by", "written by", "published by",
+        "printed in", "walt disney production", "hit selections from", "for sale",
+        "price ", "copyrighted", "rights of public performance",
     )
+    title_connectors = {
+        "of", "the", "and", "in", "for", "from", "to", "a", "an", "de", "del",
+        "la", "las", "y", "en", "el", "los", "una", "un", "minor", "major",
+        "flat", "sharp", "op", "no",
+    }
     candidates = []
     seen = set()
     for line_no, raw in enumerate(text.splitlines(), 1):
@@ -874,6 +880,8 @@ def extract_text_candidates(text: str) -> list[tuple[int, str]]:
             continue
         low = line.casefold()
         if any(token in low for token in ignored):
+            continue
+        if re.match(r"^(?:col|capt|lt|maj|gen|mr|mrs|ms|dr)\.", low):
             continue
         if re.fullmatch(r"[\W_\d]+", line) or len(re.findall(r"\d", line)) > len(line) * 0.35:
             continue
@@ -886,20 +894,26 @@ def extract_text_candidates(text: str) -> list[tuple[int, str]]:
             continue
         letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", line)
         words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", line)
-        # Short OCR fragments such as "aS SS" or "aero e" are not useful
-        # title candidates. Keep plausible one-word titles (e.g. "MEXICO").
         if len(letters) < 6 or not words:
             continue
         if sum(len(word) >= 5 for word in words) == 0 and len(letters) < 12:
             continue
         if len(letters) / max(1, len(re.sub(r"\s", "", line))) < 0.60:
             continue
+        uppercase_ratio = sum(char.isupper() for char in letters) / len(letters)
+        title_case_like = (
+            len(words) <= 8
+            and all(word[0].isupper() or word.casefold() in title_connectors for word in words)
+        )
+        # Music titles are often uppercase or title case; sentence-like lyric
+        # lines and OCR gibberish are much less likely to be headings.
+        if uppercase_ratio < 0.72 and not title_case_like:
+            continue
         key = line.casefold()
         if key not in seen:
             seen.add(key)
             candidates.append((line_no, line))
     return candidates[:300]
-
 
 def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int, str]]:
     """Extract explicit title metadata from text-based music notation formats."""
