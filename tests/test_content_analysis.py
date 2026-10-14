@@ -702,8 +702,16 @@ def test_scanned_pdf_ocr_extracts_text_and_creates_suggestion(tmp_path, monkeypa
             Image.new("RGB", (16, 16), "white").save(buffer, format="PNG")
             return buffer.getvalue()
 
+    class Rect:
+        width = 612
+        height = 792
+
     class RasterPage:
+        rect = Rect()
+
         def get_pixmap(self, matrix, alpha):
+            assert matrix.a == 2
+            assert alpha is False
             return Pixmap()
 
     class Document:
