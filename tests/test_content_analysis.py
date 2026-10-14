@@ -77,13 +77,13 @@ def test_guided_workflow_navigation_links_item_steps(tmp_path, monkeypatch):
         assert detail.status_code == 200
         assert "Captación musical · paso 2 de 5" not in detail.text
         assert "href='/files/anthology-test'" in detail.text
-        assert "Siguiente paso: consultar archivos" in detail.text
+        assert "Consultar archivos →" in detail.text
 
         files = client.get("/files/anthology-test")
         assert files.status_code == 200
         assert "Captación musical · paso 3 de 5" not in files.text
-        assert "href='/items/anthology-test/content-analysis#analisis'" in files.text
-        assert "href='/items/anthology-test/content-analysis?step=5#obras'" in files.text
+        assert "href='/items/anthology-test/content-analysis'" in files.text
+        assert "Siguiente: revisar obras" not in files.text
 
         review = client.get("/items/anthology-test/content-analysis?step=5")
         assert review.status_code == 200
