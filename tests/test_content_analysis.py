@@ -293,3 +293,15 @@ def test_downloads_with_same_sanitized_name_do_not_overwrite_each_other(tmp_path
         assert rows[0]["local_path"] != rows[1]["local_path"]
         paths = [__import__("pathlib").Path(row["local_path"]) for row in rows]
         assert all(path.read_bytes() == b"music score content" for path in paths)
+
+
+
+def test_integrated_intake_links_resume_inventory_and_analysis_safely():
+    links = file_catalog._intake_item_links([
+        ("score/edition", "<Score & edition>")
+    ])
+
+    assert "href='/files/score%2Fedition'" in links
+    assert "href='/items/score%2Fedition/content-analysis'" in links
+    assert "&lt;Score &amp; edition&gt;" in links
+    assert "<Score & edition>" not in links
