@@ -355,3 +355,17 @@ def test_integrated_intake_caps_failed_download_attempts(tmp_path, monkeypatch):
             ).fetchall()]
         assert statuses.count("error") == 1
         assert statuses.count("not_downloaded") == 1
+
+
+
+def test_integrated_intake_error_links_escape_details_and_return_to_item():
+    rendered = file_catalog._intake_error_link(
+        "score/edition",
+        "<score>.pdf",
+        "HTTP error: <unavailable & retry>",
+    )
+
+    assert "href='/files/score%2Fedition'" in rendered
+    assert "&lt;score&gt;.pdf" in rendered
+    assert "HTTP error: &lt;unavailable &amp; retry&gt;" in rendered
+    assert "<unavailable & retry>" not in rendered
