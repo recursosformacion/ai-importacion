@@ -311,9 +311,9 @@ def intake_page():
     body += "<section style='padding:1rem;margin:1rem 0;background:#fff;border:1px solid #ddd;border-radius:8px'><form method='post' action='/intake/run'>"
     body += "<label>Candidatos nuevos a inventariar <select name='items'><option>5</option><option selected>10</option><option>20</option></select></label> "
     body += "<label>Máximo de descargas en esta ejecución <select name='downloads'><option>1</option><option selected>3</option><option>5</option><option>10</option></select></label> "
-    body += "<button style='padding:.7rem 1rem;cursor:pointer'>Inventariar y descargar</button></form>"
+    body += "<button style='padding:.7rem 1rem;cursor:pointer'>Continuar captación automática</button></form>"
     body += "<p><small>Prioridad: formatos editables de notación, PDF y otros formatos de partitura. Se excluyen auxiliares obvios y archivos por encima del límite de tamaño configurado. Los formatos desconocidos permanecen registrados, pero no se descargan automáticamente hasta clasificarlos.</small></p></section>"
-    body += "<section style='padding:1rem;margin:1rem 0;background:#fff;border:1px solid #ddd;border-radius:8px'><h2>Analizar automáticamente las descargas</h2><p>Procesa hasta 10 elementos ya descargados, extrae texto de PDF/OCR y títulos de formatos compatibles, y analiza MusicXML/MXL. Solo te mostraremos un resumen y los elementos que conviene consultar.</p><form method='post' action='/intake/process'><button style='padding:.7rem 1rem;cursor:pointer'>Analizar las descargas</button></form></section>"
+    body += "<p class='workflow-help'>El análisis se ejecuta automáticamente después de cada lote de descargas. Solo tienes que continuar la captación; los formatos que todavía no podemos interpretar aparecerán con el motivo concreto en la revisión.</p>"
     body += "<h2>Actividad reciente</h2><table><tr><th>Elemento / archivo</th><th>Formato</th><th>Tamaño</th><th>Estado</th><th>SHA-256 local</th></tr>"
     for row in recent:
         size = f"{row['size_bytes']:,} bytes" if row["size_bytes"] is not None else "—"

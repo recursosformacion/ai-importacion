@@ -560,7 +560,30 @@ def review_uncertain_material():
                        WHERE cs.identifier=a.identifier AND cs.status='pending') AS pending_suggestions,
                       (SELECT COUNT(*) FROM archive_files f
                        WHERE f.identifier=a.identifier AND f.relevant=1
-                         AND f.download_status!='downloaded') AS not_downloaded_candidates
+                         AND f.download_status!='downloaded') AS not_downloaded_candidates,
+                      (SELECT COUNT(*) FROM archive_files f
+                       WHERE f.identifier=a.identifier AND f.relevant=1
+                         AND f.download_status='downloaded'
+                         AND lower(f.file_name) NOT LIKE '%.pdf'
+                         AND lower(f.file_name) NOT LIKE '%.txt'
+                         AND lower(f.file_name) NOT LIKE '%.ocr'
+                         AND lower(f.file_name) NOT LIKE '%.abc'
+                         AND lower(f.file_name) NOT LIKE '%.ly'
+                         AND lower(f.file_name) NOT LIKE '%.mei'
+                         AND lower(f.file_name) NOT LIKE '%.mscx'
+                         AND lower(f.file_name) NOT LIKE '%.mscz'
+                         AND lower(f.file_name) NOT LIKE '%.capx'
+                         AND lower(f.file_name) NOT LIKE '%.musicxml'
+                         AND lower(f.file_name) NOT LIKE '%.mxl'
+                         AND lower(f.file_name) NOT LIKE '%.xml'
+                         AND lower(f.file_name) NOT LIKE '%.mid'
+                         AND lower(f.file_name) NOT LIKE '%.midi'
+                         AND lower(f.file_name) NOT LIKE '%.kar') AS unsupported_files,
+                      (SELECT COUNT(*) FROM archive_file_analyses fa
+                       WHERE fa.identifier=a.identifier AND fa.status='error') AS analysis_failures,
+                      (SELECT COUNT(*) FROM archive_pdf_extractions pe
+                       WHERE pe.identifier=a.identifier
+                         AND pe.status IN ('error','ocr_error','ocr_unavailable')) AS extraction_failures
                FROM archive_items a
                JOIN global_discovery_seen s ON s.identifier=a.identifier
                WHERE s.score>0 AND EXISTS (
@@ -579,11 +602,34 @@ def review_uncertain_material():
                                         AND pe.status IN ('text_available','ocr_completed','ocr_no_text'))
                        )
                    )
+                   OR EXISTS (SELECT 1 FROM archive_file_analyses fa
+                              WHERE fa.identifier=a.identifier AND fa.status='error')
+                   OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
+                              WHERE pe.identifier=a.identifier
+                                AND pe.status IN ('error','ocr_error','ocr_unavailable'))
+                   OR EXISTS (SELECT 1 FROM archive_files f
+                              WHERE f.identifier=a.identifier AND f.relevant=1
+                                AND f.download_status='downloaded'
+                                AND lower(f.file_name) NOT LIKE '%.pdf'
+                                AND lower(f.file_name) NOT LIKE '%.txt'
+                                AND lower(f.file_name) NOT LIKE '%.ocr'
+                                AND lower(f.file_name) NOT LIKE '%.abc'
+                                AND lower(f.file_name) NOT LIKE '%.ly'
+                                AND lower(f.file_name) NOT LIKE '%.mei'
+                                AND lower(f.file_name) NOT LIKE '%.mscx'
+                                AND lower(f.file_name) NOT LIKE '%.mscz'
+                                AND lower(f.file_name) NOT LIKE '%.capx'
+                                AND lower(f.file_name) NOT LIKE '%.musicxml'
+                                AND lower(f.file_name) NOT LIKE '%.mxl'
+                                AND lower(f.file_name) NOT LIKE '%.xml'
+                                AND lower(f.file_name) NOT LIKE '%.mid'
+                                AND lower(f.file_name) NOT LIKE '%.midi'
+                                AND lower(f.file_name) NOT LIKE '%.kar')
                )
                ORDER BY pending_suggestions DESC,s.score DESC,a.last_seen_at DESC LIMIT 50"""
         ).fetchall()
     body = "<h1>Casos que necesitan una mirada</h1>"
-    body += "<p>Aquí solo aparecen archivos ya descargados y analizados que todavía contienen una duda concreta. Que un archivo esté disponible para descargar no es motivo de revisión.</p>"
+    body += "<p>Aquí solo aparecen materiales descargados que necesitan una decisión concreta: un posible título, un error al leer el archivo o un formato que la aplicación aún no sabe interpretar. Que un archivo esté disponible para descargar no es motivo de revisión.</p>"
     if not items:
         body += "<section class='panel'><p>No hay casos pendientes en este momento. Puedes continuar la captación automática.</p><p><a href='/'>Volver a captación</a></p></section>"
         return page("Revisión de material dudoso", body)
@@ -604,7 +650,13 @@ def review_uncertain_material():
         body += "<section class='panel'><h2>" + esc(item["title"]) + "</h2>"
         body += "<p><a href='/items/" + esc(identifier) + "'>Ficha de Internet Archive</a> · <a href='/items/" + esc(identifier) + "/content-analysis'>Ver análisis completo</a></p>"
         if item["pending_suggestions"]:
-            review_reason = f"Hay {item['pending_suggestions']} indicio(s) extraído(s) que aún no se han confirmado."
+            review_reason = f"Hay {item['pending_suggestions']} posible(s) título(s) extraído(s) que aún no se han confirmado."
+        elif item["analysis_failures"]:
+            review_reason = f"No se ha podido leer correctamente uno o más archivos ({item['analysis_failures']} error(es) de análisis)."
+        elif item["extraction_failures"]:
+            review_reason = f"No se ha podido extraer texto de uno o más archivos ({item['extraction_failures']} error(es) o limitación(es) de lectura)."
+        elif item["unsupported_files"]:
+            review_reason = f"Hay {item['unsupported_files']} archivo(s) musical(es) descargado(s) cuyo formato todavía no puede interpretar automáticamente."
         elif item["known_units"] == 0:
             review_reason = "El archivo se ha analizado, pero no se ha podido identificar con seguridad una obra concreta."
         else:
@@ -1581,7 +1633,7 @@ def process_downloaded_batch():
         body += "<p>No hay archivos descargados compatibles con los analizadores actuales. "
         "Primero ejecuta la captación integrada para inventariar y descargar material.</p>"
     else:
-        body += "<table><tr><th>Elemento</th><th>Nuevas sugerencias</th><th>Análisis MusicXML correctos</th><th>Incidencias</th></tr>"
+        body += "<table><tr><th>Elemento</th><th>Nuevas sugerencias</th><th>Análisis estructurales correctos</th><th>Incidencias</th></tr>"
         for result in results:
             link = "/items/" + quote(result["identifier"], safe="") + "/content-analysis"
             errors = "; ".join(result["errors"]) if result["errors"] else "Ninguna"
