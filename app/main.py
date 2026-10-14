@@ -1633,7 +1633,7 @@ def process_downloaded_batch():
         body += "<p>No hay archivos descargados compatibles con los analizadores actuales. "
         "Primero ejecuta la captación integrada para inventariar y descargar material.</p>"
     else:
-        body += "<table><tr><th>Elemento</th><th>Nuevas sugerencias</th><th>Análisis MusicXML correctos</th><th>Incidencias</th></tr>"
+        body += "<table><tr><th>Elemento</th><th>Nuevas sugerencias</th><th>Análisis estructurales correctos</th><th>Incidencias</th></tr>"
         for result in results:
             link = "/items/" + quote(result["identifier"], safe="") + "/content-analysis"
             errors = "; ".join(result["errors"]) if result["errors"] else "Ninguna"
