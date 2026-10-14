@@ -555,7 +555,14 @@ def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path
 
 def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
     import pypdf
+    import pytesseract
     import zipfile
+
+    monkeypatch.setattr(
+        pytesseract,
+        "get_tesseract_version",
+        lambda: (_ for _ in ()).throw(RuntimeError("Tesseract unavailable in test")),
+    )
 
     db_path = str(tmp_path / "pdf-extraction.sqlite3")
     monkeypatch.setattr(main, "DB_PATH", db_path)
