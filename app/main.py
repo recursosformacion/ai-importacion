@@ -371,7 +371,7 @@ def home(request: Request):
                                WHERE fa.identifier=a.identifier AND fa.status='ok')
                        OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                                   WHERE pe.identifier=a.identifier
-                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed'))
+                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed','text_checked'))
                      )
                    )
                  )"""
@@ -607,14 +607,14 @@ def review_uncertain_material():
                                    WHERE fa.identifier=a.identifier AND fa.status='ok')
                            OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                                       WHERE pe.identifier=a.identifier
-                                        AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed'))
+                                        AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed','text_checked'))
                        )
                    )
                    OR EXISTS (SELECT 1 FROM archive_file_analyses fa
                               WHERE fa.identifier=a.identifier AND fa.status='error')
                    OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                               WHERE pe.identifier=a.identifier
-                                AND pe.status IN ('error','ocr_error','ocr_unavailable','image_ocr_no_text'))
+                                AND pe.status IN ('error','ocr_error','ocr_unavailable','image_ocr_no_text','text_error'))
                    OR EXISTS (SELECT 1 FROM archive_files f
                               WHERE f.identifier=a.identifier AND f.relevant=1
                                 AND f.download_status='downloaded'
@@ -734,7 +734,7 @@ async def run_capture_pipeline():
                                WHERE fa.identifier=a.identifier AND fa.status='ok')
                        OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
                                   WHERE pe.identifier=a.identifier
-                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed'))
+                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed','text_checked'))
                      )
                    )
                  )"""
@@ -1645,6 +1645,8 @@ def process_downloaded_batch():
                      OR lower(f.file_name) LIKE '%.tiff' OR lower(f.file_name) LIKE '%.bmp'
                      OR lower(f.file_name) LIKE '%.jp2' OR lower(f.file_name) LIKE '%.musicxml'
                      OR lower(f.file_name) LIKE '%.mxl' OR lower(f.file_name) LIKE '%.xml'
+                     OR lower(f.file_name) LIKE '%.mid' OR lower(f.file_name) LIKE '%.midi'
+                     OR lower(f.file_name) LIKE '%.kar'
                    )
                ) AND EXISTS (
                  SELECT 1 FROM archive_files f
