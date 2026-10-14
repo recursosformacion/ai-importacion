@@ -130,7 +130,7 @@ async def inspect_files(identifier: str):
     except HTTPException:
         raise
     except Exception as exc:
-        body = "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><p>Todo permanece en esta aplicación local; no se crean ni exportan obras OSAP.</p></nav>"
+        body = ""
         body += "<section><h1>No se pudo actualizar el inventario</h1><p>Internet Archive no ha respondido correctamente. No se ha confirmado un inventario nuevo; puedes volver a intentarlo.</p><p>Detalle técnico: " + esc(str(exc)) + "</p><p><a href='/files/" + esc(identifier) + "'>← Volver al inventario y reintentar</a></p></section>"
         return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><title>Error de inventario</title><body>" + body + "</body></html>", status_code=502)
 
@@ -146,7 +146,7 @@ def file_catalog(identifier: str):
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
     body = "<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Ficheros de origen</title><style>body{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem;color:#20242a;background:#f4f6f8}table{width:100%;border-collapse:collapse;background:#fff}td,th{text-align:left;padding:.6rem;border-bottom:1px solid #ddd;vertical-align:top}button{padding:.5rem .7rem;cursor:pointer;background:#174f89;color:white;border:0;border-radius:6px;font:inherit}small{color:#596575}code{overflow-wrap:anywhere}a{color:#175ca8}.workflow{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:1rem;margin:1rem 0}.workflow-steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.8rem 0}.workflow-steps a{display:block;padding:.65rem .85rem;border:1px solid #cbd5e1;border-radius:8px;text-decoration:none;background:#f8fafc;color:#174f89}.workflow-steps a span{display:inline-grid;place-items:center;border-radius:50%;background:#e5ebf2;min-width:1.5rem;height:1.5rem;margin-right:.25rem}.workflow-steps a.active{background:#174f89;color:#fff;border-color:#174f89;font-weight:700}.workflow-steps a.active span{background:#fff;color:#174f89}.workflow-help{margin:.4rem 0;color:#5d6977}.section-nav{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding-top:.7rem;border-top:1px solid #e1e6eb}</style>"
     ident = quote(identifier, safe="")
-    body += "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><div class='workflow-steps'><a href='/'> <span>1</span> Buscar</a><a href='/items/" + esc(ident) + "'><span>2</span> Elegir elemento</a><a class='active' href='/files/" + esc(ident) + "'><span>3</span> Archivos</a><a href='/items/" + esc(ident) + "/content-analysis#analisis'><span>4</span> Analizar</a><a href='/items/" + esc(ident) + "/content-analysis?step=5#obras'><span>5</span> Revisar obras</a></div><p class='workflow-help'>Sigue los pasos de izquierda a derecha. Puedes volver a cualquiera sin perder lo guardado. Todo permanece en esta aplicación local; no se exporta a OSAP.</p></nav>"
+    body += ""
     body += "<p><a href='/items/" + esc(identifier) + "'>← Volver a la ficha</a></p><h1>Ficheros: " + esc(item["title"] or identifier) + "</h1>"
     body += "<p>Inventario de Internet Archive. Los ficheros descargados quedan en almacenamiento local; esta función no escribe en OSAP ni Storage.</p>"
     body += "<form method='post' action='/items/" + esc(identifier) + "/inspect-files'><button>Consultar / actualizar inventario</button></form>"
@@ -301,7 +301,7 @@ def intake_page():
             FROM archive_files f JOIN archive_items a ON a.identifier=f.identifier
             WHERE f.download_status IN ('downloaded','error','too_large')
             ORDER BY f.id DESC LIMIT 30""").fetchall()
-    body = "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><div class='workflow-steps'><a href='/'><span>1</span> Buscar</a><a href='/items'><span>2</span> Elegir elemento</a><a class='active' href='/intake'><span>3</span> Archivos</a><a href='/items'><span>4</span> Analizar</a><a href='/items'><span>5</span> Revisar obras</a></div><p class='workflow-help'>Esta vista permite inventariar y descargar archivos de candidatos por lotes. Para analizar uno en concreto, selecciónalo en el catálogo.</p></nav><p><a href='/'>← Inicio</a></p><h1>Captación integrada: inventariar y descargar</h1>"
+    body = "<p><a href='/'>← Volver a captación</a></p><h1>Actividad de archivos y descargas</h1>"
     body += "<p>Este proceso combina ambas tareas: inventaría candidatos que aún no tienen inventario y descarga unos pocos archivos priorizados. No descarga en masa y no escribe en OSAP.</p>"
     body += "<div style='display:flex;gap:1rem;flex-wrap:wrap'>" + "".join(
         f"<div style='background:#f1f4f7;padding:1rem;border-radius:8px'><small>{label}</small><h2>{value or 0}</h2></div>"
