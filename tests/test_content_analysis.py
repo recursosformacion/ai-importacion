@@ -555,6 +555,7 @@ def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path
 
 def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
     import pypdf
+    import zipfile
 
     db_path = str(tmp_path / "pdf-extraction.sqlite3")
     monkeypatch.setattr(main, "DB_PATH", db_path)
@@ -565,6 +566,8 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         ("score.abc", "score.abc"),
         ("score.ly", "score.ly"),
         ("score.mei", "score.mei"),
+        ("score.mscx", "score.mscx"),
+        ("score.mscz", "score.mscz"),
         ("broken.pdf", "broken.pdf"),
     ]
     for _, name in seed_files:
@@ -609,6 +612,15 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
             "<mei><meiHead><fileDesc><titleStmt><title>Motet in D</title></titleStmt></fileDesc></mei>",
             encoding="utf-8",
         )
+        (tmp_path / "score.mscx").write_text(
+            '<museScore><metaTag name="workTitle">String Quartet in A</metaTag></museScore>',
+            encoding="utf-8",
+        )
+        with zipfile.ZipFile(tmp_path / "score.mscz", "w") as archive:
+            archive.writestr(
+                "score.mscx",
+                '<museScore><metaTag name="workTitle">Symphony in E</metaTag></museScore>',
+            )
 
         response = client.post("/items/anthology-test/content-analysis/extract", follow_redirects=False)
         assert response.status_code == 303
@@ -616,8 +628,8 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "pdf_ocr=1" in response.headers["location"]
         assert "txt_leidos=1" in response.headers["location"]
         assert "errores_extraccion=1" in response.headers["location"]
-        assert "notacion_leida=3" in response.headers["location"]
-        assert "sugerencias_nuevas=5" in response.headers["location"]
+        assert "notacion_leida=5" in response.headers["location"]
+        assert "sugerencias_nuevas=7" in response.headers["location"]
 
         page = client.get(response.headers["location"])
         assert "PDF con texto extraíble: 1" in page.text
@@ -627,7 +639,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "scores-text.pdf" in page.text
         assert "scores-scan.pdf" in page.text
         assert "Probablemente necesita OCR" in page.text
-        assert "Archivos ABC/LilyPond/MEI leídos: 3" in page.text
+        assert "Archivos ABC/LilyPond/MEI/MuseScore leídos: 5" in page.text
 
     with main.db() as conn:
         suggestions = conn.execute(
@@ -639,7 +651,8 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
             ORDER BY f.file_name"""
         ).fetchall()
     assert [row["suggestion_text"] for row in suggestions] == [
-        "Chorale in F", "Mass in G minor", "Motet in D", "Prelude in C", "Sonata for Violin and Piano"
+        "Chorale in F", "Mass in G minor", "Motet in D", "Prelude in C", "Sonata for Violin and Piano",
+        "String Quartet in A", "Symphony in E"
     ]
     statuses = {row["file_name"]: row["status"] for row in pdf_results}
     assert statuses == {
