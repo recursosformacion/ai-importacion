@@ -792,13 +792,15 @@ THE THREE CABALLEROS
 """
     candidates = [title for _, title in extract_text_candidates(text)]
     assert "SPIRIT OF THE AIR FORCE" in candidates
-    assert "Col. WILLIAM J. CLINCH" in candidates
+    assert "Col. WILLIAM J. CLINCH" not in candidates
     assert "MEXICO" in candidates
     assert "THE THREE CABALLEROS" in candidates
     assert "aS SS" not in candidates
     assert "= cs S|" not in candidates
     assert "Ae sos Shea" not in candidates
     assert "Words and Music by" not in candidates
+    assert "my Give ‘er the" not in candidates
+    assert "and our steel props he to whine you say" not in candidates
 
 
 def test_capx_files_are_included_in_local_content_extraction(tmp_path, monkeypatch):
