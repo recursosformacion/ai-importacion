@@ -485,3 +485,63 @@ def test_global_discovery_retries_failed_query_without_losing_cursor(tmp_path, m
         assert state["status"] == "active"
         assert state["scanned_count"] == 1
 
+
+
+def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "analysis-cache.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    score_path = tmp_path / "score.musicxml"
+    score_path.write_text("<score-partwise/>", encoding="utf-8")
+    calls = []
+
+    def flaky_analysis(path):
+        calls.append(str(path))
+        if len(calls) == 1:
+            raise ValueError("temporary malformed file")
+        return {"title": "Test score", "part_count": 1, "measure_count": 8}
+
+    monkeypatch.setattr(main, "analyze_musicxml", flaky_analysis)
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,relevant,inventory_seen_at,
+                 download_status,local_path,sha256)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                ("anthology-test", "score.musicxml", "score.musicxml",
+                 "https://archive.org/download/anthology-test/score.musicxml", 1,
+                 main.now(), "downloaded", str(score_path), "digest-v1"),
+            )
+
+        first = client.post(
+            "/items/anthology-test/content-analysis/analyze-files",
+            follow_redirects=False,
+        )
+        assert first.status_code == 303
+        with main.db() as conn:
+            result = conn.execute(
+                "SELECT status,error_text,sha256 FROM archive_file_analyses"
+            ).fetchone()
+        assert result["status"] == "error"
+        assert "temporary malformed file" in result["error_text"]
+
+        second = client.post(
+            "/items/anthology-test/content-analysis/analyze-files",
+            follow_redirects=False,
+        )
+        assert second.status_code == 303
+        with main.db() as conn:
+            result = conn.execute(
+                "SELECT status,error_text,sha256 FROM archive_file_analyses"
+            ).fetchone()
+        assert result["status"] == "ok"
+        assert result["error_text"] is None
+        assert result["sha256"] == "digest-v1"
+
+        third = client.post(
+            "/items/anthology-test/content-analysis/analyze-files",
+            follow_redirects=False,
+        )
+        assert third.status_code == 303
+        assert len(calls) == 2
