@@ -312,23 +312,8 @@ def esc(value) -> str:
 
 
 def workflow_nav(identifier: str | None = None, active: int = 1) -> str:
-    """Persistent five-step guide; steps remain visible across the item workflow."""
-    ident = quote(identifier or "", safe="")
-    links = [
-        (1, "Buscar", "/", None),
-        (2, "Elegir elemento", f"/items/{ident}" if identifier else "/items", None),
-        (3, "Archivos", f"/files/{ident}" if identifier else "/items", None),
-        (4, "Analizar", f"/items/{ident}/content-analysis?step=4#analisis" if identifier else "/items", "analisis"),
-        (5, "Revisar obras", f"/items/{ident}/content-analysis?step=5#obras" if identifier else "/items", "obras"),
-    ]
-    parts = []
-    for number, label, href, _anchor in links:
-        cls = "active" if number == active else ""
-        parts.append(f"<a class='{cls}' href='{href}'><span>{number}</span> {label}</a>")
-    return ("<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso "
-            + str(active) + " de 5</b><div class='workflow-steps'>" + "".join(parts) +
-            "</div><p class='workflow-help'>Sigue los pasos de izquierda a derecha. Puedes volver a cualquiera sin perder lo guardado. "
-            "Todo permanece en esta aplicación local; no se crean ni exportan obras a OSAP.</p></nav>")
+    """The capture workflow is a continuous process, not a five-screen wizard."""
+    return ""
 
 
 def page(title: str, body: str) -> HTMLResponse:
@@ -355,58 +340,60 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-    with db() as conn:
-        counts = [conn.execute("SELECT COUNT(*) FROM archive_items").fetchone()[0],
-                  conn.execute("SELECT COUNT(*) FROM search_runs").fetchone()[0],
-                  conn.execute("SELECT COUNT(*) FROM archive_items WHERE review_status='pending'").fetchone()[0]]
-        items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 20").fetchall()
-        runs = conn.execute("SELECT * FROM search_runs ORDER BY id DESC LIMIT 8").fetchall()
-    body = workflow_nav(None, 1)
-    body += "<h1>Captación de partituras</h1><p>Empieza por localizar candidatos en Internet Archive. Después elige un elemento, consulta sus archivos, analiza el contenido y revisa las obras sugeridas.</p>"
-    body += "<div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value}</h2></div>" for label, value in zip(["Elementos catalogados","Búsquedas realizadas","Pendientes de revisión"], counts)) + "</div>"
     ensure_global_discovery_queries()
     with db() as conn:
-        discovery = conn.execute("SELECT COUNT(*) AS scanned, SUM(CASE WHEN score>0 THEN 1 ELSE 0 END) AS candidates FROM global_discovery_seen").fetchone()
-        query_states = conn.execute("SELECT label,status,scanned_count,total_found FROM global_discovery_queries ORDER BY query_key").fetchall()
-    body += "<section class='panel'><h2>Exploración global reanudable</h2>"
-    body += "<p>La exploración usa varias consultas musicales independientes y la API de cursor de Internet Archive. Cada avance examina un lote de cada consulta activa; el cursor se guarda localmente para continuar sin volver al principio.</p>"
-    body += "<div class='metrics'>"
-    body += "<div class='metric'><span class='muted'>Elementos únicos examinados</span><h2>" + str(discovery["scanned"] or 0) + "</h2></div>"
-    body += "<div class='metric'><span class='muted'>Candidatos musicales únicos</span><h2>" + str(discovery["candidates"] or 0) + "</h2></div></div>"
-    body += "<form method='post' action='/discover'><label>Lote por consulta <select name='rows'>"
-    body += "".join("<option " + ("selected" if n == 100 else "") + ">" + str(n) + "</option>" for n in [100, 250, 500])
-    body += "</select></label> <button>Continuar exploración global</button></form>"
-    body += "<table><tr><th>Familia de búsqueda</th><th>Examinados</th><th>Coincidencias declaradas</th><th>Estado</th></tr>"
-    body += "".join("<tr><td>" + esc(q["label"]) + "</td><td>" + str(q["scanned_count"]) + "</td><td>" + esc(q["total_found"] if q["total_found"] is not None else "—") + "</td><td>" + esc(q["status"]) + "</td></tr>" for q in query_states)
-    body += "</table><p class='muted'>Los totales de consultas se solapan: no deben sumarse como obras únicas. Los candidatos se filtran por metadatos; todavía hay que inspeccionar los archivos y su contenido. No se descargan archivos automáticamente ni se escribe en OSAP.</p></section>"
-    with db() as conn:
-        inventory = conn.execute("""SELECT
-            COUNT(*) AS checked,
-            SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS successful,
-            SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS failed,
-            SUM(file_count) AS files
-            FROM archive_item_inventories""").fetchone()
-        pending_inventory = conn.execute("""SELECT COUNT(*) FROM global_discovery_seen s
-            JOIN archive_items a ON a.identifier=s.identifier
-            LEFT JOIN archive_item_inventories i ON i.identifier=s.identifier
-            WHERE s.score>0 AND (i.identifier IS NULL OR i.status='error')""").fetchone()[0]
-        format_counts = conn.execute("""SELECT COALESCE(NULLIF(archive_format,''),'Formato no indicado') AS fmt,
-            COUNT(*) AS n FROM archive_files f JOIN global_discovery_seen s ON s.identifier=f.identifier
-            WHERE s.score>0 GROUP BY fmt ORDER BY n DESC LIMIT 12""").fetchall()
-    body += "<section class='panel'><h2>Inventario de archivos de candidatos</h2><p>Consulta por lotes reanudables los archivos de Internet Archive para candidatos musicales. Registra todos los nombres y formatos, incluidos formatos desconocidos; no descarga archivos ni escribe en OSAP.</p><div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>" for label,value in [("Elementos inventariados",inventory['checked']),("Inventarios correctos",inventory['successful']),("Con error",inventory['failed']), ("Archivos registrados",inventory['files']), ("Pendientes / reintentables",pending_inventory)]) + "</div><form method='post' action='/inventory-candidates'><label>Elementos por lote <select name='batch_size'>" + "".join(f"<option {'selected' if n==25 else ''} value='{n}'>{n}</option>" for n in [10,25,50]) + "</select></label> <button>Inventariar siguiente lote</button></form>"
-    if format_counts:
-        body += "<h3>Formatos registrados entre candidatos</h3><table><tr><th>Formato declarado por Internet Archive</th><th>Archivos</th></tr>" + "".join(f"<tr><td>{esc(row['fmt'])}</td><td>{row['n']}</td></tr>" for row in format_counts) + "</table>"
-    body += "<p class='muted'>Los formatos reconocidos solo orientan la prioridad. Los formatos desconocidos también se conservan en el inventario para evitar descartar partituras potenciales.</p></section>"
-    body += "<section class='panel'><h2>Búsqueda manual opcional</h2><form method='post' action='/search'><input name='query' type='text' required placeholder='Título, compositor o término musical'> <label>Buscar en <select name='scope'><option value='all' selected>Todos los tipos de material</option><option value='texts'>Solo textos / libros digitalizados</option></select></label> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar</button></form></section>"
-    body += "<section class='panel'><h2>Catálogo local reciente</h2>" + item_table(items) + "<p><a href='/items'>Ver todo el catálogo →</a></p></section>"
-    body += "<section class='panel'><h2>Últimas búsquedas</h2><table><tr><th>Consulta</th><th>Resultados</th><th>Estado</th><th>Inicio</th></tr>"
-    for run in runs:
-        result_label = f"{run['result_count']} guardados / {run['total_found']} coincidencias"
-        if "reanudable por familias" in run["query_text"]:
-            result_label += " (con posibles solapamientos)"
-        body += f"<tr><td>{esc(run['query_text'])}</td><td>{esc(result_label)}</td><td>{esc(run['status'])} {esc(run['error_text'])}</td><td>{esc(run['started_at'])}</td></tr>"
-    body += "</table></section>"
-    return page("AI Importación", body)
+        item_count = conn.execute("SELECT COUNT(*) FROM archive_items").fetchone()[0]
+        candidate_count = conn.execute(
+            "SELECT COUNT(*) FROM global_discovery_seen WHERE score>0"
+        ).fetchone()[0]
+        scanned = conn.execute(
+            "SELECT COUNT(*) FROM global_discovery_seen"
+        ).fetchone()[0]
+        inventory_count = conn.execute(
+            "SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok'"
+        ).fetchone()[0]
+        downloaded_count = conn.execute(
+            "SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded'"
+        ).fetchone()[0]
+        pending_count = conn.execute(
+            "SELECT COUNT(*) FROM archive_content_suggestions WHERE status='pending'"
+        ).fetchone()[0]
+        review_items = conn.execute(
+            """SELECT a.identifier,a.title,a.creator_json,a.item_date,a.rights_status
+               FROM archive_items a
+               WHERE EXISTS (SELECT 1 FROM archive_files f WHERE f.identifier=a.identifier AND f.download_status='downloaded')
+               ORDER BY a.last_seen_at DESC LIMIT 12"""
+        ).fetchall()
+        query_states = conn.execute(
+            "SELECT label,status,scanned_count FROM global_discovery_queries ORDER BY query_key"
+        ).fetchall()
+    body = "<h1>Captación musical</h1>"
+    body += "<p>La aplicación busca en Internet Archive, identifica material probablemente musical, inventaría los archivos disponibles, descarga formatos útiles y analiza su contenido. Solo te pedirá intervenir cuando no pueda determinar qué contiene un archivo.</p>"
+    body += "<section class='panel'><h2>Continuar captación</h2><p>Procesa el siguiente lote de búsquedas, inventarios, descargas y análisis. Se conserva el progreso entre ejecuciones.</p>"
+    body += "<form method='post' action='/capture/run'><button style='font-size:1.1rem;padding:.9rem 1.2rem'>Continuar captación automática</button></form>"
+    body += "<p class='muted'>Se descargan formatos musicales reconocidos dentro de los límites configurados. Los formatos desconocidos se registran, pero no se descartan silenciosamente. Todo queda local; no se crean ni exportan obras a OSAP.</p></section>"
+    metrics = [
+        ("Elementos examinados", scanned),
+        ("Candidatos musicales", candidate_count),
+        ("Inventarios completados", inventory_count),
+        ("Archivos descargados", downloaded_count),
+        ("Sugerencias por revisar", pending_count),
+    ]
+    body += "<div class='metrics'>" + "".join(
+        f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>"
+        for label, value in metrics
+    ) + "</div>"
+    body += "<details class='panel'><summary>Estado de la exploración</summary><table><tr><th>Grupo de búsqueda</th><th>Examinados</th><th>Estado</th></tr>"
+    body += "".join(
+        f"<tr><td>{esc(q['label'])}</td><td>{q['scanned_count']}</td><td>{esc(q['status'])}</td></tr>"
+        for q in query_states
+    )
+    body += "</table></details>"
+    body += "<section class='panel'><h2>Material descargado</h2>"
+    body += item_table(review_items)
+    body += "<p><a href='/items'>Ver todo el material encontrado</a> · <a href='/intake'>Ver actividad y archivos</a></p></section>"
+    body += "<details class='panel'><summary>Búsqueda manual (opcional)</summary><form method='post' action='/search'><input name='query' type='text' required placeholder='Título, compositor o término musical'> <label>Resultados <select name='rows'>" + "".join(f"<option {'selected' if n==25 else ''}>{n}</option>" for n in [10,25,50,100]) + "</select></label> <button>Buscar</button></form></details>"
+    return page("Captación musical", body)
 
 
 def item_table(items):
@@ -539,6 +526,47 @@ async def discover(rows: Annotated[int, Form()] = 100):
             )
         return page("Error de exploración", f"<h1>No se pudo completar la exploración</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
 
+
+
+
+@app.post("/capture/run", response_class=HTMLResponse)
+async def run_capture_pipeline():
+    """Run one bounded end-to-end capture batch without making the user navigate stages."""
+    discovery_error = None
+    intake_error = None
+    try:
+        await discover(100)
+    except Exception as exc:
+        discovery_error = str(exc)[:250]
+    try:
+        from app.file_catalog import run_integrated_intake
+        await run_integrated_intake(items=10, downloads=3)
+    except Exception as exc:
+        intake_error = str(exc)[:250]
+    with db() as conn:
+        scanned = conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0]
+        candidates = conn.execute("SELECT COUNT(*) FROM global_discovery_seen WHERE score>0").fetchone()[0]
+        inventoried = conn.execute("SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok'").fetchone()[0]
+        downloaded = conn.execute("SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded'").fetchone()[0]
+        pending = conn.execute("SELECT COUNT(*) FROM archive_content_suggestions WHERE status='pending'").fetchone()[0]
+    body = "<h1>Lote de captación terminado</h1><p>La aplicación ha continuado la búsqueda y ha intentado inventariar, descargar y analizar material musical sin requerir decisiones para cada elemento.</p>"
+    body += "<div class='metrics'>" + "".join(
+        f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>"
+        for label, value in [
+            ("Elementos examinados", scanned), ("Candidatos musicales", candidates),
+            ("Inventarios completados", inventoried), ("Archivos descargados", downloaded),
+            ("Casos por revisar", pending),
+        ]
+    ) + "</div>"
+    if discovery_error or intake_error:
+        body += "<section class='panel'><h2>Incidencias</h2><p>El progreso guardado se conserva. Puedes continuar otro lote para reintentar los pasos pendientes.</p>"
+        if discovery_error:
+            body += "<p>Exploración: " + esc(discovery_error) + "</p>"
+        if intake_error:
+            body += "<p>Inventario/descarga: " + esc(intake_error) + "</p>"
+        body += "</section>"
+    body += "<p><a href='/'>Volver a captación</a> · <a href='/items'>Ver material encontrado</a> · <a href='/intake'>Ver archivos y descargas</a></p>"
+    return page("Resultado de captación", body)
 
 @app.post("/inventory-candidates", response_class=HTMLResponse)
 async def inventory_candidates(batch_size: Annotated[int, Form()] = 25):
