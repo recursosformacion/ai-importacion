@@ -560,7 +560,7 @@ def review_uncertain_material():
                        WHERE cs.identifier=a.identifier AND cs.status='pending') AS pending_suggestions,
                       (SELECT COUNT(*) FROM archive_files f
                        WHERE f.identifier=a.identifier AND f.relevant=1
-                         AND f.download_status!='downloaded') AS not_downloaded_candidates,
+                         AND f.download_status!='downloaded') AS not_downloaded_candidates
                FROM archive_items a
                JOIN global_discovery_seen s ON s.identifier=a.identifier
                WHERE s.score>0 AND EXISTS (
