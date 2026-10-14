@@ -771,9 +771,9 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond y MEI, y extraer texto de PDF que permitan copiarlo. En los PDF sin texto seleccionable informa de que probablemente necesitan OCR, pero no ejecuta OCR por sí misma. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI y MuseScore (.mscx/.mscz), y extraer texto de PDF que permitan copiarlo. En los PDF sin texto seleccionable informa de que probablemente necesitan OCR, pero no ejecuta OCR por sí misma. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
     if any(value is not None for value in (pdf_con_texto, pdf_ocr, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida)):
-        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
+        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
     if pdf_extractions:
         body += "<h3>Estado de extracción por PDF</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
         pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Probablemente necesita OCR", "error": "Error de lectura"}
@@ -894,6 +894,13 @@ def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int,
             if 4 <= len(title) <= 140:
                 line_no = text.count(chr(10), 0, match.start()) + 1
                 found.append((line_no, title))
+    elif suffix == ".mscx":
+        pattern = re.compile(r'<metaTag\s+name=["\'](?:workTitle|movementTitle)["\']\s*>(.*?)</metaTag\s*>', re.IGNORECASE | re.DOTALL)
+        for match in pattern.finditer(text):
+            title = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", match.group(1))).split())
+            if 4 <= len(title) <= 140:
+                line_no = text.count(chr(10), 0, match.start()) + 1
+                found.append((line_no, title))
     unique = []
     seen = set()
     for line_no, title in found:
@@ -1004,7 +1011,7 @@ def extract_content_suggestions(identifier: str):
     for frow in files:
         path = Path(frow["local_path"])
         suffix = path.suffix.lower()
-        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei"}:
+        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz"}:
             continue
         if not path.is_file():
             extraction_errors += 1
@@ -1013,13 +1020,35 @@ def extract_content_suggestions(identifier: str):
             continue
         text_content = ""
         try:
-            if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei"}:
+            if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx"}:
                 text_content = path.read_text(encoding="utf-8-sig", errors="replace")
                 if text_content.strip():
-                    if suffix in {".abc", ".ly", ".mei"}:
+                    if suffix in {".abc", ".ly", ".mei", ".mscx"}:
                         notation_files_read += 1
                     else:
                         text_files_read += 1
+            elif suffix == ".mscz":
+                import zipfile
+                member_limit = 20 * 1024 * 1024
+                with zipfile.ZipFile(path) as archive:
+                    candidates = [
+                        info for info in archive.infolist()
+                        if info.filename.lower().endswith(".mscx")
+                        and not info.filename.startswith("/")
+                        and ".." not in Path(info.filename).parts
+                    ]
+                    if not candidates:
+                        raise ValueError("El paquete MSCZ no contiene un archivo MSCX.")
+                    member = candidates[0]
+                    if member.file_size > member_limit:
+                        raise ValueError("El archivo MSCX interno supera el límite de 20 MiB.")
+                    with archive.open(member) as source:
+                        payload = source.read(member_limit + 1)
+                    if len(payload) > member_limit:
+                        raise ValueError("El archivo MSCX interno supera el límite de 20 MiB.")
+                    text_content = payload.decode("utf-8-sig", errors="replace")
+                if text_content.strip():
+                    notation_files_read += 1
             elif suffix == ".pdf":
                 from pypdf import PdfReader
                 reader = PdfReader(str(path))
@@ -1045,8 +1074,8 @@ def extract_content_suggestions(identifier: str):
         if not text_content.strip():
             continue
         candidate_rows = (
-            extract_notation_title_candidates(text_content, suffix)
-            if suffix in {".abc", ".ly", ".mei"}
+            extract_notation_title_candidates(text_content, ".mscx" if suffix == ".mscz" else suffix)
+            if suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz"}
             else extract_text_candidates(text_content)
         )
         with db() as conn:
