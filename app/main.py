@@ -912,6 +912,13 @@ def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int,
             if 4 <= len(title) <= 140:
                 line_no = text.count(chr(10), 0, match.start()) + 1
                 found.append((line_no, title))
+        if suffix == ".capx":
+            title_pattern = re.compile(r"<(?:[A-Za-z_][\\w.-]*:)?title\\b[^>]*>(.*?)</(?:[A-Za-z_][\\w.-]*:)?title\\s*>", re.IGNORECASE | re.DOTALL)
+            for match in title_pattern.finditer(text):
+                title = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", match.group(1))).split())
+                if 4 <= len(title) <= 140:
+                    line_no = text.count(chr(10), 0, match.start()) + 1
+                    found.append((line_no, title))
     unique = []
     seen = set()
     for line_no, title in found:
