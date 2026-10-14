@@ -757,7 +757,7 @@ def content_analysis(identifier: str, step: int = 4):
         body += "</table>"
     else:
         body += "<p>Todavía no se han registrado obras candidatas. No se infiere automáticamente que el elemento equivalga a una sola obra.</p>"
-    body += "<div class='section-nav'><a href='#archivos'>← Paso anterior: archivos</a><a href='/items/{esc(identifier)}/content-analysis?step=5#obras'>Siguiente: revisar obras →</a></div></section>"
+    body += "<div class='section-nav'><a href='#archivos'>← Paso anterior: archivos</a><a href='/items/" + esc(identifier) + "/content-analysis?step=5#obras'>Siguiente: revisar obras →</a></div></section>"
     return page("Análisis de contenido", body)
 
 
