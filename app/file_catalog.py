@@ -347,6 +347,7 @@ def view_downloaded_file(file_id: int):
         ".pdf": "application/pdf",
         ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
         ".gif": "image/gif", ".webp": "image/webp", ".tif": "image/tiff", ".tiff": "image/tiff",
+        ".bmp": "image/bmp", ".jp2": "image/jp2",
         ".txt": "text/plain", ".ocr": "text/plain", ".xml": "application/xml",
         ".musicxml": "application/xml", ".mei": "application/xml",
         ".abc": "text/plain", ".ly": "text/plain", ".nwctxt": "text/plain",
