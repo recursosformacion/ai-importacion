@@ -1224,3 +1224,97 @@ def accept_content_suggestion(identifier: str, suggestion_id: int):
              "Revisar el título y asignar compositor si se conoce.", now()))
         conn.execute("UPDATE archive_content_suggestions SET status='accepted' WHERE id=?", (suggestion_id,))
     return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
+
+
+
+@app.post("/intake/process", response_class=HTMLResponse)
+def process_downloaded_batch():
+    """Analyze a bounded batch of already downloaded files without per-file user actions."""
+    with db() as conn:
+        targets = conn.execute(
+            """SELECT a.identifier,COALESCE(a.title,a.identifier) AS title
+               FROM archive_items a
+               WHERE EXISTS (
+                 SELECT 1 FROM archive_files f
+                 WHERE f.identifier=a.identifier AND f.download_status='downloaded'
+                   AND lower(f.file_name) GLOB '*.*'
+                   AND lower(f.file_name) LIKE '%'
+               )
+               ORDER BY a.last_seen_at DESC LIMIT 10"""
+        ).fetchall()
+
+    results = []
+    for target in targets:
+        identifier = target["identifier"]
+        title = target["title"]
+        with db() as conn:
+            file_names = [
+                row["file_name"].lower()
+                for row in conn.execute(
+                    "SELECT file_name FROM archive_files WHERE identifier=? AND download_status='downloaded'",
+                    (identifier,),
+                ).fetchall()
+            ]
+            before_suggestions = conn.execute(
+                "SELECT COUNT(*) FROM archive_content_suggestions WHERE identifier=?", (identifier,)
+            ).fetchone()[0]
+        extraction_suffixes = (".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx")
+        musicxml_suffixes = (".musicxml", ".mxl", ".xml")
+        errors = []
+        try:
+            if any(name.endswith(extraction_suffixes) for name in file_names):
+                extract_content_suggestions(identifier)
+        except Exception as exc:
+            errors.append("Texto/partitura: " + str(exc)[:180])
+        try:
+            if any(name.endswith(musicxml_suffixes) for name in file_names):
+                analyze_downloaded_musicxml(identifier)
+        except Exception as exc:
+            errors.append("Análisis MusicXML: " + str(exc)[:180])
+        with db() as conn:
+            after_suggestions = conn.execute(
+                "SELECT COUNT(*) FROM archive_content_suggestions WHERE identifier=?", (identifier,)
+            ).fetchone()[0]
+            analyses = conn.execute(
+                "SELECT COUNT(*) FROM archive_file_analyses WHERE identifier=? AND status='ok'",
+                (identifier,),
+            ).fetchone()[0]
+        if any(name.endswith(extraction_suffixes + musicxml_suffixes) for name in file_names):
+            results.append({
+                "identifier": identifier,
+                "title": title,
+                "new_suggestions": max(0, after_suggestions - before_suggestions),
+                "analyses": analyses,
+                "errors": errors,
+            })
+
+    body = (
+        "<!doctype html><html lang='es'><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Procesamiento automático</title>"
+        "<body style='font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem'>"
+        "<h1>Resultado del análisis automático</h1>"
+        "<p>Se han procesado como máximo 10 elementos con archivos descargados. "
+        "La aplicación ha extraído indicios disponibles sin aceptar obras ni exportar nada a OSAP.</p>"
+    )
+    if not results:
+        body += "<p>No hay archivos descargados compatibles con los analizadores actuales. "
+        "Primero ejecuta la captación integrada para inventariar y descargar material.</p>"
+    else:
+        body += "<table><tr><th>Elemento</th><th>Nuevas sugerencias</th><th>Análisis MusicXML correctos</th><th>Incidencias</th></tr>"
+        for result in results:
+            link = "/items/" + quote(result["identifier"], safe="") + "/content-analysis"
+            errors = "; ".join(result["errors"]) if result["errors"] else "Ninguna"
+            body += (
+                "<tr><td><a href='" + esc(link) + "'>" + esc(result["title"]) + "</a></td>"
+                "<td>" + str(result["new_suggestions"]) + "</td>"
+                "<td>" + str(result["analyses"]) + "</td>"
+                "<td>" + esc(errors) + "</td></tr>"
+            )
+        body += "</table>"
+    body += (
+        "<p>Las sugerencias son indicios; no se han convertido en obras automáticamente. "
+        "Los formatos sin analizador permanecen pendientes.</p>"
+        "<p><a href='/intake'>Volver a captación</a> · <a href='/'>Inicio</a></p></body></html>"
+    )
+    return HTMLResponse(body)
