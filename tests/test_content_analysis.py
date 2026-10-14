@@ -832,3 +832,45 @@ def test_capx_files_are_included_in_local_content_extraction(tmp_path, monkeypat
             "SELECT suggestion_text FROM archive_content_suggestions"
         ).fetchall()
     assert [row["suggestion_text"] for row in suggestions] == ["Motet in G"]
+
+
+
+def test_batch_processing_analyzes_downloaded_items_without_per_file_actions(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "batch-process.sqlite3"))
+    calls = []
+
+    def fake_extract(identifier):
+        calls.append(identifier)
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_content_suggestions
+                (identifier,source_file,line_number,suggestion_text,status,created_at)
+                VALUES(?,?,?,?, 'pending', ?)""",
+                (identifier, "score.txt", 1, "Prelude in C", main.now()),
+            )
+
+    monkeypatch.setattr(main, "extract_content_suggestions", fake_extract)
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path)
+                VALUES(?,?,?,?,?,'downloaded',?)""",
+                ("anthology-test", "score.txt", "score.txt",
+                 "https://archive.org/download/anthology-test/score.txt",
+                 main.now(), str(tmp_path / "score.txt")),
+            )
+        response = client.post("/intake/process")
+        assert response.status_code == 200
+        assert "Resultado del análisis automático" in response.text
+        assert "Anthology of scores" in response.text
+        assert "1</td>" in response.text
+        assert calls == ["anthology-test"]
+
+    with main.db() as conn:
+        row = conn.execute(
+            "SELECT suggestion_text FROM archive_content_suggestions WHERE identifier='anthology-test'"
+        ).fetchone()
+    assert row["suggestion_text"] == "Prelude in C"
