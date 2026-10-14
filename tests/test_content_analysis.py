@@ -117,3 +117,30 @@ def test_search_results_show_next_workflow_step(tmp_path, monkeypatch):
     assert "Captación musical · paso 2 de 5" in response.text
     assert "Elige un resultado para abrir su ficha" in response.text
     assert "href='/items/motet-test'" in response.text
+
+
+def test_search_error_keeps_guided_navigation_and_retry_action(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "search-error.sqlite3"))
+
+    async def failed_archive_search(archive_query, rows):
+        raise RuntimeError("<fallo remoto>")
+
+    monkeypatch.setattr(main, "archive_search", failed_archive_search)
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/search",
+            data={"query": "motet", "rows": "10", "scope": "all"},
+        )
+
+    assert response.status_code == 200
+    assert "Captación musical · paso 1 de 5" in response.text
+    assert "No se pudo completar la búsqueda" in response.text
+    assert "Volver al buscador y reintentar" in response.text
+    assert "&lt;fallo remoto&gt;" in response.text
+    assert "<fallo remoto>" not in response.text
+    with main.db() as conn:
+        run = conn.execute(
+            "SELECT status,error_text FROM search_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert run["status"] == "error"
+    assert "<fallo remoto>" in run["error_text"]
