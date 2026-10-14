@@ -489,7 +489,7 @@ async def discover(rows: Annotated[int, Form()] = 100):
             active = conn.execute(
                 "SELECT COUNT(*) FROM global_discovery_queries WHERE status!='completed'"
             ).fetchone()[0]
-            status = "error" if errors and not processed_queries else "completed"
+            status = "error" if errors and not processed_queries else ("partial" if errors else "completed")
             error_text = "; ".join(errors)[:1000] if errors else None
             conn.execute(
                 "UPDATE search_runs SET total_found=?,result_count=?,status=?,error_text=?,completed_at=? WHERE id=?",
