@@ -787,11 +787,15 @@ aS SS
 Ae sos Shea
 Words and Music by
 Col. WILLIAM J. CLINCH
+Official Song of the Cadet Battalion
+my Give ‘er the
+and our steel props he to whine you say
 MEXICO
 THE THREE CABALLEROS
 """
     candidates = [title for _, title in extract_text_candidates(text)]
     assert "SPIRIT OF THE AIR FORCE" in candidates
+    assert "Official Song of the Cadet Battalion" in candidates
     assert "Col. WILLIAM J. CLINCH" not in candidates
     assert "MEXICO" in candidates
     assert "THE THREE CABALLEROS" in candidates
