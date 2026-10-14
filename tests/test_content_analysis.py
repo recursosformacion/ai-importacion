@@ -305,3 +305,53 @@ def test_integrated_intake_links_resume_inventory_and_analysis_safely():
     assert "href='/items/score%2Fedition/content-analysis'" in links
     assert "&lt;Score &amp; edition&gt;" in links
     assert "<Score & edition>" not in links
+
+
+
+def test_integrated_intake_caps_failed_download_attempts(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "intake-attempt-limit.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    attempts = []
+
+    async def failed_download(file_id):
+        attempts.append(file_id)
+        with file_catalog.db() as conn:
+            conn.execute(
+                "UPDATE archive_files SET download_status='error',download_error=? WHERE id=?",
+                ("red no disponible", file_id),
+            )
+
+    monkeypatch.setattr(file_catalog, "download_file", failed_download)
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            conn.execute(
+                "INSERT INTO global_discovery_seen(identifier,first_query_key,score,reason,seen_at) VALUES(?,?,?,?,?)",
+                ("anthology-test", "test-query", 100, "music score", stamp),
+            )
+            conn.execute(
+                "INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status) VALUES(?,?,?,?)",
+                ("anthology-test", stamp, 2, "ok"),
+            )
+            for name in ("first-score.pdf", "second-score.pdf"):
+                conn.execute(
+                    """INSERT INTO archive_files
+                    (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,relevant,inventory_seen_at)
+                    VALUES(?,?,?,?,?,?,?,?)""",
+                    ("anthology-test", name, name,
+                     "https://archive.org/download/anthology-test/" + name, 100, "PDF", 1, stamp),
+                )
+
+        response = client.post("/intake/run", data={"items": "1", "downloads": "1"})
+        assert response.status_code == 200
+        assert len(attempts) == 1
+        assert "Intentos de descarga realizados: <b>1</b> de un máximo de 1" in response.text
+        assert "descargas correctas: <b>0</b>" in response.text
+        with main.db() as conn:
+            statuses = [row[0] for row in conn.execute(
+                "SELECT download_status FROM archive_files ORDER BY id"
+            ).fetchall()]
+        assert statuses.count("error") == 1
+        assert statuses.count("not_downloaded") == 1
