@@ -712,6 +712,7 @@ def content_analysis(identifier: str, step: int = 4):
     rationale = assessment["rationale"] if assessment else ""
     active_step = 5 if step == 5 else 4
     body = workflow_nav(identifier, active_step)
+    body += "<p class='muted'>Este flujo es independiente: no se crean ni exportan obras OSAP.</p>"
     body += f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
     body += "<p>Clasifica el elemento, analiza los archivos disponibles y revisa las obras sugeridas. No tienes que completar todos los análisis técnicos: usa solo los que correspondan a los archivos descargados.</p>"
     body += "<section class='panel' id='clasificacion'><h2><span class='step-number'>1</span>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
