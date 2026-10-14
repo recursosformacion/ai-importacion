@@ -22,6 +22,63 @@ SCRAPE_FIELDS = ",".join(FIELDS)
 USER_AGENT = "OSAP-AI-Importacion/0.1 (+https://openmusicrepository.com; metadata research)"
 
 
+def count_review_cases(conn) -> int:
+    """Count exactly the items the human review queue can show."""
+    return int(conn.execute(
+        """SELECT COUNT(DISTINCT a.identifier)
+           FROM archive_items a
+           JOIN global_discovery_seen s ON s.identifier=a.identifier
+           WHERE s.score>0
+             AND EXISTS (SELECT 1 FROM archive_files f
+                         WHERE f.identifier=a.identifier AND f.download_status='downloaded')
+             AND (
+               EXISTS (SELECT 1 FROM archive_content_suggestions cs
+                       WHERE cs.identifier=a.identifier AND cs.status='pending')
+               OR (
+                 NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
+                 AND (
+                   EXISTS (SELECT 1 FROM archive_file_analyses fa
+                           WHERE fa.identifier=a.identifier AND fa.status IN ('ok','error'))
+                   OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
+                              WHERE pe.identifier=a.identifier
+                                AND pe.status IN ('text_available','ocr_completed','ocr_no_text',
+                                                  'image_ocr_completed','text_checked'))
+                 )
+               )
+               OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
+                          WHERE pe.identifier=a.identifier
+                            AND pe.status IN ('error','ocr_error','ocr_unavailable',
+                                              'image_ocr_no_text','text_error'))
+               OR EXISTS (SELECT 1 FROM archive_files f
+                          WHERE f.identifier=a.identifier AND f.relevant=1
+                            AND f.download_status='downloaded'
+                            AND lower(f.file_name) NOT LIKE '%.pdf'
+                            AND lower(f.file_name) NOT LIKE '%.txt'
+                            AND lower(f.file_name) NOT LIKE '%.ocr'
+                            AND lower(f.file_name) NOT LIKE '%.abc'
+                            AND lower(f.file_name) NOT LIKE '%.ly'
+                            AND lower(f.file_name) NOT LIKE '%.mei'
+                            AND lower(f.file_name) NOT LIKE '%.mscx'
+                            AND lower(f.file_name) NOT LIKE '%.mscz'
+                            AND lower(f.file_name) NOT LIKE '%.capx'
+                            AND lower(f.file_name) NOT LIKE '%.musicxml'
+                            AND lower(f.file_name) NOT LIKE '%.mxl'
+                            AND lower(f.file_name) NOT LIKE '%.xml'
+                            AND lower(f.file_name) NOT LIKE '%.mid'
+                            AND lower(f.file_name) NOT LIKE '%.midi'
+                            AND lower(f.file_name) NOT LIKE '%.kar'
+                            AND lower(f.file_name) NOT LIKE '%.png'
+                            AND lower(f.file_name) NOT LIKE '%.jpg'
+                            AND lower(f.file_name) NOT LIKE '%.jpeg'
+                            AND lower(f.file_name) NOT LIKE '%.webp'
+                            AND lower(f.file_name) NOT LIKE '%.tif'
+                            AND lower(f.file_name) NOT LIKE '%.tiff'
+                            AND lower(f.file_name) NOT LIKE '%.bmp'
+                            AND lower(f.file_name) NOT LIKE '%.jp2')
+             )"""
+    ).fetchone()[0])
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -355,27 +412,7 @@ def home(request: Request):
         downloaded_count = conn.execute(
             "SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded'"
         ).fetchone()[0]
-        pending_count = conn.execute(
-            """SELECT COUNT(*) FROM archive_items a
-               JOIN global_discovery_seen s ON s.identifier=a.identifier
-               WHERE s.score>0
-                 AND EXISTS (SELECT 1 FROM archive_files f
-                             WHERE f.identifier=a.identifier AND f.download_status='downloaded')
-                 AND (
-                   EXISTS (SELECT 1 FROM archive_content_suggestions cs
-                           WHERE cs.identifier=a.identifier AND cs.status='pending')
-                   OR (
-                     NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
-                     AND (
-                       EXISTS (SELECT 1 FROM archive_file_analyses fa
-                               WHERE fa.identifier=a.identifier AND fa.status='ok')
-                       OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
-                                  WHERE pe.identifier=a.identifier
-                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed','text_checked'))
-                     )
-                   )
-                 )"""
-        ).fetchone()[0]
+        pending_count = count_review_cases(conn)
         review_items = conn.execute(
             """SELECT a.identifier,a.title,a.creator_json,a.item_date,a.rights_status
                FROM archive_items a
@@ -718,27 +755,7 @@ async def run_capture_pipeline():
         candidates = conn.execute("SELECT COUNT(*) FROM global_discovery_seen WHERE score>0").fetchone()[0]
         inventoried = conn.execute("SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok'").fetchone()[0]
         downloaded = conn.execute("SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded'").fetchone()[0]
-        pending = conn.execute(
-            """SELECT COUNT(*) FROM archive_items a
-               JOIN global_discovery_seen s ON s.identifier=a.identifier
-               WHERE s.score>0
-                 AND EXISTS (SELECT 1 FROM archive_files f
-                             WHERE f.identifier=a.identifier AND f.download_status='downloaded')
-                 AND (
-                   EXISTS (SELECT 1 FROM archive_content_suggestions cs
-                           WHERE cs.identifier=a.identifier AND cs.status='pending')
-                   OR (
-                     NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
-                     AND (
-                       EXISTS (SELECT 1 FROM archive_file_analyses fa
-                               WHERE fa.identifier=a.identifier AND fa.status='ok')
-                       OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
-                                  WHERE pe.identifier=a.identifier
-                                    AND pe.status IN ('text_available','ocr_completed','ocr_no_text','image_ocr_completed','text_checked'))
-                     )
-                   )
-                 )"""
-        ).fetchone()[0]
+        pending = count_review_cases(conn)
     body = "<h1>Lote de captación terminado</h1><p>La aplicación ha continuado la búsqueda y ha intentado inventariar, descargar y analizar material musical sin requerir decisiones para cada elemento.</p>"
     body += "<div class='metrics'>" + "".join(
         f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>"
