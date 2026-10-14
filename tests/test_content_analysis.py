@@ -430,3 +430,53 @@ def test_global_discovery_resumes_each_query_from_saved_cursor(tmp_path, monkeyp
     assert all(row["cursor"] is None for row in final_states)
     assert all(row["status"] == "completed" and row["scanned_count"] == 2 for row in final_states)
     assert unique_seen == len(expected_keys) * 2
+
+
+def test_global_discovery_retries_failed_query_without_losing_cursor(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "discovery-retry.sqlite3"))
+    calls = []
+    failed_once = set()
+    failing_key = main.GLOBAL_DISCOVERY_QUERIES[0][0]
+
+    async def flaky_archive_scrape(query, count, cursor=None, query_key="default"):
+        calls.append((query_key, cursor))
+        if query_key == failing_key and query_key not in failed_once:
+            failed_once.add(query_key)
+            raise RuntimeError("temporary archive outage")
+        next_cursor = "resume-" + query_key if cursor is None else None
+        return {
+            "total": 1,
+            "items": [{
+                "identifier": "sheet-music-retry-" + query_key,
+                "title": "Sheet music score " + query_key,
+                "description": "Musical score",
+            }],
+            "cursor": next_cursor,
+        }
+
+    monkeypatch.setattr(main, "archive_scrape", flaky_archive_scrape)
+    with TestClient(main.app) as client:
+        first = client.post("/discover", data={"rows": "100"})
+        assert first.status_code == 200
+        assert "temporary archive outage" in first.text
+        with main.db() as conn:
+            state = conn.execute(
+                "SELECT cursor,status,scanned_count FROM global_discovery_queries WHERE query_key=?",
+                (failing_key,),
+            ).fetchone()
+        assert state["cursor"] is None
+        assert state["status"] == "error"
+        assert state["scanned_count"] == 0
+
+        second = client.post("/discover", data={"rows": "100"})
+        assert second.status_code == 200
+        assert (failing_key, None) in calls
+        with main.db() as conn:
+            state = conn.execute(
+                "SELECT cursor,status,scanned_count FROM global_discovery_queries WHERE query_key=?",
+                (failing_key,),
+            ).fetchone()
+        assert state["cursor"] == "resume-" + failing_key
+        assert state["status"] == "active"
+        assert state["scanned_count"] == 1
+
