@@ -307,8 +307,8 @@ def workflow_nav(identifier: str | None = None, active: int = 1) -> str:
         (1, "Buscar", "/", None),
         (2, "Elegir elemento", f"/items/{ident}" if identifier else "/items", None),
         (3, "Archivos", f"/files/{ident}" if identifier else "/items", None),
-        (4, "Analizar", f"/items/{ident}/content-analysis#analisis" if identifier else "/items", "analisis"),
-        (5, "Revisar obras", f"/items/{ident}/content-analysis#obras" if identifier else "/items", "obras"),
+        (4, "Analizar", f"/items/{ident}/content-analysis?step=4#analisis" if identifier else "/items", "analisis"),
+        (5, "Revisar obras", f"/items/{ident}/content-analysis?step=5#obras" if identifier else "/items", "obras"),
     ]
     parts = []
     for number, label, href, _anchor in links:
@@ -690,7 +690,7 @@ CONTENT_SCOPES = {
 
 
 @app.get("/items/{identifier}/content-analysis", response_class=HTMLResponse)
-def content_analysis(identifier: str):
+def content_analysis(identifier: str, step: int = 4):
     with db() as conn:
         item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
         if not item:
@@ -700,7 +700,8 @@ def content_analysis(identifier: str):
         files = conn.execute("SELECT file_name,archive_format,size_bytes,relevant FROM archive_files WHERE identifier=? ORDER BY relevant DESC,file_name", (identifier,)).fetchall()
     scope = assessment["scope"] if assessment else "uncertain"
     rationale = assessment["rationale"] if assessment else ""
-    body = workflow_nav(identifier, 4)
+    active_step = 5 if step == 5 else 4
+    body = workflow_nav(identifier, active_step)
     body += f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
     body += "<p>Clasifica el elemento, analiza los archivos disponibles y revisa las obras sugeridas. No tienes que completar todos los análisis técnicos: usa solo los que correspondan a los archivos descargados.</p>"
     body += "<section class='panel' id='clasificacion'><h2><span class='step-number'>1</span>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
@@ -756,7 +757,7 @@ def content_analysis(identifier: str):
         body += "</table>"
     else:
         body += "<p>Todavía no se han registrado obras candidatas. No se infiere automáticamente que el elemento equivalga a una sola obra.</p>"
-    body += "<div class='section-nav'><a href='#archivos'>← Paso anterior: archivos</a><a href='#obras'>Siguiente: revisar obras →</a></div></section>"
+    body += "<div class='section-nav'><a href='#archivos'>← Paso anterior: archivos</a><a href='/items/{esc(identifier)}/content-analysis?step=5#obras'>Siguiente: revisar obras →</a></div></section>"
     return page("Análisis de contenido", body)
 
 
