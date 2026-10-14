@@ -887,7 +887,7 @@ def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int,
             if match:
                 found.append((line_no, match.group(1).strip()))
     elif suffix == ".mei":
-        pattern = re.compile(r"<(?:[A-Za-z_][\\w.-]*:)?title\\b[^>]*>(.*?)</(?:[A-Za-z_][\\w.-]*:)?title\\s*>", re.IGNORECASE | re.DOTALL)
+                pattern = re.compile(r"<(?:[A-Za-z_][\w.-]*:)?title\b[^>]*>(.*?)</(?:[A-Za-z_][\w.-]*:)?title\s*>", re.IGNORECASE | re.DOTALL)
         for match in pattern.finditer(text):
             title = re.sub(r"<[^>]+>", " ", match.group(1))
             title = " ".join(html.unescape(title).split())
