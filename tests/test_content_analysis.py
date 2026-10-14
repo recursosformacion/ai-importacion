@@ -935,3 +935,52 @@ def test_midi_analysis_records_tracks_instruments_and_timing(tmp_path, monkeypat
     assert result["key_signatures"] == ["G"]
     assert result["instruments"][0]["program"] == 40
     assert result["duration_seconds"] == 0.5
+
+
+
+def test_integrated_intake_runs_automatic_analysis_after_successful_download(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "intake-auto-analysis.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    analyzed = []
+    local_pdf = tmp_path / "downloaded.pdf"
+    local_pdf.write_bytes(b"fixture PDF")
+
+    async def successful_download(file_id):
+        with file_catalog.db() as conn:
+            conn.execute(
+                "UPDATE archive_files SET download_status='downloaded',local_path=?,sha256=? WHERE id=?",
+                (str(local_pdf), "sha-fixture", file_id),
+            )
+
+    def fake_extract(identifier):
+        analyzed.append(identifier)
+
+    monkeypatch.setattr(file_catalog, "download_file", successful_download)
+    monkeypatch.setattr(main, "extract_content_suggestions", fake_extract)
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            stamp = main.now()
+            conn.execute(
+                "INSERT INTO global_discovery_seen(identifier,first_query_key,score,reason,seen_at) VALUES(?,?,?,?,?)",
+                ("anthology-test", "test-query", 100, "music score", stamp),
+            )
+            conn.execute(
+                "INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status) VALUES(?,?,?,?)",
+                ("anthology-test", stamp, 1, "ok"),
+            )
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,relevant,inventory_seen_at)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                ("anthology-test", "score.pdf", "score.pdf",
+                 "https://archive.org/download/anthology-test/score.pdf", 100, "PDF", 1, stamp),
+            )
+
+        response = client.post("/intake/run", data={"items": "1", "downloads": "1"})
+        assert response.status_code == 200
+        assert "Resultado del análisis automático" in response.text
+        assert "Inventarios nuevos correctos" in response.text
+        assert analyzed == ["anthology-test"]
