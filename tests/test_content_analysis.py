@@ -613,10 +613,26 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "PDF con texto extraíble: 1" in page.text
         assert "PDF que probablemente necesitan OCR: 1" in page.text
         assert "no se han reconocido mediante OCR" in page.text
+        assert "Estado de extracción por PDF" in page.text
+        assert "scores-text.pdf" in page.text
+        assert "scores-scan.pdf" in page.text
+        assert "Probablemente necesita OCR" in page.text
 
     with main.db() as conn:
         suggestions = conn.execute(
             "SELECT suggestion_text FROM archive_content_suggestions ORDER BY suggestion_text"
         ).fetchall()
+        pdf_results = conn.execute(
+            """SELECT f.file_name,e.status,e.page_count,e.extracted_characters
+            FROM archive_pdf_extractions e JOIN archive_files f ON f.id=e.file_id
+            ORDER BY f.file_name"""
+        ).fetchall()
     assert [row["suggestion_text"] for row in suggestions] == ["Mass in G minor", "Sonata for Violin and Piano"]
+    statuses = {row["file_name"]: row["status"] for row in pdf_results}
+    assert statuses == {
+        "broken.pdf": "error",
+        "scores-scan.pdf": "ocr_needed",
+        "scores-text.pdf": "text_available",
+    }
+    assert all(row["page_count"] == 1 for row in pdf_results)
 
