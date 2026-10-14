@@ -312,7 +312,7 @@ def page(title: str, body: str) -> HTMLResponse:
     th{background:#edf1f5}.muted{color:#5d6977;font-size:.9rem}.metrics{display:flex;gap:1rem;flex-wrap:wrap}
     .metric{background:white;border:1px solid #dce2e8;border-radius:8px;padding:1rem;min-width:130px}
     a{color:#175ca8}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f4f6;padding:1rem}
-    </style>"""
+    .workflow{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:1rem;margin:1rem 0}.workflow-steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.8rem 0}.workflow-steps a{display:block;padding:.65rem .85rem;border:1px solid #cbd5e1;border-radius:8px;text-decoration:none;background:#f8fafc;color:#174f89}.workflow-steps a.active{background:#174f89;color:#fff;border-color:#174f89;font-weight:700}.workflow-help{margin:.4rem 0;color:#5d6977}.section-nav{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-top:1rem;padding-top:.7rem;border-top:1px solid #e1e6eb}.section-nav a{font-weight:600}.step-number{display:inline-block;background:#e8eef5;border-radius:50%;padding:.15rem .5rem;margin-right:.35rem}\n    </style>\"\"\"
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + esc(title) + "</title>" + style + "<header><b><a href='/'>AI Importación</a></b><a href='/items'>Catálogo local</a><a href='/intake'>Captación integrada</a><span>Captación independiente · sin altas en OSAP</span></header><main>" + body + "<p class='muted'>La disponibilidad de un archivo no confirma por sí sola que su reutilización esté permitida.</p></main></html>")
 
 
@@ -677,11 +677,12 @@ def content_analysis(identifier: str):
     rationale = assessment["rationale"] if assessment else ""
     body = f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
     body += "<p>Esta fase determina qué representa el elemento de Internet Archive. Puede ser una sola partitura, un volumen con muchas obras o un contenedor de archivos. Aquí no se crean ni exportan obras OSAP.</p>"
-    body += "<section class='panel'><h2>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
+    body += "<nav class='workflow' aria-label='Pasos de captación'><b>Flujo de trabajo · paso 3 de 4</b><div class='workflow-steps'><a href='/items/" + esc(identifier) + "'>1. Elemento</a><a href='/files/" + esc(identifier) + "'>2. Archivos</a><a class='active' href='#analisis'>3. Analizar</a><a href='#obras'>4. Revisar obras</a></div><p class='workflow-help'>Puedes saltar directamente a cualquier paso. Los datos se guardan localmente; no se crean ni exportan obras a OSAP.</p></nav>"
+    body += "<section class='panel' id='clasificacion'><h2><span class='step-number'>1</span>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
     for value, label in CONTENT_SCOPES.items():
         body += f"<option value='{value}' {'selected' if scope == value else ''}>{label}</option>"
     body += f"</select></label><p><label>Justificación / evidencias consultadas<br><textarea name='rationale' rows='3' style='width:95%'>{esc(rationale)}</textarea></label></p><button>Guardar clasificación</button></form></section>"
-    body += "<section class='panel'><h2>Ficheros conocidos</h2>"
+    body += "<section class='panel' id='archivos'><h2><span class='step-number'>2</span>Ficheros conocidos</h2>"
     if not files:
         body += "<p>No hay inventario de ficheros todavía. <a href='/files/" + esc(identifier) + "'>Consultar el inventario</a> para identificar PDF, MusicXML, MIDI, ZIP o imágenes.</p>"
     else:
@@ -695,7 +696,7 @@ def content_analysis(identifier: str):
         analyses = conn.execute("""SELECT a.*, f.file_name FROM archive_file_analyses a
             JOIN archive_files f ON f.id=a.file_id
             WHERE a.identifier=? ORDER BY a.analyzed_at DESC,f.file_name""", (identifier,)).fetchall()
-    body += "<section class='panel'><h2>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
+    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
         for result in analyses:
@@ -709,7 +710,7 @@ def content_analysis(identifier: str):
             body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
     with db() as conn:
         suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
     if suggestions:
@@ -721,7 +722,7 @@ def content_analysis(identifier: str):
             body += "</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel'><h2>Obras o unidades de contenido identificadas</h2><p>Registra cada obra visible dentro de un PDF, volumen o conjunto. El fichero y las páginas son opcionales, pero ayudan a localizarla después.</p>"
+    body += "<section class='panel' id='obras'><h2><span class='step-number'>4</span>Obras o unidades de contenido identificadas</h2><p>Registra cada obra visible dentro de un PDF, volumen o conjunto. El fichero y las páginas son opcionales, pero ayudan a localizarla después.</p>"
     body += "<form method='post' action='/items/" + esc(identifier) + "/content-analysis/units'><p><label>Título de la obra o unidad *<br><input type='text' name='title' required></label></p><p><label>Compositor / creador<br><input type='text' name='creator'></label></p><p><label>Fichero de origen<br><input type='text' name='source_file'></label></p><p><label>Páginas / rango / localizador<br><input type='text' name='page_range' placeholder='p. 1–8, pistas 3–5, páginas del PDF'></label></p><p><label>Evidencia (índice, portada, contenido, OCR...)<br><input type='text' name='evidence' style='width:90%'></label></p><p><label>Notas<br><textarea name='notes' rows='2' style='width:95%'></textarea></label></p><button>Añadir obra candidata</button></form>"
     if units:
         body += "<h3>Contenido registrado</h3><table><tr><th>#</th><th>Título / creador</th><th>Localizador</th><th>Evidencia / notas</th><th>Estado</th></tr>"
@@ -730,7 +731,7 @@ def content_analysis(identifier: str):
         body += "</table>"
     else:
         body += "<p>Todavía no se han registrado obras candidatas. No se infiere automáticamente que el elemento equivalga a una sola obra.</p>"
-    body += "</section>"
+    body += "<div class='section-nav'><a href='#archivos'>← Paso anterior: archivos</a><a href='#obras'>Siguiente: revisar obras →</a></div></section>"
     return page("Análisis de contenido", body)
 
 
