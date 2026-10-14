@@ -634,12 +634,12 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
 
         page = client.get(response.headers["location"])
         assert "PDF con texto extraíble: 1" in page.text
-        assert "PDF que probablemente necesitan OCR: 1" in page.text
-        assert "no se han reconocido mediante OCR" in page.text
+        assert "PDF que aún necesitan OCR: 1" in page.text
+        assert "Tesseract no está instalado" in page.text
         assert "Estado de extracción por PDF" in page.text
         assert "scores-text.pdf" in page.text
         assert "scores-scan.pdf" in page.text
-        assert "Probablemente necesita OCR" in page.text
+        assert "OCR no disponible" in page.text
         assert "Archivos ABC/LilyPond/MEI/MuseScore leídos: 5" in page.text
         assert "Otros formatos descargados, pendientes de análisis automático" in page.text
         assert "score.sib" in page.text
@@ -661,7 +661,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
     statuses = {row["file_name"]: row["status"] for row in pdf_results}
     assert statuses == {
         "broken.pdf": "error",
-        "scores-scan.pdf": "ocr_needed",
+        "scores-scan.pdf": "ocr_unavailable",
         "scores-text.pdf": "text_available",
     }
     assert {row["file_name"]: row["page_count"] for row in pdf_results} == {
