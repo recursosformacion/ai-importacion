@@ -675,3 +675,80 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         "broken.pdf": 0, "scores-scan.pdf": 1, "scores-text.pdf": 1,
     }
 
+def test_scanned_pdf_ocr_extracts_text_and_creates_suggestion(tmp_path, monkeypatch):
+    import io
+    import fitz
+    import pypdf
+    import pytesseract
+    from PIL import Image
+
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "ocr-success.sqlite3"))
+    pdf_path = tmp_path / "scan.pdf"
+    pdf_path.write_bytes(b"mock PDF")
+
+    class Page:
+        def extract_text(self):
+            return ""
+
+    class Reader:
+        pages = [Page()]
+
+        def __init__(self, path):
+            pass
+
+    class Pixmap:
+        def tobytes(self, image_format):
+            buffer = io.BytesIO()
+            Image.new("RGB", (16, 16), "white").save(buffer, format="PNG")
+            return buffer.getvalue()
+
+    class RasterPage:
+        def get_pixmap(self, matrix, alpha):
+            return Pixmap()
+
+    class Document:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def __getitem__(self, index):
+            assert index == 0
+            return RasterPage()
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+    monkeypatch.setattr(pytesseract, "get_tesseract_version", lambda: "5.0")
+    monkeypatch.setattr(pytesseract, "image_to_string", lambda image, lang: "Prelude in C")
+    monkeypatch.setattr(fitz, "open", lambda path: Document())
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path)
+                VALUES(?,?,?,?,?,'downloaded',?)""",
+                ("anthology-test", "scan.pdf", "scan.pdf",
+                 "https://archive.org/download/anthology-test/scan.pdf",
+                 main.now(), str(pdf_path)),
+            )
+
+        response = client.post(
+            "/items/anthology-test/content-analysis/extract", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert "pdf_ocr_realizados=1" in response.headers["location"]
+
+    with main.db() as conn:
+        result = conn.execute(
+            """SELECT status,extracted_characters FROM archive_pdf_extractions
+            WHERE identifier='anthology-test'"""
+        ).fetchone()
+        suggestions = conn.execute(
+            "SELECT suggestion_text FROM archive_content_suggestions"
+        ).fetchall()
+    assert result["status"] == "ocr_completed"
+    assert result["extracted_characters"] == len("Prelude in C")
+    assert [row["suggestion_text"] for row in suggestions] == ["Prelude in C"]
+
