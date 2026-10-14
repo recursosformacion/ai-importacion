@@ -199,7 +199,19 @@ async def download_file(file_id: int):
         return RedirectResponse(url="/files/" + quote(row["identifier"], safe=""), status_code=303)
     folder = DOWNLOAD_DIR / row["identifier"]
     folder.mkdir(parents=True, exist_ok=True)
-    destination = folder / safe_filename(row["file_name"])
+    local_name = safe_filename(row["file_name"])
+    with db() as conn:
+        collisions = conn.execute(
+            "SELECT COUNT(*) FROM archive_files WHERE identifier=? AND file_name_safe=? AND file_name<>?",
+            (row["identifier"], row["file_name_safe"], row["file_name"]),
+        ).fetchone()[0]
+    if collisions:
+        safe_path = Path(local_name)
+        suffix = safe_path.suffix
+        stem = safe_path.name[:-len(suffix)] if suffix else safe_path.name
+        digest = hashlib.sha256(row["file_name"].encode("utf-8")).hexdigest()[:10]
+        local_name = stem[:150] + "-" + digest + suffix
+    destination = folder / local_name
     temporary = destination.with_name(destination.name + ".part")
     total = 0
     digest = hashlib.sha256()
