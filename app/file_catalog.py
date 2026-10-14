@@ -311,6 +311,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
     items = max(1, min(int(items), 20))
     downloads = max(0, min(int(downloads), 10))
     inventoried_now = 0
+    inventoried_items: list[tuple[str, str]] = []
     inventory_errors: list[str] = []
     downloaded_now = 0
     download_errors: list[str] = []
@@ -358,6 +359,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
                     VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET checked_at=excluded.checked_at,
                     file_count=excluded.file_count,status='ok',error_text=NULL""", (identifier,stamp,recorded))
             inventoried_now += 1
+            inventoried_items.append((identifier, target['title'] or identifier))
         except Exception as exc:
             inventory_errors.append(f"{identifier}: {str(exc)[:180]}")
             with db() as conn:
@@ -392,7 +394,12 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
             else:
                 download_errors.append(f"{row['identifier']} / {row['file_name']}: descarga fallida")
 
-    summary = f"<p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Descargas correctas en esta ejecución: <b>{downloaded_now}</b> de un máximo de {downloads}.</p>"
+    summary = f"<h1>Resultado de captación</h1><p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Descargas correctas en esta ejecución: <b>{downloaded_now}</b> de un máximo de {downloads}.</p>"
+    if inventoried_items:
+        summary += "<h3>Continuar con los elementos inventariados</h3><ul>" + "".join(
+            "<li><a href='/files/" + quote(identifier, safe="") + "'>" + esc(title) + " · ver archivos</a> | <a href='/items/" + quote(identifier, safe="") + "/content-analysis'>analizar</a></li>"
+            for identifier, title in inventoried_items
+        ) + "</ul>"
     if inventory_errors:
         summary += "<h3>Errores de inventario</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in inventory_errors) + "</ul>"
     if download_errors:
