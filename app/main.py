@@ -105,6 +105,16 @@ def init_db():
           analyzed_at TEXT NOT NULL,
           sha256 TEXT);
         CREATE INDEX IF NOT EXISTS idx_archive_file_analyses_identifier ON archive_file_analyses(identifier);
+        CREATE TABLE IF NOT EXISTS archive_pdf_extractions(
+          file_id INTEGER PRIMARY KEY REFERENCES archive_files(id) ON DELETE CASCADE,
+          identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          status TEXT NOT NULL,
+          page_count INTEGER NOT NULL DEFAULT 0,
+          extracted_characters INTEGER NOT NULL DEFAULT 0,
+          error_text TEXT,
+          analyzed_at TEXT NOT NULL,
+          sha256 TEXT);
+        CREATE INDEX IF NOT EXISTS idx_archive_pdf_extractions_identifier ON archive_pdf_extractions(identifier);
         """)
 
 
@@ -300,6 +310,26 @@ def esc(value) -> str:
     return html.escape("" if value is None else str(value))
 
 
+def workflow_nav(identifier: str | None = None, active: int = 1) -> str:
+    """Persistent five-step guide; steps remain visible across the item workflow."""
+    ident = quote(identifier or "", safe="")
+    links = [
+        (1, "Buscar", "/", None),
+        (2, "Elegir elemento", f"/items/{ident}" if identifier else "/items", None),
+        (3, "Archivos", f"/files/{ident}" if identifier else "/items", None),
+        (4, "Analizar", f"/items/{ident}/content-analysis?step=4#analisis" if identifier else "/items", "analisis"),
+        (5, "Revisar obras", f"/items/{ident}/content-analysis?step=5#obras" if identifier else "/items", "obras"),
+    ]
+    parts = []
+    for number, label, href, _anchor in links:
+        cls = "active" if number == active else ""
+        parts.append(f"<a class='{cls}' href='{href}'><span>{number}</span> {label}</a>")
+    return ("<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso "
+            + str(active) + " de 5</b><div class='workflow-steps'>" + "".join(parts) +
+            "</div><p class='workflow-help'>Sigue los pasos de izquierda a derecha. Puedes volver a cualquiera sin perder lo guardado. "
+            "Todo permanece en esta aplicación local; no se crean ni exportan obras a OSAP.</p></nav>")
+
+
 def page(title: str, body: str) -> HTMLResponse:
     style = """<style>
     body{font:16px system-ui,sans-serif;color:#20242a;background:#f4f6f8;margin:0}
@@ -312,6 +342,7 @@ def page(title: str, body: str) -> HTMLResponse:
     th{background:#edf1f5}.muted{color:#5d6977;font-size:.9rem}.metrics{display:flex;gap:1rem;flex-wrap:wrap}
     .metric{background:white;border:1px solid #dce2e8;border-radius:8px;padding:1rem;min-width:130px}
     a{color:#175ca8}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f4f6;padding:1rem}
+    .workflow{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:1rem;margin:1rem 0}.workflow-steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.8rem 0}.workflow-steps a{display:block;padding:.65rem .85rem;border:1px solid #cbd5e1;border-radius:8px;text-decoration:none;background:#f8fafc;color:#174f89}.workflow-steps a span{display:inline-grid;place-items:center;border-radius:50%;background:#e5ebf2;min-width:1.5rem;height:1.5rem;margin-right:.25rem}.workflow-steps a.active{background:#174f89;color:#fff;border-color:#174f89;font-weight:700}.workflow-steps a.active span{background:#fff;color:#174f89}.workflow-help{margin:.4rem 0;color:#5d6977}.section-nav{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-top:1rem;padding-top:.7rem;border-top:1px solid #e1e6eb}.section-nav a{font-weight:600}.step-number{display:inline-block;background:#e8eef5;border-radius:50%;padding:.15rem .5rem;margin-right:.35rem}
     </style>"""
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + esc(title) + "</title>" + style + "<header><b><a href='/'>AI Importación</a></b><a href='/items'>Catálogo local</a><a href='/intake'>Captación integrada</a><span>Captación independiente · sin altas en OSAP</span></header><main>" + body + "<p class='muted'>La disponibilidad de un archivo no confirma por sí sola que su reutilización esté permitida.</p></main></html>")
 
@@ -329,13 +360,24 @@ def home(request: Request):
                   conn.execute("SELECT COUNT(*) FROM archive_items WHERE review_status='pending'").fetchone()[0]]
         items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 20").fetchall()
         runs = conn.execute("SELECT * FROM search_runs ORDER BY id DESC LIMIT 8").fetchall()
-    body = "<h1>Captación de partituras</h1><p>La exploración global localiza candidatos musicales sin exigir un compositor ni un título. Los metadatos se filtran automáticamente; la revisión del contenido y de los derechos sigue siendo necesaria.</p>"
+    body = workflow_nav(None, 1)
+    body += "<h1>Captación de partituras</h1><p>Empieza por localizar candidatos en Internet Archive. Después elige un elemento, consulta sus archivos, analiza el contenido y revisa las obras sugeridas.</p>"
     body += "<div class='metrics'>" + "".join(f"<div class='metric'><span class='muted'>{label}</span><h2>{value}</h2></div>" for label, value in zip(["Elementos catalogados","Búsquedas realizadas","Pendientes de revisión"], counts)) + "</div>"
     ensure_global_discovery_queries()
     with db() as conn:
         discovery = conn.execute("SELECT COUNT(*) AS scanned, SUM(CASE WHEN score>0 THEN 1 ELSE 0 END) AS candidates FROM global_discovery_seen").fetchone()
         query_states = conn.execute("SELECT label,status,scanned_count,total_found FROM global_discovery_queries ORDER BY query_key").fetchall()
-    body += "<section class='panel'><h2>Exploración global reanudable</h2><p>La exploración usa varias consultas musicales independientes y la API de cursor de Internet Archive. Cada avance examina un lote de cada consulta activa; el cursor se guarda localmente para continuar sin volver al principio.</p><div class='metrics'><div class='metric'><span class='muted'>Elementos únicos examinados</span><h2>" + str(discovery["scanned"] or 0) + "</h2></div><div class='metric'><span class='muted'>Candidatos musicales únicos</span><h2>" + str(discovery["candidates"] or 0) + "</h2></div></div><form method='post' action='/discover'><label>Lote por consulta <select name='rows'>" + "".join(f"<option {'selected' if n==100 else ''}>{n}</option>" for n in [100,250,500]) + "</select></label> <button>Continuar exploración global</button></form><table><tr><th>Familia de búsqueda</th><th>Examinados</th><th>Coincidencias declaradas</th><th>Estado</th></tr>" + "".join(f"<tr><td>{esc(q['label'])}</td><td>{q['scanned_count']}</td><td>{esc(q['total_found'] if q['total_found'] is not None else '—')}</td><td>{esc(q['status'])}</td></tr>" for q in query_states) + "</table><p class='muted'>Los totales de consultas se solapan: no deben sumarse como obras únicas. Los candidatos se filtran por metadatos; todavía hay que inspeccionar los archivos y su contenido. No se descargan archivos automáticamente ni se escribe en OSAP.</p></section>"
+    body += "<section class='panel'><h2>Exploración global reanudable</h2>"
+    body += "<p>La exploración usa varias consultas musicales independientes y la API de cursor de Internet Archive. Cada avance examina un lote de cada consulta activa; el cursor se guarda localmente para continuar sin volver al principio.</p>"
+    body += "<div class='metrics'>"
+    body += "<div class='metric'><span class='muted'>Elementos únicos examinados</span><h2>" + str(discovery["scanned"] or 0) + "</h2></div>"
+    body += "<div class='metric'><span class='muted'>Candidatos musicales únicos</span><h2>" + str(discovery["candidates"] or 0) + "</h2></div></div>"
+    body += "<form method='post' action='/discover'><label>Lote por consulta <select name='rows'>"
+    body += "".join("<option " + ("selected" if n == 100 else "") + ">" + str(n) + "</option>" for n in [100, 250, 500])
+    body += "</select></label> <button>Continuar exploración global</button></form>"
+    body += "<table><tr><th>Familia de búsqueda</th><th>Examinados</th><th>Coincidencias declaradas</th><th>Estado</th></tr>"
+    body += "".join("<tr><td>" + esc(q["label"]) + "</td><td>" + str(q["scanned_count"]) + "</td><td>" + esc(q["total_found"] if q["total_found"] is not None else "—") + "</td><td>" + esc(q["status"]) + "</td></tr>" for q in query_states)
+    body += "</table><p class='muted'>Los totales de consultas se solapan: no deben sumarse como obras únicas. Los candidatos se filtran por metadatos; todavía hay que inspeccionar los archivos y su contenido. No se descargan archivos automáticamente ni se escribe en OSAP.</p></section>"
     with db() as conn:
         inventory = conn.execute("""SELECT
             COUNT(*) AS checked,
@@ -457,7 +499,7 @@ async def discover(rows: Annotated[int, Form()] = 100):
             active = conn.execute(
                 "SELECT COUNT(*) FROM global_discovery_queries WHERE status!='completed'"
             ).fetchone()[0]
-            status = "error" if errors and not processed_queries else "completed"
+            status = "error" if errors and not processed_queries else ("partial" if errors else "completed")
             error_text = "; ".join(errors)[:1000] if errors else None
             conn.execute(
                 "UPDATE search_runs SET total_found=?,result_count=?,status=?,error_text=?,completed_at=? WHERE id=?",
@@ -602,12 +644,18 @@ async def search(query: Annotated[str, Form()], rows: Annotated[int, Form()] = 2
     except Exception as exc:
         with db() as conn:
             conn.execute("UPDATE search_runs SET status='error',error_text=?,completed_at=? WHERE id=?", (str(exc)[:1000], now(), run_id))
-        return page("Error de búsqueda", f"<h1>No se pudo completar la búsqueda</h1><p>{esc(exc)}</p><p><a href='/'>Volver</a></p>")
+        body = workflow_nav(None, 1)
+        body += ("<section class='panel'><h1>No se pudo completar la búsqueda</h1>"
+                 "<p>Internet Archive no ha respondido correctamente. Los resultados de esta búsqueda no se han guardado como completados; puedes volver al buscador e intentarlo de nuevo.</p>"
+                 f"<p class='muted'>Detalle técnico: {esc(exc)}</p>"
+                 "<p><a href='/'>← Volver al buscador y reintentar</a></p></section>")
+        return page("Error de búsqueda", body)
     with db() as conn:
         items = conn.execute("""SELECT ai.* FROM archive_items ai
             JOIN search_run_items sri ON sri.identifier=ai.identifier
             WHERE sri.search_run_id=? ORDER BY sri.result_rank LIMIT 100""", (run_id,)).fetchall()
-    body = f"<section class='panel'><h2>Resultado de búsqueda: {esc(query)}</h2><p>Internet Archive informa de <b>{result['total']}</b> coincidencias. Se han recibido y guardado <b>{saved}</b> elementos en esta búsqueda.</p><p><a href='/'>Volver al inicio</a></p></section><section class='panel'><h2>Resultados encontrados</h2>{item_table(items)}</section>"
+    body = workflow_nav(None, 2)
+    body += f"<section class='panel'><h2>Resultados de búsqueda: {esc(query)}</h2><p>Internet Archive informa de <b>{result['total']}</b> coincidencias. Se han recibido y guardado <b>{saved}</b> elementos en esta búsqueda.</p><p>Elige un resultado para abrir su ficha y continuar con el inventario de archivos.</p><p><a href='/'>← Volver a buscar</a></p></section><section class='panel'><h2>Resultados encontrados</h2>{item_table(items)}</section>"
     return page("Resultado de búsqueda", body)
 
 
@@ -619,7 +667,8 @@ def items_page(q: str = ""):
             items = conn.execute("SELECT * FROM archive_items WHERE title LIKE ? OR creator_json LIKE ? OR identifier LIKE ? ORDER BY last_seen_at DESC LIMIT 500", (like, like, like)).fetchall()
         else:
             items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 500").fetchall()
-    body = "<h1>Catálogo local</h1><form method='get'><input type='text' name='q' value='" + esc(q) + "' placeholder='Título, identificador o creador'> <button>Filtrar</button></form><section class='panel'>" + item_table(items) + "</section>"
+    body = workflow_nav(None, 2)
+    body += "<h1>Catálogo local · elige un elemento</h1><p>Abre la ficha del elemento que quieras investigar. El catálogo conserva los resultados localmente y no crea obras en OSAP.</p><form method='get'><input type='text' name='q' value='" + esc(q) + "' placeholder='Título, identificador o creador'> <button>Filtrar</button></form><section class='panel'>" + item_table(items) + "</section>"
     return page("Catálogo local", body)
 
 
@@ -630,9 +679,9 @@ def item_detail(identifier: str):
     if not item:
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
     item = dict(item)
-    body = f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
-    body += "<p><a href=\"/files/" + esc(identifier) + "\">Consultar inventario de ficheros y descargar</a></p>"
-    body += "<p><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar si contiene una o varias obras</a></p>"
+    body = workflow_nav(identifier, 2)
+    body += f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
+    body += "<section class='panel'><h2>¿Qué quieres hacer ahora?</h2><p>Empieza por consultar los archivos disponibles. Después podrás analizarlos y revisar las obras que aparezcan.</p><p><a href='/files/" + esc(identifier) + "'>Siguiente paso: consultar archivos →</a> &nbsp; <a href='/items/" + esc(identifier) + "/content-analysis'>Ir al análisis →</a></p></section>"
     body += "<section class='panel'><h2>Ficha local</h2>"
     for label, key in [("Identificador","identifier"),("Creador","creator_json"),("Fecha","item_date"),("Tipo","mediatype"),("Visto por primera vez","first_seen_at"),("Última observación","last_seen_at"),("Declaración de derechos de origen","rights_json")]:
         body += f"<p><b>{label}:</b> {esc(item[key] or '—')}</p>"
@@ -665,7 +714,7 @@ CONTENT_SCOPES = {
 
 
 @app.get("/items/{identifier}/content-analysis", response_class=HTMLResponse)
-def content_analysis(identifier: str):
+def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None, pdf_con_texto: int | None = None, pdf_ocr: int | None = None, errores_extraccion: int | None = None, sugerencias_nuevas: int | None = None, txt_leidos: int | None = None, notacion_leida: int | None = None):
     with db() as conn:
         item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
         if not item:
@@ -675,13 +724,23 @@ def content_analysis(identifier: str):
         files = conn.execute("SELECT file_name,archive_format,size_bytes,relevant FROM archive_files WHERE identifier=? ORDER BY relevant DESC,file_name", (identifier,)).fetchall()
     scope = assessment["scope"] if assessment else "uncertain"
     rationale = assessment["rationale"] if assessment else ""
-    body = f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
-    body += "<p>Esta fase determina qué representa el elemento de Internet Archive. Puede ser una sola partitura, un volumen con muchas obras o un contenedor de archivos. Aquí no se crean ni exportan obras OSAP.</p>"
-    body += "<section class='panel'><h2>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
+    active_step = 5 if step == 5 else 4
+    body = workflow_nav(identifier, active_step)
+    body += "<p class='muted'>Este flujo es independiente: no se crean ni exportan obras OSAP.</p>"
+    body += f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
+    body += "<p>Clasifica el elemento, analiza los archivos disponibles y revisa las obras sugeridas. No tienes que completar todos los análisis técnicos: usa solo los que correspondan a los archivos descargados.</p>"
+    if analizados is not None or omitidos is not None or fallidos is not None:
+        body += (
+            "<section class='panel'><h2>Resultado de la última ejecución</h2><p>"
+            + "Analizados ahora: <b>" + esc(analizados or 0) + "</b> · "
+            + "Omitidos por estar actualizados: <b>" + esc(omitidos or 0) + "</b> · "
+            + "Fallidos: <b>" + esc(fallidos or 0) + "</b></p></section>"
+        )
+    body += "<section class='panel' id='clasificacion'><h2><span class='step-number'>1</span>Clasificación del elemento</h2><form method='post' action='/items/" + esc(identifier) + "/content-analysis/scope'><label>¿Qué parece contener? <select name='scope'>"
     for value, label in CONTENT_SCOPES.items():
         body += f"<option value='{value}' {'selected' if scope == value else ''}>{label}</option>"
     body += f"</select></label><p><label>Justificación / evidencias consultadas<br><textarea name='rationale' rows='3' style='width:95%'>{esc(rationale)}</textarea></label></p><button>Guardar clasificación</button></form></section>"
-    body += "<section class='panel'><h2>Ficheros conocidos</h2>"
+    body += "<section class='panel' id='archivos'><h2><span class='step-number'>2</span>Ficheros conocidos</h2>"
     if not files:
         body += "<p>No hay inventario de ficheros todavía. <a href='/files/" + esc(identifier) + "'>Consultar el inventario</a> para identificar PDF, MusicXML, MIDI, ZIP o imágenes.</p>"
     else:
@@ -694,8 +753,16 @@ def content_analysis(identifier: str):
     with db() as conn:
         analyses = conn.execute("""SELECT a.*, f.file_name FROM archive_file_analyses a
             JOIN archive_files f ON f.id=a.file_id
-            WHERE a.identifier=? ORDER BY a.analyzed_at DESC,f.file_name""", (identifier,)).fetchall()
-    body += "<section class='panel'><h2>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
+            WHERE a.identifier=? ORDER BY a.analyzed_at DESC,f.file_name""", (identifier,)).fetchall();
+        pdf_extractions = conn.execute("""SELECT e.*, f.file_name FROM archive_pdf_extractions e
+            JOIN archive_files f ON f.id=e.file_id
+            WHERE e.identifier=? ORDER BY f.file_name""", (identifier,)).fetchall()
+        downloaded_files = conn.execute("""SELECT file_name,archive_format,size_bytes FROM archive_files
+            WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
+            ORDER BY file_name""", (identifier,)).fetchall()
+    auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz"}
+    unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
+    body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
         for result in analyses:
@@ -709,7 +776,21 @@ def content_analysis(identifier: str):
             body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer TXT/OCR, extraer títulos explícitos de ABC, LilyPond, MEI y MuseScore (.mscx/.mscz), y extraer texto de PDF que permitan copiarlo. En los PDF sin texto seleccionable informa de que probablemente necesitan OCR, pero no ejecuta OCR por sí misma. Las sugerencias requieren revisión humana.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    if any(value is not None for value in (pdf_con_texto, pdf_ocr, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida)):
+        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
+    if pdf_extractions:
+        body += "<h3>Estado de extracción por PDF</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
+        pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Probablemente necesita OCR", "error": "Error de lectura"}
+        for pdf_result in pdf_extractions:
+            body += f"<tr><td>{esc(pdf_result['file_name'])}</td><td>{esc(pdf_status_labels.get(pdf_result['status'], pdf_result['status']))}{('<br>' + esc(pdf_result['error_text'])) if pdf_result['error_text'] else ''}</td><td>{esc(pdf_result['page_count'])}</td><td>{esc(pdf_result['extracted_characters'])}</td><td>{esc(pdf_result['analyzed_at'])}</td></tr>"
+        body += "</table>"
+    if unparsed_files:
+        body += "<h3>Otros formatos descargados, pendientes de análisis automático</h3><p>Estos archivos están guardados localmente, pero esta versión todavía no extrae sus metadatos. Que aparezcan aquí no significa que sean inválidos.</p><table><tr><th>Archivo</th><th>Formato declarado</th><th>Tamaño</th></tr>"
+        for other_file in unparsed_files:
+            size_label = f"{other_file['size_bytes']:,} bytes" if other_file["size_bytes"] is not None else "—"
+            body += f"<tr><td>{esc(other_file['file_name'])}</td><td>{esc(other_file['archive_format'] or 'No indicado')}</td><td>{esc(size_label)}</td></tr>"
+        body += "</table>"
     with db() as conn:
         suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
     if suggestions:
@@ -721,7 +802,7 @@ def content_analysis(identifier: str):
             body += "</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel'><h2>Obras o unidades de contenido identificadas</h2><p>Registra cada obra visible dentro de un PDF, volumen o conjunto. El fichero y las páginas son opcionales, pero ayudan a localizarla después.</p>"
+    body += "<section class='panel' id='obras'><h2><span class='step-number'>4</span>Obras o unidades de contenido identificadas</h2><p>Registra cada obra visible dentro de un PDF, volumen o conjunto. El fichero y las páginas son opcionales, pero ayudan a localizarla después.</p>"
     body += "<form method='post' action='/items/" + esc(identifier) + "/content-analysis/units'><p><label>Título de la obra o unidad *<br><input type='text' name='title' required></label></p><p><label>Compositor / creador<br><input type='text' name='creator'></label></p><p><label>Fichero de origen<br><input type='text' name='source_file'></label></p><p><label>Páginas / rango / localizador<br><input type='text' name='page_range' placeholder='p. 1–8, pistas 3–5, páginas del PDF'></label></p><p><label>Evidencia (índice, portada, contenido, OCR...)<br><input type='text' name='evidence' style='width:90%'></label></p><p><label>Notas<br><textarea name='notes' rows='2' style='width:95%'></textarea></label></p><button>Añadir obra candidata</button></form>"
     if units:
         body += "<h3>Contenido registrado</h3><table><tr><th>#</th><th>Título / creador</th><th>Localizador</th><th>Evidencia / notas</th><th>Estado</th></tr>"
@@ -730,7 +811,7 @@ def content_analysis(identifier: str):
         body += "</table>"
     else:
         body += "<p>Todavía no se han registrado obras candidatas. No se infiere automáticamente que el elemento equivalga a una sola obra.</p>"
-    body += "</section>"
+    body += "<div class='section-nav'><a href='#archivos'>← Paso anterior: archivos</a><a href='/items/" + esc(identifier) + "/content-analysis?step=5#obras'>Siguiente: revisar obras →</a></div></section>"
     return page("Análisis de contenido", body)
 
 
@@ -777,7 +858,7 @@ def add_content_unit(
 
 def extract_text_candidates(text: str) -> list[tuple[int, str]]:
     """Conservative title-like lines from OCR/text; suggestions always require human review."""
-    ignored = ("internet archive", "table of contents", "contents", "copyright", "all rights reserved",
+    ignored = ("internet archive", "table of contents", "contents", "[page ", "copyright", "all rights reserved",
                "public domain", "digitized by", "scanned by", "www.", "http://", "https://")
     candidates = []
     for line_no, raw in enumerate(text.splitlines(), 1):
@@ -799,6 +880,48 @@ def extract_text_candidates(text: str) -> list[tuple[int, str]]:
     return candidates[:300]
 
 
+def extract_notation_title_candidates(text: str, suffix: str) -> list[tuple[int, str]]:
+    """Extract explicit title metadata from text-based music notation formats."""
+    import html
+
+    found = []
+    if suffix == ".abc":
+        for line_no, raw in enumerate(text.splitlines(), 1):
+            match = re.match(r"^\s*T\s*:\s*(.*?)\s*$", raw)
+            if match:
+                title = match.group(1).strip()
+                if 4 <= len(title) <= 140:
+                    found.append((line_no, title))
+    elif suffix == ".ly":
+        for line_no, raw in enumerate(text.splitlines(), 1):
+            match = re.search(r'\btitle\s*=\s*"([^"]{4,140})"', raw)
+            if match:
+                found.append((line_no, match.group(1).strip()))
+    elif suffix == ".mei":
+        pattern = re.compile(r"<(?:[A-Za-z_][\w.-]*:)?title\b[^>]*>(.*?)</(?:[A-Za-z_][\w.-]*:)?title\s*>", re.IGNORECASE | re.DOTALL)
+        for match in pattern.finditer(text):
+            title = re.sub(r"<[^>]+>", " ", match.group(1))
+            title = " ".join(html.unescape(title).split())
+            if 4 <= len(title) <= 140:
+                line_no = text.count(chr(10), 0, match.start()) + 1
+                found.append((line_no, title))
+    elif suffix == ".mscx":
+        pattern = re.compile(r'<metaTag\s+name=["\'](?:workTitle|movementTitle)["\']\s*>(.*?)</metaTag\s*>', re.IGNORECASE | re.DOTALL)
+        for match in pattern.finditer(text):
+            title = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", match.group(1))).split())
+            if 4 <= len(title) <= 140:
+                line_no = text.count(chr(10), 0, match.start()) + 1
+                found.append((line_no, title))
+    unique = []
+    seen = set()
+    for line_no, title in found:
+        key = title.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append((line_no, title))
+    return unique[:100]
+
+
 @app.post("/items/{identifier}/content-analysis/analyze-files")
 def analyze_downloaded_musicxml(identifier: str):
     with db() as conn:
@@ -813,7 +936,27 @@ def analyze_downloaded_musicxml(identifier: str):
             AND lower(file_name) LIKE '%.xml'""", (identifier, identifier, identifier)).fetchall()
     if not files:
         raise HTTPException(status_code=422, detail="No hay archivos MusicXML/MXL descargados para analizar.")
+    analyzed_count = 0
+    skipped_count = 0
+    failed_count = 0
     for file_row in files:
+        # Do not repeat successful analysis when the downloaded content is unchanged.
+        # Failed analyses remain eligible for retry, and files without a digest are
+        # deliberately rechecked because their identity cannot be verified safely.
+        with db() as conn:
+            previous = conn.execute(
+                "SELECT status,sha256 FROM archive_file_analyses WHERE file_id=?",
+                (file_row["id"],),
+            ).fetchone()
+        if (
+            previous
+            and previous["status"] == "ok"
+            and file_row["sha256"]
+            and previous["sha256"] == file_row["sha256"]
+        ):
+            skipped_count += 1
+            continue
+
         path = Path(file_row["local_path"])
         status = "ok"
         error_text = None
@@ -825,6 +968,9 @@ def analyze_downloaded_musicxml(identifier: str):
             analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
             status = "error"
             error_text = str(exc)[:1000]
+        analyzed_count += 1
+        if status == "error":
+            failed_count += 1
         with db() as conn:
             conn.execute("""INSERT INTO archive_file_analyses
                 (file_id,identifier,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
@@ -835,7 +981,15 @@ def analyze_downloaded_musicxml(identifier: str):
                 analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
                 (file_row["id"], identifier, status, json.dumps(analysis, ensure_ascii=False),
                  error_text, now(), file_row["sha256"]))
-    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
+    return RedirectResponse(
+        url=(
+            "/items/" + identifier + "/content-analysis"
+            + "?analizados=" + str(analyzed_count)
+            + "&omitidos=" + str(skipped_count)
+            + "&fallidos=" + str(failed_count)
+        ),
+        status_code=303,
+    )
 
 
 @app.post("/items/{identifier}/content-analysis/extract")
@@ -843,42 +997,118 @@ def extract_content_suggestions(identifier: str):
     with db() as conn:
         if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
             raise HTTPException(status_code=404, detail="Elemento no encontrado")
-        files = conn.execute("""SELECT file_name,local_path FROM archive_files
+        files = conn.execute("""SELECT id,file_name,local_path,sha256 FROM archive_files
             WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL""", (identifier,)).fetchall()
     if not files:
         raise HTTPException(status_code=422, detail="Primero consulta el inventario y descarga un fichero de texto OCR o un PDF.")
-    examined = 0
+
+    def record_pdf_result(file_row, status, page_count=0, extracted_characters=0, error_text=None):
+        with db() as conn:
+            conn.execute("""INSERT INTO archive_pdf_extractions
+                (file_id,identifier,status,page_count,extracted_characters,error_text,analyzed_at,sha256)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(file_id) DO UPDATE SET identifier=excluded.identifier,status=excluded.status,
+                page_count=excluded.page_count,extracted_characters=excluded.extracted_characters,
+                error_text=excluded.error_text,analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
+                (file_row["id"], identifier, status, page_count, extracted_characters,
+                 error_text, now(), file_row["sha256"]))
+
+    pdf_with_text = 0
+    pdf_needs_ocr = 0
+    extraction_errors = 0
+    text_files_read = 0
+    notation_files_read = 0
     inserted = 0
     for frow in files:
         path = Path(frow["local_path"])
-        if not path.exists():
+        suffix = path.suffix.lower()
+        if suffix not in {".txt", ".ocr", ".pdf", ".abc", ".ly", ".mei", ".mscx", ".mscz"}:
+            continue
+        if not path.is_file():
+            extraction_errors += 1
+            if suffix == ".pdf":
+                record_pdf_result(frow, "error", error_text="No existe el fichero en la ruta local registrada.")
             continue
         text_content = ""
         try:
-            if path.suffix.lower() == ".txt":
-                text_content = path.read_text(encoding="utf-8", errors="replace")
-            elif path.suffix.lower() == ".pdf":
+            if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx"}:
+                text_content = path.read_text(encoding="utf-8-sig", errors="replace")
+                if text_content.strip():
+                    if suffix in {".abc", ".ly", ".mei", ".mscx"}:
+                        notation_files_read += 1
+                    else:
+                        text_files_read += 1
+            elif suffix == ".mscz":
+                import zipfile
+                member_limit = 20 * 1024 * 1024
+                with zipfile.ZipFile(path) as archive:
+                    candidates = [
+                        info for info in archive.infolist()
+                        if info.filename.lower().endswith(".mscx")
+                        and not info.filename.startswith("/")
+                        and ".." not in Path(info.filename).parts
+                    ]
+                    if not candidates:
+                        raise ValueError("El paquete MSCZ no contiene un archivo MSCX.")
+                    member = candidates[0]
+                    if member.file_size > member_limit:
+                        raise ValueError("El archivo MSCX interno supera el límite de 20 MiB.")
+                    with archive.open(member) as source:
+                        payload = source.read(member_limit + 1)
+                    if len(payload) > member_limit:
+                        raise ValueError("El archivo MSCX interno supera el límite de 20 MiB.")
+                    text_content = payload.decode("utf-8-sig", errors="replace")
+                if text_content.strip():
+                    notation_files_read += 1
+            elif suffix == ".pdf":
                 from pypdf import PdfReader
                 reader = PdfReader(str(path))
                 pages = []
+                page_texts = []
                 for page_no, pdf_page in enumerate(reader.pages, 1):
                     page_text = pdf_page.extract_text() or ""
-                    pages.append(f"\n[PAGE {page_no}]\n" + page_text)
-                text_content = "\n".join(pages)
-        except Exception:
+                    page_texts.append(page_text)
+                    pages.append(chr(10) + f"[PAGE {page_no}]" + chr(10) + page_text)
+                text_content = chr(10).join(pages)
+                extracted_characters = sum(len(page_text) for page_text in page_texts)
+                if any(page_text.strip() for page_text in page_texts):
+                    pdf_with_text += 1
+                    record_pdf_result(frow, "text_available", len(reader.pages), extracted_characters)
+                else:
+                    pdf_needs_ocr += 1
+                    record_pdf_result(frow, "ocr_needed", len(reader.pages), extracted_characters)
+        except Exception as exc:
+            extraction_errors += 1
+            if suffix == ".pdf":
+                record_pdf_result(frow, "error", error_text=str(exc)[:1000])
             continue
         if not text_content.strip():
             continue
-        examined += 1
+        candidate_rows = (
+            extract_notation_title_candidates(text_content, ".mscx" if suffix == ".mscz" else suffix)
+            if suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz"}
+            else extract_text_candidates(text_content)
+        )
         with db() as conn:
-            for line_no, candidate in extract_text_candidates(text_content):
+            for line_no, candidate in candidate_rows:
                 cur = conn.execute("""INSERT OR IGNORE INTO archive_content_suggestions
                     (identifier,source_file,line_number,suggestion_text,status,created_at)
                     VALUES(?,?,?,?, 'pending', ?)""",
                     (identifier, frow["file_name"], line_no, candidate, now()))
                 inserted += cur.rowcount
-    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
 
+    return RedirectResponse(
+        url=(
+            "/items/" + identifier + "/content-analysis"
+            + "?pdf_con_texto=" + str(pdf_with_text)
+            + "&pdf_ocr=" + str(pdf_needs_ocr)
+            + "&txt_leidos=" + str(text_files_read)
+            + "&notacion_leida=" + str(notation_files_read)
+            + "&errores_extraccion=" + str(extraction_errors)
+            + "&sugerencias_nuevas=" + str(inserted)
+        ),
+        status_code=303,
+    )
 
 @app.post("/items/{identifier}/content-analysis/suggestions/{suggestion_id}/accept")
 def accept_content_suggestion(identifier: str, suggestion_id: int):

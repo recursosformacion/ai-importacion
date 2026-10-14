@@ -70,6 +70,20 @@ def relevant_file(name: str, fmt: str) -> bool:
     ))
 
 
+def download_status_label(status: str | None, error: str | None = None) -> str:
+    labels = {
+        "not_downloaded": "Pendiente de descarga",
+        "downloading": "Descarga en curso",
+        "downloaded": "Guardado localmente",
+        "error": "Error de descarga",
+        "too_large": "No descargado: supera el límite configurado",
+    }
+    label = labels.get(status or "not_downloaded", "Estado: " + str(status))
+    if status == "error" and error:
+        return label + " · se puede reintentar"
+    return label
+
+
 @router.post("/items/{identifier}/inspect-files")
 async def inspect_files(identifier: str):
     if not valid_identifier(identifier):
@@ -116,7 +130,9 @@ async def inspect_files(identifier: str):
     except HTTPException:
         raise
     except Exception as exc:
-        return HTMLResponse("<h1>Error al consultar Internet Archive</h1><p>" + esc(str(exc)) + "</p><p><a href='/files/" + esc(identifier) + "'>Volver</a></p>", status_code=502)
+        body = "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><p>Todo permanece en esta aplicación local; no se crean ni exportan obras OSAP.</p></nav>"
+        body += "<section><h1>No se pudo actualizar el inventario</h1><p>Internet Archive no ha respondido correctamente. No se ha confirmado un inventario nuevo; puedes volver a intentarlo.</p><p>Detalle técnico: " + esc(str(exc)) + "</p><p><a href='/files/" + esc(identifier) + "'>← Volver al inventario y reintentar</a></p></section>"
+        return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><title>Error de inventario</title><body>" + body + "</body></html>", status_code=502)
 
 
 @router.get("/files/{identifier}", response_class=HTMLResponse)
@@ -128,7 +144,9 @@ def file_catalog(identifier: str):
         files = conn.execute("SELECT * FROM archive_files WHERE identifier=? ORDER BY relevant DESC, size_bytes, file_name", (identifier,)).fetchall()
     if not item:
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
-    body = "<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Ficheros de origen</title><style>body{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem;color:#20242a}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:.6rem;border-bottom:1px solid #ddd;vertical-align:top}button{padding:.5rem .7rem;cursor:pointer}small{color:#596575}code{overflow-wrap:anywhere}</style>"
+    body = "<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Ficheros de origen</title><style>body{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem;color:#20242a;background:#f4f6f8}table{width:100%;border-collapse:collapse;background:#fff}td,th{text-align:left;padding:.6rem;border-bottom:1px solid #ddd;vertical-align:top}button{padding:.5rem .7rem;cursor:pointer;background:#174f89;color:white;border:0;border-radius:6px;font:inherit}small{color:#596575}code{overflow-wrap:anywhere}a{color:#175ca8}.workflow{background:#fff;border:1px solid #cbd5e1;border-radius:10px;padding:1rem;margin:1rem 0}.workflow-steps{display:flex;gap:.5rem;flex-wrap:wrap;margin:.8rem 0}.workflow-steps a{display:block;padding:.65rem .85rem;border:1px solid #cbd5e1;border-radius:8px;text-decoration:none;background:#f8fafc;color:#174f89}.workflow-steps a span{display:inline-grid;place-items:center;border-radius:50%;background:#e5ebf2;min-width:1.5rem;height:1.5rem;margin-right:.25rem}.workflow-steps a.active{background:#174f89;color:#fff;border-color:#174f89;font-weight:700}.workflow-steps a.active span{background:#fff;color:#174f89}.workflow-help{margin:.4rem 0;color:#5d6977}.section-nav{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin:1rem 0;padding-top:.7rem;border-top:1px solid #e1e6eb}</style>"
+    ident = quote(identifier, safe="")
+    body += "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><div class='workflow-steps'><a href='/'> <span>1</span> Buscar</a><a href='/items/" + esc(ident) + "'><span>2</span> Elegir elemento</a><a class='active' href='/files/" + esc(ident) + "'><span>3</span> Archivos</a><a href='/items/" + esc(ident) + "/content-analysis#analisis'><span>4</span> Analizar</a><a href='/items/" + esc(ident) + "/content-analysis?step=5#obras'><span>5</span> Revisar obras</a></div><p class='workflow-help'>Sigue los pasos de izquierda a derecha. Puedes volver a cualquiera sin perder lo guardado. Todo permanece en esta aplicación local; no se exporta a OSAP.</p></nav>"
     body += "<p><a href='/items/" + esc(identifier) + "'>← Volver a la ficha</a></p><h1>Ficheros: " + esc(item["title"] or identifier) + "</h1>"
     body += "<p>Inventario de Internet Archive. Los ficheros descargados quedan en almacenamiento local; esta función no escribe en OSAP ni Storage.</p>"
     body += "<form method='post' action='/items/" + esc(identifier) + "/inspect-files'><button>Consultar / actualizar inventario</button></form>"
@@ -141,12 +159,17 @@ def file_catalog(identifier: str):
             size = f"{f['size_bytes']:,} bytes" if f["size_bytes"] is not None else "—"
             checksums = "MD5: " + esc(f["md5"] or "—") + "<br>SHA-1 origen: " + esc(f["sha1"] or "—") + "<br>SHA-256 local: " + esc(f["sha256"] or "—")
             action = ""
-            if f["relevant"] and f["download_status"] != "downloaded":
-                action = f"<form method='post' action='/files/download/{f['id']}'><button>Descargar</button></form>"
-            elif f["download_status"] == "downloaded":
+            status = f["download_status"] or "not_downloaded"
+            if f["relevant"] and status in {"not_downloaded", "error"}:
+                button_label = "Reintentar descarga" if status == "error" else "Descargar"
+                action = f"<form method='post' action='/files/download/{f['id']}'><button>{button_label}</button></form>"
+            elif status == "downloaded":
                 action = "<span>Guardado localmente</span>"
-            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(f['download_status'])}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
+            elif status == "too_large":
+                action = "<span>No disponible por el límite de tamaño</span>"
+            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(download_status_label(status, f['download_error']))}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
         body += "</table>"
+    body += "<div class='section-nav'><a href='/items/" + esc(identifier) + "'>← Paso anterior: elemento</a><a href='/items/" + esc(identifier) + "/content-analysis'>Siguiente: analizar contenido →</a></div>"
     body += "</html>"
     return HTMLResponse(body)
 
@@ -176,7 +199,19 @@ async def download_file(file_id: int):
         return RedirectResponse(url="/files/" + quote(row["identifier"], safe=""), status_code=303)
     folder = DOWNLOAD_DIR / row["identifier"]
     folder.mkdir(parents=True, exist_ok=True)
-    destination = folder / safe_filename(row["file_name"])
+    local_name = safe_filename(row["file_name"])
+    with db() as conn:
+        collisions = conn.execute(
+            "SELECT COUNT(*) FROM archive_files WHERE identifier=? AND file_name_safe=? AND file_name<>?",
+            (row["identifier"], row["file_name_safe"], row["file_name"]),
+        ).fetchone()[0]
+    if collisions:
+        safe_path = Path(local_name)
+        suffix = safe_path.suffix
+        stem = safe_path.name[:-len(suffix)] if suffix else safe_path.name
+        digest = hashlib.sha256(row["file_name"].encode("utf-8")).hexdigest()[:10]
+        local_name = stem[:150] + "-" + digest + suffix
+    destination = folder / local_name
     temporary = destination.with_name(destination.name + ".part")
     total = 0
     digest = hashlib.sha256()
@@ -211,6 +246,20 @@ async def download_file(file_id: int):
 
 
 # Integrated intake: inventory new candidates and download a small number of likely score files.
+def _intake_item_links(items: list[tuple[str, str]]) -> str:
+    """Render safe links to resume inventory and analysis for successful items."""
+    return "<ul>" + "".join(
+        "<li><a href='/files/" + quote(identifier, safe="") + "'>" + esc(title) +
+        " · ver archivos</a> | <a href='/items/" + quote(identifier, safe="") +
+        "/content-analysis'>analizar</a></li>"
+        for identifier, title in items
+    ) + "</ul>"
+
+
+def _intake_error_link(identifier: str, label: str, detail: str) -> str:
+    url = "/files/" + quote(identifier, safe="")
+    return "<li><a href='" + url + "'>" + esc(label) + " · revisar / reintentar</a>: " + esc(detail) + "</li>"
+
 def _intake_priority(name: str, fmt: str, size: int | None) -> int:
     suffix = Path(name.lower()).suffix
     f = (fmt or "").casefold()
@@ -252,7 +301,7 @@ def intake_page():
             FROM archive_files f JOIN archive_items a ON a.identifier=f.identifier
             WHERE f.download_status IN ('downloaded','error','too_large')
             ORDER BY f.id DESC LIMIT 30""").fetchall()
-    body = "<p><a href='/'>← Inicio</a></p><h1>Captación integrada: inventariar y descargar</h1>"
+    body = "<nav class='workflow' aria-label='Pasos de captación'><b>Captación musical · paso 3 de 5</b><div class='workflow-steps'><a href='/'><span>1</span> Buscar</a><a href='/items'><span>2</span> Elegir elemento</a><a class='active' href='/intake'><span>3</span> Archivos</a><a href='/items'><span>4</span> Analizar</a><a href='/items'><span>5</span> Revisar obras</a></div><p class='workflow-help'>Esta vista permite inventariar y descargar archivos de candidatos por lotes. Para analizar uno en concreto, selecciónalo en el catálogo.</p></nav><p><a href='/'>← Inicio</a></p><h1>Captación integrada: inventariar y descargar</h1>"
     body += "<p>Este proceso combina ambas tareas: inventaría candidatos que aún no tienen inventario y descarga unos pocos archivos priorizados. No descarga en masa y no escribe en OSAP.</p>"
     body += "<div style='display:flex;gap:1rem;flex-wrap:wrap'>" + "".join(
         f"<div style='background:#f1f4f7;padding:1rem;border-radius:8px'><small>{label}</small><h2>{value or 0}</h2></div>"
@@ -266,7 +315,7 @@ def intake_page():
     body += "<h2>Actividad reciente</h2><table><tr><th>Elemento / archivo</th><th>Formato</th><th>Tamaño</th><th>Estado</th><th>SHA-256 local</th></tr>"
     for row in recent:
         size = f"{row['size_bytes']:,} bytes" if row["size_bytes"] is not None else "—"
-        body += f"<tr><td><a href='/files/{quote(row['identifier'], safe='')}'>{esc(row['title'] or row['identifier'])}</a><br><small>{esc(row['file_name'])}</small></td><td>{esc(row['archive_format'] or Path(row['file_name']).suffix or 'Desconocido')}</td><td>{esc(size)}</td><td>{esc(row['download_status'])}</td><td><code>{esc(row['sha256'] or '—')}</code></td></tr>"
+        body += f"<tr><td><a href='/files/{quote(row['identifier'], safe='')}'>{esc(row['title'] or row['identifier'])}</a><br><small>{esc(row['file_name'])}</small></td><td>{esc(row['archive_format'] or Path(row['file_name']).suffix or 'Desconocido')}</td><td>{esc(size)}</td><td>{esc(download_status_label(row['download_status']))}</td><td><code>{esc(row['sha256'] or '—')}</code></td></tr>"
     body += "</table>"
     return HTMLResponse(body)
 
@@ -276,9 +325,11 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
     items = max(1, min(int(items), 20))
     downloads = max(0, min(int(downloads), 10))
     inventoried_now = 0
-    inventory_errors: list[str] = []
+    inventoried_items: list[tuple[str, str]] = []
+    inventory_errors: list[tuple[str, str]] = []
     downloaded_now = 0
-    download_errors: list[str] = []
+    download_attempts = 0
+    download_errors: list[tuple[str, str, str]] = []
 
     # First inventory only a small batch of candidates not yet inventoried successfully.
     with db() as conn:
@@ -323,8 +374,9 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
                     VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET checked_at=excluded.checked_at,
                     file_count=excluded.file_count,status='ok',error_text=NULL""", (identifier,stamp,recorded))
             inventoried_now += 1
+            inventoried_items.append((identifier, target['title'] or identifier))
         except Exception as exc:
-            inventory_errors.append(f"{identifier}: {str(exc)[:180]}")
+            inventory_errors.append((identifier, str(exc)[:180]))
             with db() as conn:
                 conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
                     VALUES(?,?,0,'error',?) ON CONFLICT(identifier) DO UPDATE SET checked_at=excluded.checked_at,
@@ -340,7 +392,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
                 ORDER BY s.score DESC,f.id ASC""").fetchall()
         ranked = sorted(all_files, key=lambda row: _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"]), reverse=True)
         for row in ranked:
-            if downloaded_now >= downloads:
+            if download_attempts >= downloads:
                 break
             priority = _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"])
             if priority <= 0:
@@ -349,18 +401,21 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
                 with db() as conn:
                     conn.execute("UPDATE archive_files SET download_status='too_large',download_error=? WHERE id=?", ("Supera el límite configurado", row["id"]))
                 continue
+            download_attempts += 1
             await download_file(int(row["id"]))
             with db() as conn:
-                result = conn.execute("SELECT download_status FROM archive_files WHERE id=?", (row["id"],)).fetchone()
+                result = conn.execute("SELECT download_status,download_error FROM archive_files WHERE id=?", (row["id"],)).fetchone()
             if result and result["download_status"] == "downloaded":
                 downloaded_now += 1
             else:
-                download_errors.append(f"{row['identifier']} / {row['file_name']}: descarga fallida")
+                download_errors.append((row["identifier"], row["file_name"], result["download_error"] if result and result["download_error"] else "Descarga fallida; se puede reintentar."))
 
-    summary = f"<p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Descargas correctas en esta ejecución: <b>{downloaded_now}</b> de un máximo de {downloads}.</p>"
+    summary = f"<h1>Resultado de captación</h1><p>Inventarios nuevos correctos: <b>{inventoried_now}</b> de {len(targets)} candidatos consultados.</p><p>Intentos de descarga realizados: <b>{download_attempts}</b> de un máximo de {downloads}; descargas correctas: <b>{downloaded_now}</b>.</p>"
+    if inventoried_items:
+        summary += "<h3>Continuar con los elementos inventariados</h3>" + _intake_item_links(inventoried_items)
     if inventory_errors:
-        summary += "<h3>Errores de inventario</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in inventory_errors) + "</ul>"
+        summary += "<h3>Errores de inventario · se pueden reintentar</h3><ul>" + "".join(_intake_error_link(identifier, identifier, detail) for identifier, detail in inventory_errors) + "</ul>"
     if download_errors:
-        summary += "<h3>Errores de descarga</h3><ul>" + "".join(f"<li>{esc(x)}</li>" for x in download_errors) + "</ul>"
+        summary += "<h3>Errores de descarga · revisar o reintentar</h3><ul>" + "".join(_intake_error_link(identifier, file_name, detail) for identifier, file_name, detail in download_errors) + "</ul>"
     summary += "<p>Los inventarios y descargas se guardan en SQLite y en la carpeta local de descargas. No se ha escrito en OSAP.</p><p><a href='/intake'>Ver captación integrada</a> · <a href='/'>Inicio</a></p>"
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Resultado de captación</title><body style='font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem'>" + summary + "</body></html>")
