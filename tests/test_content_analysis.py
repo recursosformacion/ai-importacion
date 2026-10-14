@@ -643,7 +643,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "PDF con texto extraíble: 1" in page.text
         assert "PDF que aún necesitan OCR: 1" in page.text
         assert "Tesseract no está instalado" in page.text
-        assert "Estado de extracción por PDF" in page.text
+        assert "Estado de lectura de documentos e imágenes" in page.text
         assert "scores-text.pdf" in page.text
         assert "scores-scan.pdf" in page.text
         assert "OCR no disponible" in page.text
