@@ -643,7 +643,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         assert "PDF con texto extraíble: 1" in page.text
         assert "PDF que aún necesitan OCR: 1" in page.text
         assert "Tesseract no está instalado" in page.text
-        assert "Estado de extracción por PDF" in page.text
+        assert "Estado de lectura de documentos e imágenes" in page.text
         assert "scores-text.pdf" in page.text
         assert "scores-scan.pdf" in page.text
         assert "OCR no disponible" in page.text
@@ -659,6 +659,7 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         pdf_results = conn.execute(
             """SELECT f.file_name,e.status,e.page_count,e.extracted_characters
             FROM archive_pdf_extractions e JOIN archive_files f ON f.id=e.file_id
+            WHERE lower(f.file_name) LIKE '%.pdf'
             ORDER BY f.file_name"""
         ).fetchall()
     assert [row["suggestion_text"] for row in suggestions] == [
@@ -776,6 +777,52 @@ def test_capx_title_candidates_only_use_explicit_xml_metadata():
     assert [title for _, title in candidates] == ["A Capella Work", "Motet in G"]
     assert extract_notation_title_candidates("<score><composer>Unknown</composer></score>", ".capx") == []
 
+
+
+def test_scanned_score_image_ocr_extracts_possible_title(tmp_path, monkeypatch):
+    from PIL import Image
+    import pytesseract
+
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "image-ocr.sqlite3"))
+    image_path = tmp_path / "score.png"
+    Image.new("RGB", (80, 80), "white").save(image_path)
+    monkeypatch.setattr(pytesseract, "get_tesseract_version", lambda: "5.0")
+
+    def recognize(image, lang):
+        assert image.size == (80, 80)
+        assert lang == "eng+spa"
+        return "Prelude in C"
+
+    monkeypatch.setattr(pytesseract, "image_to_string", recognize)
+    monkeypatch.setenv("AI_IMPORTACION_OCR_LANG", "eng+spa")
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path,sha256)
+                VALUES(?,?,?,?,?,'downloaded',?,?)""",
+                ("anthology-test", "score.png", "score.png",
+                 "https://archive.org/download/anthology-test/score.png",
+                 main.now(), str(image_path), "image-sha"),
+            )
+        response = client.post(
+            "/items/anthology-test/content-analysis/extract", follow_redirects=False
+        )
+        assert response.status_code == 303
+        assert "imagenes_ocr=1" in response.headers["location"]
+
+    with main.db() as conn:
+        result = conn.execute(
+            "SELECT status,extracted_characters FROM archive_pdf_extractions WHERE identifier='anthology-test'"
+        ).fetchone()
+        suggestions = conn.execute(
+            "SELECT suggestion_text FROM archive_content_suggestions WHERE identifier='anthology-test'"
+        ).fetchall()
+    assert result["status"] == "image_ocr_completed"
+    assert result["extracted_characters"] == len("Prelude in C")
+    assert [row["suggestion_text"] for row in suggestions] == ["Prelude in C"]
 
 
 def test_ocr_candidate_filter_drops_obvious_noise_and_credit_lines():
