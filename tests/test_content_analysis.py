@@ -88,3 +88,31 @@ def test_guided_workflow_navigation_links_item_steps(tmp_path, monkeypatch):
         assert review.status_code == 200
         assert "Captación musical · paso 5 de 5" in review.text
         assert "id='obras'" in review.text
+
+
+def test_search_results_show_next_workflow_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "search-workflow.sqlite3"))
+
+    async def fake_archive_search(archive_query, rows):
+        return {
+            "total": 1,
+            "docs": [{
+                "identifier": "motet-test",
+                "title": "Motet Test",
+                "creator": "Composer",
+                "date": "1900",
+                "mediatype": "texts",
+                "collection": [],
+                "rights": "Public domain",
+                "description": "A test score",
+            }],
+        }
+
+    monkeypatch.setattr(main, "archive_search", fake_archive_search)
+    with TestClient(main.app) as client:
+        response = client.post("/search", data={"query": "motet", "rows": "10", "scope": "all"})
+
+    assert response.status_code == 200
+    assert "Captación musical · paso 2 de 5" in response.text
+    assert "Elige un resultado para abrir su ficha" in response.text
+    assert "href='/items/motet-test'" in response.text
