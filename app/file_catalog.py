@@ -169,7 +169,7 @@ def file_catalog(identifier: str):
                 action = "<span>No disponible por el límite de tamaño</span>"
             body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(download_status_label(status, f['download_error']))}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
         body += "</table>"
-    body += "<div class='section-nav'><a href='/items/" + esc(identifier) + "'>← Paso anterior: elemento</a><a href='/items/" + esc(identifier) + "/content-analysis'>Siguiente: analizar contenido →</a></div>"
+    body += "<div class='section-nav'><a href='/items/" + esc(identifier) + "'>Volver a la ficha</a><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar contenido →</a></div>"
     body += "</html>"
     return HTMLResponse(body)
 
