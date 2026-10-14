@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import app.main as main
+import app.file_catalog as file_catalog
 
 
 def seed_item():
@@ -66,7 +67,9 @@ def test_two_candidates_suggest_multiple_works_when_unclassified(tmp_path, monke
 
 
 def test_guided_workflow_navigation_links_item_steps(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "workflow.sqlite3"))
+    db_path = str(tmp_path / "workflow.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
     with TestClient(main.app) as client:
         seed_item()
 
