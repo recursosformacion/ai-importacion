@@ -704,7 +704,7 @@ CONTENT_SCOPES = {
 
 
 @app.get("/items/{identifier}/content-analysis", response_class=HTMLResponse)
-def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None):
+def content_analysis(identifier: str, step: int = 4, analizados: int | None = None, omitidos: int | None = None, fallidos: int | None = None, pdf_con_texto: int | None = None, pdf_ocr: int | None = None, errores_extraccion: int | None = None, sugerencias_nuevas: int | None = None, txt_leidos: int | None = None):
     with db() as conn:
         item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
         if not item:
@@ -759,6 +759,8 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
         body += "</table>"
     body += "</section>"
     body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
+    if any(value is not None for value in (pdf_con_texto, pdf_ocr, errores_extraccion, sugerencias_nuevas, txt_leidos)):
+        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
     with db() as conn:
         suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
     if suggestions:
@@ -927,29 +929,43 @@ def extract_content_suggestions(identifier: str):
             WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL""", (identifier,)).fetchall()
     if not files:
         raise HTTPException(status_code=422, detail="Primero consulta el inventario y descarga un fichero de texto OCR o un PDF.")
-    examined = 0
+
+    pdf_with_text = 0
+    pdf_needs_ocr = 0
+    extraction_errors = 0
+    text_files_read = 0
     inserted = 0
     for frow in files:
         path = Path(frow["local_path"])
-        if not path.exists():
+        suffix = path.suffix.lower()
+        if suffix not in {".txt", ".ocr", ".pdf"}:
+            continue
+        if not path.is_file():
+            extraction_errors += 1
             continue
         text_content = ""
         try:
-            if path.suffix.lower() == ".txt":
+            if suffix in {".txt", ".ocr"}:
                 text_content = path.read_text(encoding="utf-8", errors="replace")
-            elif path.suffix.lower() == ".pdf":
+                if text_content.strip():
+                    text_files_read += 1
+            elif suffix == ".pdf":
                 from pypdf import PdfReader
                 reader = PdfReader(str(path))
                 pages = []
                 for page_no, pdf_page in enumerate(reader.pages, 1):
                     page_text = pdf_page.extract_text() or ""
-                    pages.append(f"\n[PAGE {page_no}]\n" + page_text)
-                text_content = "\n".join(pages)
+                    pages.append(f"\\n[PAGE {page_no}]\\n" + page_text)
+                text_content = "\\n".join(pages)
+                if text_content.strip() and any((page.extract_text() or "").strip() for page in reader.pages):
+                    pdf_with_text += 1
+                else:
+                    pdf_needs_ocr += 1
         except Exception:
+            extraction_errors += 1
             continue
         if not text_content.strip():
             continue
-        examined += 1
         with db() as conn:
             for line_no, candidate in extract_text_candidates(text_content):
                 cur = conn.execute("""INSERT OR IGNORE INTO archive_content_suggestions
@@ -957,8 +973,18 @@ def extract_content_suggestions(identifier: str):
                     VALUES(?,?,?,?, 'pending', ?)""",
                     (identifier, frow["file_name"], line_no, candidate, now()))
                 inserted += cur.rowcount
-    return RedirectResponse(url="/items/" + identifier + "/content-analysis", status_code=303)
 
+    return RedirectResponse(
+        url=(
+            "/items/" + identifier + "/content-analysis"
+            + "?pdf_con_texto=" + str(pdf_with_text)
+            + "&pdf_ocr=" + str(pdf_needs_ocr)
+            + "&txt_leidos=" + str(text_files_read)
+            + "&errores_extraccion=" + str(extraction_errors)
+            + "&sugerencias_nuevas=" + str(inserted)
+        ),
+        status_code=303,
+    )
 
 @app.post("/items/{identifier}/content-analysis/suggestions/{suggestion_id}/accept")
 def accept_content_suggestion(identifier: str, suggestion_id: int):
