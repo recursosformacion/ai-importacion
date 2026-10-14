@@ -357,7 +357,17 @@ def home(request: Request):
     with db() as conn:
         discovery = conn.execute("SELECT COUNT(*) AS scanned, SUM(CASE WHEN score>0 THEN 1 ELSE 0 END) AS candidates FROM global_discovery_seen").fetchone()
         query_states = conn.execute("SELECT label,status,scanned_count,total_found FROM global_discovery_queries ORDER BY query_key").fetchall()
-    body += "<section class='panel'><h2>Exploración global reanudable</h2><p>La exploración usa varias consultas musicales independientes y la API de cursor de Internet Archive. Cada avance examina un lote de cada consulta activa; el cursor se guarda localmente para continuar sin volver al principio.</p><div class='metrics'><div class='metric'><span class='muted'>Elementos únicos examinados</span><h2>" + str(discovery["scanned"] or 0) + "</h2></div><div class='metric'><span class='muted'>Candidatos musicales únicos</span><h2>" + str(discovery["candidates"] or 0) + "</h2></div></div><form method='post' action='/discover'><label>Lote por consulta <select name='rows'>" + "".join(f"<option {'selected' if n==100 else ''}>{n}</option>" for n in [100,250,500]) + "</select></label> <button>Continuar exploración global</button></form><table><tr><th>Familia de búsqueda</th><th>Examinados</th><th>Coincidencias declaradas</th><th>Estado</th></tr>" + "".join(f"<tr><td>{esc(q['label'])}</td><td>{q['scanned_count']}</td><td>{esc(q['total_found'] if q['total_found'] is not None else '—')}</td><td>{esc(q['status'])}</td></tr>" for q in query_states) + "</table><p class='muted'>Los totales de consultas se solapan: no deben sumarse como obras únicas. Los candidatos se filtran por metadatos; todavía hay que inspeccionar los archivos y su contenido. No se descargan archivos automáticamente ni se escribe en OSAP.</p></section>"
+    body += "<section class='panel'><h2>Exploración global reanudable</h2>"
+    body += "<p>La exploración usa varias consultas musicales independientes y la API de cursor de Internet Archive. Cada avance examina un lote de cada consulta activa; el cursor se guarda localmente para continuar sin volver al principio.</p>"
+    body += "<div class='metrics'>"
+    body += "<div class='metric'><span class='muted'>Elementos únicos examinados</span><h2>" + str(discovery["scanned"] or 0) + "</h2></div>"
+    body += "<div class='metric'><span class='muted'>Candidatos musicales únicos</span><h2>" + str(discovery["candidates"] or 0) + "</h2></div></div>"
+    body += "<form method='post' action='/discover'><label>Lote por consulta <select name='rows'>"
+    body += "".join("<option " + ("selected" if n == 100 else "") + ">" + str(n) + "</option>" for n in [100, 250, 500])
+    body += "</select></label> <button>Continuar exploración global</button></form>"
+    body += "<table><tr><th>Familia de búsqueda</th><th>Examinados</th><th>Coincidencias declaradas</th><th>Estado</th></tr>"
+    body += "".join("<tr><td>" + esc(q["label"]) + "</td><td>" + str(q["scanned_count"]) + "</td><td>" + esc(q["total_found"] if q["total_found"] is not None else "—") + "</td><td>" + esc(q["status"]) + "</td></tr>" for q in query_states)
+    body += "</table><p class='muted'>Los totales de consultas se solapan: no deben sumarse como obras únicas. Los candidatos se filtran por metadatos; todavía hay que inspeccionar los archivos y su contenido. No se descargan archivos automáticamente ni se escribe en OSAP.</p></section>"
     with db() as conn:
         inventory = conn.execute("""SELECT
             COUNT(*) AS checked,
