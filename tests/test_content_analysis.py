@@ -369,3 +369,64 @@ def test_integrated_intake_error_links_escape_details_and_return_to_item():
     assert "&lt;score&gt;.pdf" in rendered
     assert "HTTP error: &lt;unavailable &amp; retry&gt;" in rendered
     assert "<unavailable & retry>" not in rendered
+
+
+
+def test_global_discovery_resumes_each_query_from_saved_cursor(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "discovery-resume.sqlite3"))
+    calls = []
+
+    async def fake_archive_scrape(query, count, cursor=None, query_key="default"):
+        calls.append((query_key, cursor))
+        if cursor is None:
+            return {
+                "total": 2,
+                "items": [{
+                    "identifier": "sheet-music-first-" + query_key,
+                    "title": "Sheet music score first " + query_key,
+                    "description": "Musical score",
+                }],
+                "cursor": "next-" + query_key,
+            }
+        return {
+            "total": 2,
+            "items": [{
+                "identifier": "sheet-music-second-" + query_key,
+                "title": "Sheet music score second " + query_key,
+                "description": "Musical score",
+            }],
+            "cursor": None,
+        }
+
+    monkeypatch.setattr(main, "archive_scrape", fake_archive_scrape)
+    with TestClient(main.app) as client:
+        first = client.post("/discover", data={"rows": "100"})
+        assert first.status_code == 200
+        assert "Continuar con el siguiente lote" in first.text
+        assert len(calls) == len(main.GLOBAL_DISCOVERY_QUERIES)
+        with main.db() as conn:
+            first_states = conn.execute(
+                "SELECT query_key,cursor,status,scanned_count FROM global_discovery_queries"
+            ).fetchall()
+        assert all(row["cursor"] == "next-" + row["query_key"] for row in first_states)
+        assert all(row["status"] == "active" and row["scanned_count"] == 1 for row in first_states)
+
+        second = client.post("/discover", data={"rows": "100"})
+        assert second.status_code == 200
+        assert "han llegado al final de sus cursores" in second.text
+
+    expected_keys = {key for key, _, _ in main.GLOBAL_DISCOVERY_QUERIES}
+    assert {(key, cursor) for key, cursor in calls[:len(expected_keys)]} == {
+        (key, None) for key in expected_keys
+    }
+    assert {(key, cursor) for key, cursor in calls[len(expected_keys):]} == {
+        (key, "next-" + key) for key in expected_keys
+    }
+    with main.db() as conn:
+        final_states = conn.execute(
+            "SELECT query_key,cursor,status,scanned_count FROM global_discovery_queries"
+        ).fetchall()
+        unique_seen = conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0]
+    assert all(row["cursor"] is None for row in final_states)
+    assert all(row["status"] == "completed" and row["scanned_count"] == 2 for row in final_states)
+    assert unique_seen == len(expected_keys) * 2
