@@ -539,21 +539,41 @@ def review_uncertain_material():
                       (SELECT COUNT(*) FROM archive_item_contents c
                        WHERE c.identifier=a.identifier) AS known_units,
                       (SELECT COUNT(*) FROM archive_content_suggestions cs
-                       WHERE cs.identifier=a.identifier AND cs.status='pending') AS pending_suggestions
+                       WHERE cs.identifier=a.identifier AND cs.status='pending') AS pending_suggestions,
+                      (SELECT COUNT(*) FROM archive_files f
+                       WHERE f.identifier=a.identifier AND f.relevant=1
+                         AND f.download_status='downloaded') AS downloaded_candidates,
+                      (SELECT COUNT(*) FROM archive_files f
+                       WHERE f.identifier=a.identifier AND f.relevant=1
+                         AND f.download_status!='downloaded') AS not_downloaded_candidates,
+                      (SELECT COUNT(*) FROM archive_file_analyses fa
+                       WHERE fa.identifier=a.identifier AND fa.status='ok') AS successful_analyses,
+                      (SELECT COUNT(*) FROM archive_pdf_extractions pe
+                       WHERE pe.identifier=a.identifier
+                         AND pe.status IN ('text_available','ocr_completed','ocr_no_text')) AS pdf_checks
                FROM archive_items a
                JOIN global_discovery_seen s ON s.identifier=a.identifier
                WHERE s.score>0 AND EXISTS (
                    SELECT 1 FROM archive_files f
                    WHERE f.identifier=a.identifier AND f.download_status='downloaded'
                ) AND (
-                   NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
-                   OR EXISTS (SELECT 1 FROM archive_content_suggestions cs
-                              WHERE cs.identifier=a.identifier AND cs.status='pending')
+                   EXISTS (SELECT 1 FROM archive_content_suggestions cs
+                           WHERE cs.identifier=a.identifier AND cs.status='pending')
+                   OR (
+                       NOT EXISTS (SELECT 1 FROM archive_item_contents c WHERE c.identifier=a.identifier)
+                       AND (
+                           EXISTS (SELECT 1 FROM archive_file_analyses fa
+                                   WHERE fa.identifier=a.identifier AND fa.status='ok')
+                           OR EXISTS (SELECT 1 FROM archive_pdf_extractions pe
+                                      WHERE pe.identifier=a.identifier
+                                        AND pe.status IN ('text_available','ocr_completed','ocr_no_text'))
+                       )
+                   )
                )
-               ORDER BY s.score DESC,a.last_seen_at DESC LIMIT 50"""
+               ORDER BY pending_suggestions DESC,s.score DESC,a.last_seen_at DESC LIMIT 50"""
         ).fetchall()
     body = "<h1>Casos que necesitan una mirada</h1>"
-    body += "<p>Solo aparecen materiales descargados que aún no tienen una obra candidata identificada o conservan sugerencias dudosas. Abre el PDF o consulta el archivo original; no tienes que rellenar una ficha técnica.</p>"
+    body += "<p>Aquí solo aparecen archivos ya descargados y analizados que todavía contienen una duda concreta. Que un archivo esté disponible para descargar no es motivo de revisión.</p>"
     if not items:
         body += "<section class='panel'><p>No hay casos pendientes en este momento. Puedes continuar la captación automática.</p><p><a href='/'>Volver a captación</a></p></section>"
         return page("Revisión de material dudoso", body)
@@ -562,7 +582,8 @@ def review_uncertain_material():
         with db() as conn:
             files = conn.execute(
                 """SELECT id,file_name,archive_format,size_bytes,download_status,relevant
-                   FROM archive_files WHERE identifier=? ORDER BY relevant DESC,size_bytes,file_name""",
+                   FROM archive_files WHERE identifier=? AND download_status='downloaded'
+                   ORDER BY relevant DESC,size_bytes,file_name""",
                 (identifier,),
             ).fetchall()
             suggestions = conn.execute(
@@ -572,21 +593,25 @@ def review_uncertain_material():
             ).fetchall()
         body += "<section class='panel'><h2>" + esc(item["title"]) + "</h2>"
         body += "<p><a href='/items/" + esc(identifier) + "'>Ficha de Internet Archive</a> · <a href='/items/" + esc(identifier) + "/content-analysis'>Ver análisis completo</a></p>"
-        body += "<p><b>Por qué se seleccionó:</b> " + esc(item["reason"] or "Metadatos que parecen musicales") + " <span class='muted'>(prioridad " + str(item["score"]) + ")</span></p>"
-        body += "<h3>Archivos disponibles</h3><ul>"
+        if item["pending_suggestions"]:
+            review_reason = f"Hay {item['pending_suggestions']} indicio(s) extraído(s) que aún no se han confirmado."
+        elif item["known_units"] == 0:
+            review_reason = "El archivo se ha analizado, pero no se ha podido identificar con seguridad una obra concreta."
+        else:
+            review_reason = "Hay información extraída que requiere confirmación."
+        body += "<p><b>Por qué requiere revisión:</b> " + esc(review_reason) + "</p>"
+        body += "<p class='muted'>Indicios musicales de origen: " + esc(item["reason"] or "Metadatos musicales") + ".</p>"
+        body += "<h3>Archivos descargados y analizados</h3><ul>"
         for file_row in files:
             label = esc(file_row["file_name"]) + " — " + esc(file_row["archive_format"] or "formato no indicado")
             if file_row["size_bytes"] is not None:
                 label += " (" + esc(f"{file_row['size_bytes']:,}") + " bytes)"
-            if file_row["download_status"] == "downloaded":
-                suffix = Path(file_row["file_name"].lower()).suffix
-                action = "Vista previa" if suffix in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".txt", ".ocr"} else "Abrir / descargar"
-                body += "<li>" + label + " · <a href='/files/view/" + str(file_row["id"]) + "'>" + action + "</a></li>"
-            elif file_row["relevant"]:
-                body += "<li>" + label + " · <a href='/files/" + esc(identifier) + "'>Disponible para descargar</a></li>"
-            else:
-                body += "<li>" + label + " · <span class='muted'>Registrado; aún no descargado</span></li>"
+            suffix = Path(file_row["file_name"].lower()).suffix
+            action = "Vista previa" if suffix in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".txt", ".ocr"} else "Abrir / descargar"
+            body += "<li>" + label + " · <a href='/files/view/" + str(file_row["id"]) + "'>" + action + "</a></li>"
         body += "</ul>"
+        if item["not_downloaded_candidates"]:
+            body += "<p class='muted'>Además, hay " + str(item["not_downloaded_candidates"]) + " archivo(s) candidato(s) todavía no descargado(s). Eso no es una duda de identificación. <a href='/files/" + esc(identifier) + "'>Consultar inventario y descargas</a>.</p>"
         if suggestions:
             body += "<h3>Indicios extraídos automáticamente</h3><ul>"
             body += "".join("<li>" + esc(s["suggestion_text"]) + " <span class='muted'>(" + esc(s["source_file"]) + ", línea/página " + str(s["line_number"]) + ")</span></li>" for s in suggestions)
