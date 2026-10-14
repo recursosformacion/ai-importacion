@@ -766,3 +766,12 @@ def test_scanned_pdf_ocr_extracts_text_and_creates_suggestion(tmp_path, monkeypa
     assert result["extracted_characters"] == len("Prelude in C")
     assert [row["suggestion_text"] for row in suggestions] == ["Prelude in C"]
 
+
+
+def test_capx_title_candidates_only_use_explicit_xml_metadata():
+    from app.main import extract_notation_title_candidates
+
+    xml = """<?xml version="1.0"?>\n<score><metaTag name="workTitle">A Capella Work</metaTag><title>Motet in G</title></score>"""
+    candidates = extract_notation_title_candidates(xml, ".capx")
+    assert [title for _, title in candidates] == ["A Capella Work", "Motet in G"]
+    assert extract_notation_title_candidates("<score><composer>Unknown</composer></score>", ".capx") == []
