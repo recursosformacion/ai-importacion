@@ -70,6 +70,20 @@ def relevant_file(name: str, fmt: str) -> bool:
     ))
 
 
+def download_status_label(status: str | None, error: str | None = None) -> str:
+    labels = {
+        "not_downloaded": "Pendiente de descarga",
+        "downloading": "Descarga en curso",
+        "downloaded": "Guardado localmente",
+        "error": "Error de descarga",
+        "too_large": "No descargado: supera el límite configurado",
+    }
+    label = labels.get(status or "not_downloaded", "Estado: " + str(status))
+    if status == "error" and error:
+        return label + " · se puede reintentar"
+    return label
+
+
 @router.post("/items/{identifier}/inspect-files")
 async def inspect_files(identifier: str):
     if not valid_identifier(identifier):
@@ -145,11 +159,15 @@ def file_catalog(identifier: str):
             size = f"{f['size_bytes']:,} bytes" if f["size_bytes"] is not None else "—"
             checksums = "MD5: " + esc(f["md5"] or "—") + "<br>SHA-1 origen: " + esc(f["sha1"] or "—") + "<br>SHA-256 local: " + esc(f["sha256"] or "—")
             action = ""
-            if f["relevant"] and f["download_status"] != "downloaded":
-                action = f"<form method='post' action='/files/download/{f['id']}'><button>Descargar</button></form>"
-            elif f["download_status"] == "downloaded":
+            status = f["download_status"] or "not_downloaded"
+            if f["relevant"] and status in {"not_downloaded", "error"}:
+                button_label = "Reintentar descarga" if status == "error" else "Descargar"
+                action = f"<form method='post' action='/files/download/{f['id']}'><button>{button_label}</button></form>"
+            elif status == "downloaded":
                 action = "<span>Guardado localmente</span>"
-            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(f['download_status'])}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
+            elif status == "too_large":
+                action = "<span>No disponible por el límite de tamaño</span>"
+            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(download_status_label(status, f['download_error']))}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
         body += "</table>"
     body += "<div class='section-nav'><a href='/items/" + esc(identifier) + "'>← Paso anterior: elemento</a><a href='/items/" + esc(identifier) + "/content-analysis'>Siguiente: analizar contenido →</a></div>"
     body += "</html>"
@@ -271,7 +289,7 @@ def intake_page():
     body += "<h2>Actividad reciente</h2><table><tr><th>Elemento / archivo</th><th>Formato</th><th>Tamaño</th><th>Estado</th><th>SHA-256 local</th></tr>"
     for row in recent:
         size = f"{row['size_bytes']:,} bytes" if row["size_bytes"] is not None else "—"
-        body += f"<tr><td><a href='/files/{quote(row['identifier'], safe='')}'>{esc(row['title'] or row['identifier'])}</a><br><small>{esc(row['file_name'])}</small></td><td>{esc(row['archive_format'] or Path(row['file_name']).suffix or 'Desconocido')}</td><td>{esc(size)}</td><td>{esc(row['download_status'])}</td><td><code>{esc(row['sha256'] or '—')}</code></td></tr>"
+        body += f"<tr><td><a href='/files/{quote(row['identifier'], safe='')}'>{esc(row['title'] or row['identifier'])}</a><br><small>{esc(row['file_name'])}</small></td><td>{esc(row['archive_format'] or Path(row['file_name']).suffix or 'Desconocido')}</td><td>{esc(size)}</td><td>{esc(download_status_label(row['download_status']))}</td><td><code>{esc(row['sha256'] or '—')}</code></td></tr>"
     body += "</table>"
     return HTMLResponse(body)
 
