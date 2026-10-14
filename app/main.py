@@ -105,6 +105,16 @@ def init_db():
           analyzed_at TEXT NOT NULL,
           sha256 TEXT);
         CREATE INDEX IF NOT EXISTS idx_archive_file_analyses_identifier ON archive_file_analyses(identifier);
+        CREATE TABLE IF NOT EXISTS archive_pdf_extractions(
+          file_id INTEGER PRIMARY KEY REFERENCES archive_files(id) ON DELETE CASCADE,
+          identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          status TEXT NOT NULL,
+          page_count INTEGER NOT NULL DEFAULT 0,
+          extracted_characters INTEGER NOT NULL DEFAULT 0,
+          error_text TEXT,
+          analyzed_at TEXT NOT NULL,
+          sha256 TEXT);
+        CREATE INDEX IF NOT EXISTS idx_archive_pdf_extractions_identifier ON archive_pdf_extractions(identifier);
         """)
 
 
@@ -743,7 +753,10 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
     with db() as conn:
         analyses = conn.execute("""SELECT a.*, f.file_name FROM archive_file_analyses a
             JOIN archive_files f ON f.id=a.file_id
-            WHERE a.identifier=? ORDER BY a.analyzed_at DESC,f.file_name""", (identifier,)).fetchall()
+            WHERE a.identifier=? ORDER BY a.analyzed_at DESC,f.file_name""", (identifier,)).fetchall();
+        pdf_extractions = conn.execute("""SELECT e.*, f.file_name FROM archive_pdf_extractions e
+            JOIN archive_files f ON f.id=e.file_id
+            WHERE e.identifier=? ORDER BY f.file_name""", (identifier,)).fetchall()
     body += "<section class='panel' id='analisis'><h2><span class='step-number'>3</span>Análisis automático de partituras MusicXML</h2><p>Examina localmente los MusicXML descargados (incluido MXL comprimido) para extraer título, creadores, partes/instrumentos y compases. Los resultados son indicios técnicos, no una identificación editorial definitiva; no se envían a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Analizar archivos MusicXML descargados</button></form>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
@@ -761,6 +774,16 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
     body += "<section class='panel' id='ocr'><h2>Ayuda automática desde OCR / texto</h2><p>La aplicación puede leer ficheros de texto OCR descargados y extraer texto de PDF que permitan copiarlo. Propone líneas que podrían ser títulos; no decide que sean obras válidas ni crea candidatas hasta que las aceptes.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Extraer sugerencias de ficheros descargados</button></form>";
     if any(value is not None for value in (pdf_con_texto, pdf_ocr, errores_extraccion, sugerencias_nuevas, txt_leidos)):
         body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que probablemente necesitan OCR: " + esc(pdf_ocr or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Los PDF clasificados como necesitados de OCR no se han reconocido mediante OCR: solo se ha comprobado que no contienen texto extraíble.</p></div>";
+    with db() as conn:
+        pdf_extractions = conn.execute("""SELECT e.*, f.file_name FROM archive_pdf_extractions e
+            JOIN archive_files f ON f.id=e.file_id
+            WHERE e.identifier=? ORDER BY f.file_name""", (identifier,)).fetchall()
+    if pdf_extractions:
+        body += "<h3>Estado de extracción por PDF</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
+        pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Probablemente necesita OCR", "error": "Error de lectura"}
+        for pdf_result in pdf_extractions:
+            body += f"<tr><td>{esc(pdf_result['file_name'])}</td><td>{esc(pdf_status_labels.get(pdf_result['status'], pdf_result['status']))}{('<br>' + esc(pdf_result['error_text'])) if pdf_result['error_text'] else ''}</td><td>{esc(pdf_result['page_count'])}</td><td>{esc(pdf_result['extracted_characters'])}</td><td>{esc(pdf_result['analyzed_at'])}</td></tr>"
+        body += "</table>"
     with db() as conn:
         suggestions = conn.execute("SELECT * FROM archive_content_suggestions WHERE identifier=? ORDER BY source_file,line_number,id", (identifier,)).fetchall()
     if suggestions:
