@@ -268,6 +268,8 @@ GLOBAL_DISCOVERY_QUERIES = (
      '(title:choir OR title:choral OR title:hymn OR title:motet OR title:madrigal OR title:cantata OR title:psalm OR title:mass OR title:opera OR title:oratorio OR subject:"vocal music")'),
     ("instrumental_music", "Música instrumental y partituras",
      '(title:sonata OR title:symphony OR title:concerto OR title:quartet OR title:trio OR title:"piano score" OR title:"orchestral score" OR subject:"instrumental music")'),
+    ("file_formats", "Formatos de partituras y archivos musicales",
+     '(format:PDF OR format:MIDI OR format:MusicXML OR format:MXL OR format:Sibelius OR format:Finale OR format:"Guitar Pro" OR format:"Compressed Score" OR format:DJVU OR format:PostScript OR format:ABC OR format:LilyPond OR format:Capella)'),
 )
 
 
