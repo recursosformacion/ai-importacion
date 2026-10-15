@@ -1128,32 +1128,28 @@ def test_homepage_is_a_single_capture_workbench(tmp_path, monkeypatch):
     with TestClient(main.app) as client:
         response = client.get("/")
     assert response.status_code == 200
-    assert "Continuar captación automática" in response.text
+    assert "Iniciar / reanudar recopilación completa" in response.text
     assert "Captación musical · paso" not in response.text
-    assert "Procesa el siguiente lote de búsquedas, inventarios, descargas y análisis" in response.text
+    assert "No necesitas ir pulsando botones por lotes" in response.text
 
 
-def test_capture_pipeline_route_runs_discovery_then_integrated_intake(tmp_path, monkeypatch):
+def test_capture_pipeline_route_starts_one_background_collection_job(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capture-pipeline.sqlite3"))
     calls = []
 
-    async def fake_discover(rows=100):
-        calls.append(("discover", rows))
-        return HTMLResponse("discovery complete")
+    async def fake_worker(job_id):
+        calls.append(("worker", job_id))
 
-    async def fake_intake(items=10, downloads=3):
-        calls.append(("intake", items, downloads))
-        return HTMLResponse("intake complete")
-
-    import app.file_catalog as file_catalog
-    monkeypatch.setattr(main, "discover", fake_discover)
-    monkeypatch.setattr(file_catalog, "run_integrated_intake", fake_intake)
+    monkeypatch.setattr(main, "run_full_capture_job", fake_worker)
 
     with TestClient(main.app) as client:
-        response = client.post("/capture/run")
-    assert response.status_code == 200
-    assert calls == [("discover", 100), ("intake", 10, 3)]
-    assert "Lote de captación terminado" in response.text
+        response = client.post("/capture/run", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/capture/status/1"
+    assert calls == [("worker", 1)]
+    with main.db() as conn:
+        job = conn.execute("SELECT status FROM capture_jobs WHERE id=1").fetchone()
+    assert job["status"] == "running"
 
 
 

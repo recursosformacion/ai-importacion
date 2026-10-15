@@ -133,21 +133,21 @@ def test_global_discovery_uses_persistent_cursors_and_deduplicates(tmp_path, mon
     with TestClient(main.app) as client:
         first = client.post("/discover", data={"rows": 100})
         assert first.status_code == 200
-        assert "15</b> registros" in first.text
+        assert "18</b> registros" in first.text
         assert "1 candidatos de este lote superaron el filtro" in first.text
         with main.db() as conn:
             assert conn.execute("SELECT COUNT(*) FROM archive_items").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0] == 3
-            assert conn.execute("SELECT COUNT(*) FROM global_discovery_queries WHERE status='active'").fetchone()[0] == 5
+            assert conn.execute("SELECT COUNT(*) FROM global_discovery_queries WHERE status='active'").fetchone()[0] == 6
         second = client.post("/discover", data={"rows": 100})
         assert second.status_code == 200
         assert "llegado al final de sus cursores" in second.text
-        assert len(calls) == 10
-        assert all(cursor is None for _, cursor in calls[:5])
-        assert all(cursor == "next-cursor" for _, cursor in calls[5:])
+        assert len(calls) == 12
+        assert all(cursor is None for _, cursor in calls[:6])
+        assert all(cursor == "next-cursor" for _, cursor in calls[6:])
         with main.db() as conn:
             assert conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0] == 3
-            assert conn.execute("SELECT COUNT(*) FROM global_discovery_queries WHERE status='completed'").fetchone()[0] == 5
+            assert conn.execute("SELECT COUNT(*) FROM global_discovery_queries WHERE status='completed'").fetchone()[0] == 6
 
 def test_batch_inventory_records_unknown_and_uncommon_formats_and_is_resumable(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "inventory.sqlite3"))

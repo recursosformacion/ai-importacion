@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
@@ -174,7 +174,19 @@ def init_db():
           analyzed_at TEXT NOT NULL,
           sha256 TEXT);
         CREATE INDEX IF NOT EXISTS idx_archive_pdf_extractions_identifier ON archive_pdf_extractions(identifier);
+        CREATE TABLE IF NOT EXISTS capture_jobs(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          status TEXT NOT NULL DEFAULT 'running',
+          started_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT,
+          iterations INTEGER NOT NULL DEFAULT 0,
+          message TEXT NOT NULL DEFAULT '',
+          error_text TEXT
+        );
         """)
+        conn.execute("UPDATE capture_jobs SET status='interrupted', updated_at=?, completed_at=?, message=? WHERE status='running'",
+                     (now(), now(), 'La aplicación se cerró antes de terminar. El progreso de búsqueda y descargas se conserva; inicia otra recopilación para reanudar.'))
 
 
 @asynccontextmanager
@@ -256,6 +268,8 @@ GLOBAL_DISCOVERY_QUERIES = (
      '(title:choir OR title:choral OR title:hymn OR title:motet OR title:madrigal OR title:cantata OR title:psalm OR title:mass OR title:opera OR title:oratorio OR subject:"vocal music")'),
     ("instrumental_music", "Música instrumental y partituras",
      '(title:sonata OR title:symphony OR title:concerto OR title:quartet OR title:trio OR title:"piano score" OR title:"orchestral score" OR subject:"instrumental music")'),
+    ("file_formats", "Formatos de partituras y archivos musicales",
+     '(format:PDF OR format:MIDI OR format:MusicXML OR format:MXL OR format:Sibelius OR format:Finale OR format:"Guitar Pro" OR format:"Compressed Score" OR format:DJVU OR format:PostScript OR format:ABC OR format:LilyPond OR format:Capella)'),
 )
 
 
@@ -426,9 +440,9 @@ def home(request: Request):
         ).fetchall()
     body = "<h1>Captación de partituras</h1>"
     body += "<p>La aplicación busca en Internet Archive, identifica material probablemente musical, inventaría los archivos disponibles, descarga formatos útiles y analiza su contenido. Solo te pedirá intervenir cuando no pueda determinar qué contiene un archivo.</p>"
-    body += "<section class='panel'><h2>Continuar captación</h2><p>Procesa el siguiente lote de búsquedas, inventarios, descargas y análisis. Se conserva el progreso entre ejecuciones.</p>"
-    body += "<form method='post' action='/capture/run'><button style='font-size:1.1rem;padding:.9rem 1.2rem'>Continuar captación automática</button></form>"
-    body += "<p class='muted'>Se descargan formatos musicales reconocidos dentro de los límites configurados. Los formatos desconocidos se registran, pero no se descartan silenciosamente. Todo queda local; no se crean ni exportan obras a OSAP.</p></section>"
+    body += "<section class='panel'><h2>Recopilar material musical</h2><p>Inicia una recopilación automática que continúa por sí sola, guarda el progreso y se puede reanudar si se cierra la aplicación. No necesitas ir pulsando botones por lotes.</p>"
+    body += "<form method='post' action='/capture/run'><button style='font-size:1.1rem;padding:.9rem 1.2rem'>Iniciar / reanudar recopilación completa</button></form>"
+    body += "<p class='muted'>Los archivos se guardan en la carpeta local de descargas y el inventario en SQLite. No se modifica OSAP. La recopilación puede tardar y algunos archivos no estarán disponibles o superarán el límite de tamaño configurado.</p></section>"
     metrics = [
         ("Elementos examinados", scanned),
         ("Candidatos musicales", candidate_count),
@@ -738,44 +752,137 @@ def review_uncertain_material():
     return page("Revisión de material dudoso", body)
 
 
+async def run_full_capture_job(job_id: int) -> None:
+    """Run resumable Archive.org discovery, file inventory and downloads until exhausted or stalled."""
+    from app.file_catalog import run_integrated_intake
+    no_progress_rounds = 0
+    last_snapshot = None
+    last_errors: list[str] = []
+    try:
+        for iteration in range(1, 100001):
+            with db() as conn:
+                before = conn.execute("""SELECT
+                    (SELECT COALESCE(SUM(scanned_count),0) FROM global_discovery_queries) AS scanned,
+                    (SELECT COUNT(*) FROM global_discovery_queries WHERE status='completed') AS completed_queries,
+                    (SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok') AS inventories,
+                    (SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded') AS downloads,
+                    (SELECT COUNT(*) FROM global_discovery_seen WHERE score>0) AS candidates""").fetchone()
+                pending_inventory = conn.execute("""SELECT COUNT(*) FROM global_discovery_seen s
+                    LEFT JOIN archive_item_inventories i ON i.identifier=s.identifier
+                    WHERE s.score>0 AND (i.identifier IS NULL OR i.status='error')""").fetchone()[0]
+                pending_downloads = conn.execute("""SELECT COUNT(*) FROM archive_files f
+                    JOIN global_discovery_seen s ON s.identifier=f.identifier
+                    JOIN archive_item_inventories i ON i.identifier=f.identifier AND i.status='ok'
+                    WHERE s.score>0 AND f.relevant=1 AND f.download_status IN ('not_downloaded','error')
+                    AND (f.size_bytes IS NULL OR f.size_bytes<=?)""",
+                    (int(os.getenv("AI_IMPORTACION_MAX_DOWNLOAD_BYTES", str(100 * 1024 * 1024))),)).fetchone()[0]
+                query_states = conn.execute("SELECT status FROM global_discovery_queries").fetchall()
+            snapshot = (before["scanned"], before["completed_queries"], before["inventories"], before["downloads"], before["candidates"], pending_inventory, pending_downloads)
+            if snapshot == last_snapshot:
+                no_progress_rounds += 1
+            else:
+                no_progress_rounds = 0
+            last_snapshot = snapshot
+
+            if all(row["status"] == "completed" for row in query_states) and pending_inventory == 0 and pending_downloads == 0:
+                with db() as conn:
+                    conn.execute("UPDATE capture_jobs SET status='completed',updated_at=?,completed_at=?,iterations=?,message=?,error_text=? WHERE id=?",
+                                 (now(), now(), iteration, "La búsqueda configurada ha terminado y todos los archivos descargables dentro de los límites se han guardado.", "; ".join(last_errors[-10:]) or None, job_id))
+                return
+            if no_progress_rounds >= 3:
+                with db() as conn:
+                    conn.execute("UPDATE capture_jobs SET status='completed_with_errors',updated_at=?,completed_at=?,iterations=?,message=?,error_text=? WHERE id=?",
+                                 (now(), now(), iteration, "La recopilación se ha detenido porque Internet Archive no permite avanzar tras varios intentos. El progreso y los archivos obtenidos se conservan; quedan incidencias registradas.", "; ".join(last_errors[-10:]) or "Sin progreso en tres ciclos; quedan elementos pendientes.", job_id))
+                return
+
+            ensure_global_discovery_queries()
+            if not all(row["status"] == "completed" for row in query_states):
+                try:
+                    await discover(500)
+                except Exception as exc:
+                    last_errors.append("Búsqueda: " + str(exc)[:180])
+            try:
+                await run_integrated_intake(items=20, downloads=10)
+            except Exception as exc:
+                last_errors.append("Inventario/descarga: " + str(exc)[:180])
+            # run_integrated_intake already invokes the automatic analyzer after downloads.
+
+            with db() as conn:
+                conn.execute("UPDATE capture_jobs SET updated_at=?,iterations=?,message=?,error_text=? WHERE id=? AND status='running'",
+                             (now(), iteration, "Recopilación automática en curso. El avance se guarda en el equipo.", "; ".join(last_errors[-10:]) or None, job_id))
+    except Exception as exc:
+        with db() as conn:
+            conn.execute("UPDATE capture_jobs SET status='error',updated_at=?,completed_at=?,message=?,error_text=? WHERE id=?",
+                         (now(), now(), "La recopilación se interrumpió por un error. Los archivos ya descargados y el avance de búsqueda se conservan.", str(exc)[:2000], job_id))
+
+
 @app.post("/capture/run", response_class=HTMLResponse)
-async def run_capture_pipeline():
-    """Run one bounded end-to-end capture batch without making the user navigate stages."""
-    discovery_error = None
-    intake_error = None
-    try:
-        await discover(100)
-    except Exception as exc:
-        discovery_error = str(exc)[:250]
-    try:
-        from app.file_catalog import run_integrated_intake
-        await run_integrated_intake(items=10, downloads=3)
-    except Exception as exc:
-        intake_error = str(exc)[:250]
+async def run_capture_pipeline(background_tasks: BackgroundTasks):
+    """Start one resumable full collection job; the user does not need to run batches manually."""
+    ensure_global_discovery_queries()
     with db() as conn:
-        scanned = conn.execute("SELECT COUNT(*) FROM global_discovery_seen").fetchone()[0]
-        candidates = conn.execute("SELECT COUNT(*) FROM global_discovery_seen WHERE score>0").fetchone()[0]
-        inventoried = conn.execute("SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok'").fetchone()[0]
-        downloaded = conn.execute("SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded'").fetchone()[0]
-        pending = count_review_cases(conn)
-    body = "<h1>Lote de captación terminado</h1><p>La aplicación ha continuado la búsqueda y ha intentado inventariar, descargar y analizar material musical sin requerir decisiones para cada elemento.</p>"
+        active = conn.execute("SELECT id FROM capture_jobs WHERE status='running' ORDER BY id DESC LIMIT 1").fetchone()
+        if active:
+            job_id = int(active["id"])
+        else:
+            job_id = int(conn.execute(
+                "INSERT INTO capture_jobs(status,started_at,updated_at,message) VALUES('running',?,?,?)",
+                (now(), now(), "Recopilación automática iniciada."),
+            ).lastrowid)
+            background_tasks.add_task(run_full_capture_job, job_id)
+    return RedirectResponse(url=f"/capture/status/{job_id}", status_code=303)
+
+
+@app.get("/capture/status/{job_id}", response_class=HTMLResponse)
+def capture_status(job_id: int):
+    with db() as conn:
+        job = conn.execute("SELECT * FROM capture_jobs WHERE id=?", (job_id,)).fetchone()
+        totals = conn.execute("""SELECT
+            (SELECT COUNT(*) FROM global_discovery_seen) AS scanned,
+            (SELECT COUNT(*) FROM global_discovery_seen WHERE score>0) AS candidates,
+            (SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok') AS inventoried,
+            (SELECT COUNT(*) FROM archive_files WHERE download_status='downloaded') AS downloaded,
+            (SELECT COUNT(*) FROM archive_files WHERE download_status='error') AS download_errors""").fetchone()
+        pending_inventory = conn.execute("""SELECT COUNT(*) FROM global_discovery_seen s
+            LEFT JOIN archive_item_inventories i ON i.identifier=s.identifier
+            WHERE s.score>0 AND (i.identifier IS NULL OR i.status='error')""").fetchone()[0]
+        pending_downloads = conn.execute("""SELECT COUNT(*) FROM archive_files f
+            JOIN global_discovery_seen s ON s.identifier=f.identifier
+            JOIN archive_item_inventories i ON i.identifier=f.identifier AND i.status='ok'
+            WHERE s.score>0 AND f.relevant=1 AND f.download_status IN ('not_downloaded','error')""").fetchone()[0]
+        review_count = count_review_cases(conn)
+        query_states = conn.execute("SELECT label,status,scanned_count FROM global_discovery_queries ORDER BY query_key").fetchall()
+    if not job:
+        raise HTTPException(status_code=404, detail="Recopilación no encontrada")
+    running = job["status"] == "running"
+    refresh = "<meta http-equiv='refresh' content='15'>" if running else ""
+    body = "<h1>" + ("Recopilación automática en curso" if running else "Resultado de la recopilación") + "</h1>"
+    if running:
+        body += "<p>La aplicación está buscando y guardando archivos por sí sola. No hace falta pulsar nada ni permanecer en esta pantalla; puedes volver más tarde a esta dirección.</p>"
+    else:
+        body += "<p>" + esc(job["message"]) + "</p>"
     body += "<div class='metrics'>" + "".join(
         f"<div class='metric'><span class='muted'>{label}</span><h2>{value or 0}</h2></div>"
         for label, value in [
-            ("Elementos examinados", scanned), ("Candidatos musicales", candidates),
-            ("Inventarios completados", inventoried), ("Archivos descargados", downloaded),
-            ("Casos que necesitan revisión", pending),
-        ]
-    ) + "</div>"
-    if discovery_error or intake_error:
-        body += "<section class='panel'><h2>Incidencias</h2><p>El progreso guardado se conserva. Puedes continuar otro lote para reintentar los pasos pendientes.</p>"
-        if discovery_error:
-            body += "<p>Exploración: " + esc(discovery_error) + "</p>"
-        if intake_error:
-            body += "<p>Inventario/descarga: " + esc(intake_error) + "</p>"
-        body += "</section>"
-    body += "<p><a href='/'>Volver a captación</a> · <a href='/items'>Ver material encontrado</a> · <a href='/intake'>Ver archivos y descargas</a></p>"
-    return page("Resultado de captación", body)
+            ("Elementos examinados", totals["scanned"]), ("Candidatos musicales", totals["candidates"]),
+            ("Elementos inventariados", totals["inventoried"]), ("Archivos guardados", totals["downloaded"]),
+            ("Descargas con error", totals["download_errors"]), ("Casos que necesitan revisión", review_count),
+        ]) + "</div>"
+    if not running:
+        body += "<p><b>Estado:</b> " + esc(job["status"]) + " · <b>Ciclos realizados:</b> " + str(job["iterations"]) + "</p>"
+        if job["error_text"]:
+            body += "<details class='panel'><summary>Incidencias registradas</summary><pre>" + esc(job["error_text"]) + "</pre></details>"
+        body += "<p>Los archivos están guardados en la carpeta local de descargas, con su procedencia y SHA-256 en la base de datos local. No se ha modificado OSAP.</p>"
+    else:
+        body += "<p class='muted'>Última actualización: " + esc(job["updated_at"]) + ". La base local conserva el progreso.</p>"
+    body += "<p><a href='/items'>Ver material encontrado</a> · <a href='/intake'>Ver archivos guardados</a> · <a href='/review'>Ver casos dudosos</a> · <a href='/'>Inicio</a></p>"
+    body += "<details class='panel'><summary>Detalle técnico (opcional)</summary><table><tr><th>Grupo</th><th>Estado</th><th>Examinados</th></tr>" + "".join(
+        f"<tr><td>{esc(row['label'])}</td><td>{esc(row['status'])}</td><td>{row['scanned_count']}</td></tr>" for row in query_states
+    ) + "</table><p>Inventarios pendientes o con error: " + str(pending_inventory) + " · Archivos pendientes o con error: " + str(pending_downloads) + "</p></details>"
+    document = page("Recopilación musical", body).body.decode("utf-8")
+    if running:
+        document = document.replace("<meta charset='utf-8'>", "<meta charset='utf-8'><meta http-equiv='refresh' content='15'>", 1)
+    return HTMLResponse(document)
 
 @app.post("/inventory-candidates", response_class=HTMLResponse)
 async def inventory_candidates(batch_size: Annotated[int, Form()] = 25):
