@@ -270,9 +270,11 @@ def _intake_priority(name: str, fmt: str, size: int | None) -> int:
         ".musicxml": 120, ".mxl": 118, ".xml": 105, ".mei": 100, ".abc": 98,
         ".sib": 96, ".mscz": 95, ".mscx": 94, ".musx": 92, ".mus": 90,
         ".capx": 90, ".ove": 88, ".ly": 88, ".nwc": 86, ".nwctxt": 85,
-        ".pdf": 80, ".djvu": 60, ".ps": 58, ".zip": 50, ".7z": 45,
+        ".pdf": 80, ".djvu": 60, ".ps": 58, ".zip": 50, ".7z": 45, ".tar": 40, ".gz": 38,
         ".mid": 30, ".midi": 30, ".kar": 28,
-        ".jpg": 18, ".jpeg": 18, ".png": 18, ".tif": 18, ".tiff": 18, ".jp2": 10,
+        ".gp": 88, ".gp3": 88, ".gp4": 88, ".gp5": 88, ".gpx": 88, ".gp7": 88,
+        ".mgu": 88, ".sgu": 88, ".enc": 88, ".nwc": 86, ".nwctxt": 85,
+        ".bmp": 18, ".jpg": 18, ".jpeg": 18, ".png": 18, ".tif": 18, ".tiff": 18, ".jp2": 10,
         ".txt": 8, ".ocr": 8, ".html": 5,
     }.get(suffix, 0)
     if any(token in f for token in ("musicxml", "compressed score", "sibelius", "capella", "finale", "lilypond")):
