@@ -880,7 +880,10 @@ def capture_status(job_id: int):
     body += "<details class='panel'><summary>Detalle técnico (opcional)</summary><table><tr><th>Grupo</th><th>Estado</th><th>Examinados</th></tr>" + "".join(
         f"<tr><td>{esc(row['label'])}</td><td>{esc(row['status'])}</td><td>{row['scanned_count']}</td></tr>" for row in query_states
     ) + "</table><p>Inventarios pendientes o con error: " + str(pending_inventory) + " · Archivos pendientes o con error: " + str(pending_downloads) + "</p></details>"
-    return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>" + ("<meta http-equiv='refresh' content='15'>" if running else "") + "<title>Recopilación musical</title>" + page("Recopilación musical", body).body.decode("utf-8").split("<body>",1)[-1])
+    document = page("Recopilación musical", body).body.decode("utf-8")
+    if running:
+        document = document.replace("<meta charset='utf-8'>", "<meta charset='utf-8'><meta http-equiv='refresh' content='15'>", 1)
+    return HTMLResponse(document)
 
 @app.post("/inventory-candidates", response_class=HTMLResponse)
 async def inventory_candidates(batch_size: Annotated[int, Form()] = 25):
