@@ -805,10 +805,7 @@ async def run_full_capture_job(job_id: int) -> None:
                 await run_integrated_intake(items=20, downloads=10)
             except Exception as exc:
                 last_errors.append("Inventario/descarga: " + str(exc)[:180])
-            try:
-                process_downloaded_batch()
-            except Exception as exc:
-                last_errors.append("Análisis: " + str(exc)[:180])
+            # run_integrated_intake already invokes the automatic analyzer after downloads.
 
             with db() as conn:
                 conn.execute("UPDATE capture_jobs SET updated_at=?,iterations=?,message=?,error_text=? WHERE id=? AND status='running'",
