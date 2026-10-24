@@ -67,3 +67,15 @@ Las pruebas no necesitan una conexión real a Internet Archive; la búsqueda HTT
 - `search_run_items`: asociación entre una búsqueda y los elementos devueltos.
 
 Los identificadores de Archive.org son únicos en el catálogo local. Si una nueva búsqueda devuelve el mismo identificador, se actualizan los metadatos y se conserva el primer momento de captación.
+
+
+## Ecosistema OSAP
+
+Este repositorio es una herramienta independiente del ecosistema **OSAP — Open Score Acquisition Platform**. Su base de datos es propia y el flujo actual de importación sirve para descubrir y revisar materiales; no escribe directamente en el catálogo de producción.
+
+- **[OSAP core](https://github.com/recursosformacion/AI_GAMEPC2)** — motor principal de resolución de recursos musicales.
+- [ai_recogeYouTube](https://github.com/recursosformacion/ai_recogeYouTube) — descubrimiento y revisión de grabaciones de YouTube.
+- [AI_osap-auth](https://github.com/recursosformacion/AI_osap-auth) — servicio de identidad y autenticación.
+- [AI_osap-storage](https://github.com/recursosformacion/AI_osap-storage) — servicio de datos y almacenamiento del catálogo.
+- [AI_osap-support](https://github.com/recursosformacion/AI_osap-support) — soporte, donaciones y membresías.
+- Sitio público: [openmusicrepository.com](https://openmusicrepository.com)
