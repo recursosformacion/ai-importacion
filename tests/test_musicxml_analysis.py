@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.musicxml_analysis import analyze_musicxml
+from app.musicxml_analysis import NotMusicXMLFileError, analyze_musicxml
 
 
 SCORE = """<?xml version="1.0" encoding="UTF-8"?>
@@ -46,8 +46,41 @@ def test_analyze_mxl_reads_musicxml_from_container(tmp_path):
 def test_analyze_musicxml_rejects_non_score_xml(tmp_path):
     path = tmp_path / "not-score.xml"
     path.write_text("<metadata><title>Not a score</title></metadata>", encoding="utf-8")
-    with pytest.raises(ValueError, match="no tiene la estructura"):
+    with pytest.raises(NotMusicXMLFileError, match="no tiene la estructura"):
         analyze_musicxml(path)
+
+
+def test_generic_xml_is_recorded_as_not_musicxml_not_as_analysis_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "generic-xml.sqlite3"))
+    xml_path = tmp_path / "metadata.xml"
+    xml_path.write_text("<metadata><title>Catalog metadata</title></metadata>", encoding="utf-8")
+    with TestClient(main.app) as client:
+        stamp = main.now()
+        with main.db() as conn:
+            conn.execute("""INSERT INTO archive_items
+                (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                VALUES(?,?,?,?,?,?)""",
+                ("generic-xml-test", "XML test", "https://archive.org/details/generic-xml-test", "{}", stamp, stamp))
+            conn.execute("""INSERT INTO archive_files
+                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,download_status,local_path,sha256)
+                VALUES(?,?,?,?,?,'downloaded',?,?)""",
+                ("generic-xml-test", "metadata.xml", "metadata.xml",
+                 "https://archive.org/download/generic-xml-test/metadata.xml",
+                 stamp, str(xml_path), "xml-digest"))
+
+        response = client.post(
+            "/items/generic-xml-test/content-analysis/analyze-files",
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "fallidos=0" in response.headers["location"]
+
+    with main.db() as conn:
+        row = conn.execute(
+            "SELECT status,error_text FROM archive_file_analyses"
+        ).fetchone()
+    assert row["status"] == "not_musicxml"
+    assert row["error_text"] is None
 
 
 def test_content_analysis_route_persists_downloaded_musicxml_results(tmp_path, monkeypatch):

@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 from fastapi.testclient import TestClient
 import app.main as main
 import app.file_catalog as file_catalog
@@ -89,6 +92,126 @@ def test_guided_workflow_navigation_links_item_steps(tmp_path, monkeypatch):
         assert review.status_code == 200
         assert "Captación musical · paso 5 de 5" not in review.text
         assert "id='obras'" in review.text
+
+
+def test_analysis_page_offers_automatic_inventory_instead_of_reading_missing_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "analysis-no-inventory.sqlite3"))
+    with TestClient(main.app) as client:
+        seed_item()
+        response = client.get("/items/anthology-test/content-analysis")
+
+    assert response.status_code == 200
+    assert "El inventario todavía no se ha consultado" in response.text
+    assert "Buscar, descargar y analizar archivos" in response.text
+    assert response.text.count("<button>Buscar, descargar y analizar archivos</button>") == 1
+    assert "action='/items/anthology-test/content-analysis/extract'" not in response.text
+    assert "Herramientas manuales de análisis (opcional)" in response.text
+
+
+def test_item_analysis_inventories_downloads_and_queues_the_selected_item(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "automatic-item-analysis.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
+    local_pdf = tmp_path / "score.pdf"
+    local_pdf.write_bytes(b"%PDF-1.4 fixture")
+    inventoried = []
+    downloads = []
+    queued = []
+
+    async def fake_inventory(identifier):
+        inventoried.append(identifier)
+        with main.db() as conn:
+            stamp = main.now()
+            conn.execute(
+                """INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status)
+                   VALUES(?,?,2,'ok')""",
+                (identifier, stamp),
+            )
+            conn.executemany(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,archive_format,relevant,
+                    inventory_seen_at,download_status)
+                   VALUES(?,?,?,?,?,?,?,'not_downloaded')""",
+                [
+                    (identifier, "score.pdf", "score.pdf",
+                     "https://archive.org/download/anthology-test/score.pdf", "PDF", 1, stamp),
+                    (identifier, "item_meta.xml", "item_meta.xml",
+                     "https://archive.org/download/anthology-test/item_meta.xml", "Metadata", 0, stamp),
+                ],
+            )
+        return 2
+
+    async def fake_download(file_id):
+        downloads.append(file_id)
+        with main.db() as conn:
+            conn.execute(
+                """UPDATE archive_files SET download_status='downloaded',local_path=?,sha256=?
+                   WHERE id=?""",
+                (str(local_pdf), "fixture-sha", file_id),
+            )
+
+    monkeypatch.setattr(main, "inventory_item_files", fake_inventory)
+    monkeypatch.setattr(main, "download_file", fake_download)
+    monkeypatch.setattr(main, "enqueue_content_analysis", lambda identifier: queued.append(identifier) or 41)
+
+    with TestClient(main.app) as client:
+        seed_item()
+        response = client.post("/items/anthology-test/analyze", follow_redirects=False)
+
+    assert response.status_code == 303, response.text
+    assert response.headers["location"] == "/intake/analysis-status/41?descargados=1&archivos=1"
+    assert inventoried == ["anthology-test"]
+    assert len(downloads) == 1
+    assert queued == ["anthology-test"]
+
+
+def test_analysis_job_processes_only_its_item(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "analysis-job-target.sqlite3"))
+    main.init_db()
+    stamp = main.now()
+    with main.db() as conn:
+        conn.execute(
+            "INSERT INTO content_analysis_jobs(identifier,status,queued_at,updated_at) VALUES(?,'pending',?,?)",
+            ("anthology-test", stamp, stamp),
+        )
+    processed = []
+
+    def fake_process(identifier):
+        processed.append(identifier)
+
+    monkeypatch.setattr(main, "process_downloaded_batch", fake_process)
+    assert asyncio.run(main.run_queued_content_analysis(1))
+    assert processed == ["anthology-test"]
+
+
+def test_targeted_analysis_batch_does_not_process_other_items(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "analysis-batch-target.sqlite3"))
+    main.init_db()
+    seed_item()
+    stamp = main.now()
+    with main.db() as conn:
+        conn.execute(
+            """INSERT INTO archive_items
+               (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+               VALUES(?,?,?,?,?,?)""",
+            ("other-item", "Other score", "https://archive.org/details/other-item", "{}", stamp, stamp),
+        )
+        for identifier, name in (("anthology-test", "target.pdf"), ("other-item", "other.pdf")):
+            conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,relevant,inventory_seen_at,
+                    download_status,local_path)
+                   VALUES(?,?,?,?,1,?,'downloaded','local.pdf')""",
+                (identifier, name, name, f"https://archive.org/download/{identifier}/{name}", stamp),
+            )
+
+    analyzed = []
+    monkeypatch.setattr(main, "extract_content_suggestions", analyzed.append)
+    result = main.process_downloaded_batch("anthology-test")
+
+    assert analyzed == ["anthology-test"]
+    assert "Anthology of scores" in result.body.decode("utf-8")
+    assert "Other score" not in result.body.decode("utf-8")
 
 
 def test_search_results_show_next_workflow_step(tmp_path, monkeypatch):
@@ -676,6 +799,59 @@ def test_pdf_extraction_reports_text_ocr_and_read_errors(tmp_path, monkeypatch):
         "broken.pdf": 0, "scores-scan.pdf": 1, "scores-text.pdf": 1,
     }
 
+
+def test_pdf_text_extraction_is_bounded_to_first_pages(tmp_path, monkeypatch):
+    import pypdf
+
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "bounded-pdf.sqlite3"))
+    monkeypatch.setattr(main, "MAX_PDF_TEXT_PAGES", 2)
+    extracted_pages = []
+
+    class Page:
+        def __init__(self, page_number):
+            self.page_number = page_number
+
+        def extract_text(self):
+            extracted_pages.append(self.page_number)
+            return f"Title on page {self.page_number}"
+
+    class Reader:
+        def __init__(self, path):
+            self.pages = [Page(number) for number in range(1, 101)]
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+    pdf_path = tmp_path / "long-score.pdf"
+    pdf_path.write_bytes(b"fixture")
+
+    with TestClient(main.app) as client:
+        seed_item()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,inventory_seen_at,
+                    download_status,local_path,sha256)
+                   VALUES(?,?,?,?,?,'downloaded',?,?)""",
+                ("anthology-test", "long-score.pdf", "long-score.pdf",
+                 "https://archive.org/download/anthology-test/long-score.pdf",
+                 main.now(), str(pdf_path), "long-pdf-hash"),
+            )
+        response = client.post(
+            "/items/anthology-test/content-analysis/extract", follow_redirects=False
+        )
+
+    assert response.status_code == 303
+    assert extracted_pages == [1, 2]
+    with main.db() as conn:
+        result = conn.execute(
+            """SELECT status,page_count,extracted_characters,error_text
+               FROM archive_pdf_extractions"""
+        ).fetchone()
+    assert result["status"] == "text_available"
+    assert result["page_count"] == 100
+    assert result["extracted_characters"] == len("Title on page 1Title on page 2")
+    assert "primeras 2 páginas" in result["error_text"]
+
+
 def test_scanned_pdf_ocr_extracts_text_and_creates_suggestion(tmp_path, monkeypatch):
     import io
     import fitz
@@ -1009,8 +1185,12 @@ def test_integrated_intake_runs_automatic_analysis_after_successful_download(tmp
     def fake_extract(identifier):
         analyzed.append(identifier)
 
+    async def idle_analysis_queue():
+        await asyncio.Event().wait()
+
     monkeypatch.setattr(file_catalog, "download_file", successful_download)
     monkeypatch.setattr(main, "extract_content_suggestions", fake_extract)
+    monkeypatch.setattr(main, "content_analysis_job_queue", idle_analysis_queue)
 
     with TestClient(main.app) as client:
         seed_item()
@@ -1034,9 +1214,56 @@ def test_integrated_intake_runs_automatic_analysis_after_successful_download(tmp
 
         response = client.post("/intake/run", data={"items": "1", "downloads": "1"})
         assert response.status_code == 200
-        assert "Resultado del análisis automático" in response.text
+        assert "Análisis automático en segundo plano" in response.text
+        assert "/intake/analysis-status/1" in response.text
         assert "Inventarios nuevos correctos" in response.text
-        assert analyzed == ["anthology-test"]
+        assert analyzed == []
+        with main.db() as conn:
+            job = conn.execute("SELECT status FROM content_analysis_jobs WHERE id=1").fetchone()
+        assert job["status"] == "pending"
+
+
+def test_analysis_queue_runs_processor_in_thread_and_persists_completion(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "analysis-job.sqlite3"))
+    main.init_db()
+    stamp = main.now()
+    with main.db() as conn:
+        conn.execute(
+            "INSERT INTO content_analysis_jobs(status,queued_at,updated_at) VALUES('pending',?,?)",
+            (stamp, stamp),
+        )
+    caller_thread = __import__("threading").get_ident()
+    worker_threads = []
+
+    def fake_process():
+        worker_threads.append(__import__("threading").get_ident())
+
+    monkeypatch.setattr(main, "process_downloaded_batch", fake_process)
+    assert asyncio.run(main.run_queued_content_analysis(1))
+    assert worker_threads and worker_threads[0] != caller_thread
+    with main.db() as conn:
+        job = conn.execute("SELECT status,completed_at,error_text FROM content_analysis_jobs WHERE id=1").fetchone()
+    assert job["status"] == "completed"
+    assert job["completed_at"]
+    assert job["error_text"] is None
+
+
+def test_startup_requeues_interrupted_analysis_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "analysis-restart.sqlite3"))
+    main.init_db()
+    stamp = main.now()
+    with main.db() as conn:
+        conn.execute(
+            "INSERT INTO content_analysis_jobs(status,queued_at,updated_at) VALUES('running',?,?)",
+            (stamp, stamp),
+        )
+    main.init_db()
+    with main.db() as conn:
+        job = conn.execute(
+            "SELECT status,completed_at FROM content_analysis_jobs WHERE id=1"
+        ).fetchone()
+    assert job["status"] == "pending"
+    assert job["completed_at"] is None
 
 
 
@@ -1133,23 +1360,87 @@ def test_homepage_is_a_single_capture_workbench(tmp_path, monkeypatch):
     assert "No necesitas ir pulsando botones por lotes" in response.text
 
 
-def test_capture_pipeline_route_starts_one_background_collection_job(tmp_path, monkeypatch):
+def test_capture_pipeline_route_persists_job_for_worker(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capture-pipeline.sqlite3"))
     calls = []
 
     async def fake_worker(job_id):
         calls.append(("worker", job_id))
+        with main.db() as conn:
+            conn.execute(
+                "UPDATE capture_jobs SET status='completed',completed_at=?,updated_at=? WHERE id=?",
+                (main.now(), main.now(), job_id),
+            )
 
     monkeypatch.setattr(main, "run_full_capture_job", fake_worker)
 
     with TestClient(main.app) as client:
         response = client.post("/capture/run", follow_redirects=False)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with main.db() as conn:
+                job = conn.execute("SELECT status FROM capture_jobs WHERE id=1").fetchone()
+            if job and job["status"] == "completed":
+                break
+            time.sleep(0.02)
     assert response.status_code == 303
     assert response.headers["location"] == "/capture/status/1"
     assert calls == [("worker", 1)]
     with main.db() as conn:
         job = conn.execute("SELECT status FROM capture_jobs WHERE id=1").fetchone()
-    assert job["status"] == "running"
+    assert job["status"] == "completed"
+
+
+def test_startup_requeues_interrupted_capture_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capture-restart.sqlite3"))
+    main.init_db()
+    stamp = main.now()
+    with main.db() as conn:
+        conn.execute(
+            """INSERT INTO capture_jobs(status,started_at,updated_at,message)
+               VALUES('running',?,?,?)""",
+            (stamp, stamp, "previous process"),
+        )
+
+    main.init_db()
+    with main.db() as conn:
+        job = conn.execute("SELECT status,completed_at,message FROM capture_jobs WHERE id=1").fetchone()
+    assert job["status"] == "pending"
+    assert job["completed_at"] is None
+    assert "reencolada" in job["message"]
+
+
+def test_capture_worker_requeues_job_when_shutdown_cancels_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capture-cancel.sqlite3"))
+    main.init_db()
+    stamp = main.now()
+    with main.db() as conn:
+        conn.execute(
+            "INSERT INTO capture_jobs(status,started_at,updated_at,message) VALUES('pending',?,?,?)",
+            (stamp, stamp, "queued"),
+        )
+    started = asyncio.Event()
+
+    async def blocked_worker(_job_id):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(main, "run_full_capture_job", blocked_worker)
+
+    async def cancel_worker():
+        task = asyncio.create_task(main.run_queued_capture_job(1))
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(cancel_worker())
+    with main.db() as conn:
+        job = conn.execute("SELECT status,message FROM capture_jobs WHERE id=1").fetchone()
+    assert job["status"] == "pending"
+    assert "pausada" in job["message"]
 
 
 
@@ -1182,6 +1473,15 @@ def test_review_queue_shows_uncertain_item_files_and_evidence(tmp_path, monkeypa
                  "https://archive.org/download/anthology-test/score.pdf", "PDF", stamp, str(pdf)),
             )
             conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,archive_format,relevant,
+                    inventory_seen_at,download_status,local_path)
+                   VALUES(?,?,?,?,?,0,?,'downloaded',?)""",
+                ("anthology-test", "metadata.xml", "metadata.xml",
+                 "https://archive.org/download/anthology-test/metadata.xml", "Metadata",
+                 stamp, str(local_dir / "metadata.xml")),
+            )
+            conn.execute(
                 """INSERT INTO archive_content_suggestions
                    (identifier,source_file,line_number,suggestion_text,status,created_at)
                    VALUES(?,?,?,?,'pending',?)""",
@@ -1193,6 +1493,8 @@ def test_review_queue_shows_uncertain_item_files_and_evidence(tmp_path, monkeypa
     assert "Descripción menciona sheet music" in response.text
     assert "MOTET IN G" in response.text
     assert "/files/view/" in response.text
+    assert "score.pdf" in response.text
+    assert "metadata.xml" not in response.text
 
 
 def test_local_preview_opens_pdf_inline_and_serves_mxl_as_download(tmp_path, monkeypatch):

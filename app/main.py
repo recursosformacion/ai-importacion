@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import html
+import asyncio
 import json
 import os
 import re
-import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
+
+from app.db import connect
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 ARCHIVE_ENDPOINT = "https://archive.org/advancedsearch.php"
@@ -20,6 +24,7 @@ SCRAPE_ENDPOINT = "https://archive.org/services/search/v1/scrape"
 FIELDS = ["identifier", "title", "creator", "date", "mediatype", "collection", "rights", "description", "subject", "language", "publisher", "format"]
 SCRAPE_FIELDS = ",".join(FIELDS)
 USER_AGENT = "OSAP-AI-Importacion/0.1 (+https://openmusicrepository.com; metadata research)"
+MAX_PDF_TEXT_PAGES = 50
 
 
 def count_review_cases(conn) -> int:
@@ -86,16 +91,12 @@ def now() -> str:
 
 
 def db():
-    path = Path(DB_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    return connect(DB_PATH)
 
 
 def init_db():
     with db() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS search_runs(
           id INTEGER PRIMARY KEY AUTOINCREMENT, query_text TEXT NOT NULL, archive_query TEXT NOT NULL,
@@ -184,25 +185,113 @@ def init_db():
           message TEXT NOT NULL DEFAULT '',
           error_text TEXT
         );
+        CREATE TABLE IF NOT EXISTS archive_rights_reviews(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+          status TEXT NOT NULL,
+          evidence_url TEXT NOT NULL DEFAULT '',
+          basis TEXT NOT NULL DEFAULT '',
+          jurisdiction TEXT NOT NULL DEFAULT '',
+          notes TEXT NOT NULL DEFAULT '',
+          reviewed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_archive_rights_reviews_identifier
+          ON archive_rights_reviews(identifier, reviewed_at DESC);
+        CREATE TABLE IF NOT EXISTS content_analysis_jobs(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          identifier TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          queued_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT,
+          error_text TEXT
+        );
         """)
-        conn.execute("UPDATE capture_jobs SET status='interrupted', updated_at=?, completed_at=?, message=? WHERE status='running'",
-                     (now(), now(), 'La aplicación se cerró antes de terminar. El progreso de búsqueda y descargas se conserva; inicia otra recopilación para reanudar.'))
+        analysis_job_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(content_analysis_jobs)")
+        }
+        if "identifier" not in analysis_job_columns:
+            conn.execute("ALTER TABLE content_analysis_jobs ADD COLUMN identifier TEXT")
+        conn.execute(
+            """UPDATE capture_jobs SET status='pending', updated_at=?, completed_at=NULL, message=?
+               WHERE status='running'""",
+            (now(), "Recopilación reencolada al iniciar la aplicación; se continuará desde el progreso guardado."),
+        )
+        conn.execute(
+            """UPDATE content_analysis_jobs SET status='pending',updated_at=?,completed_at=NULL
+               WHERE status='running'""",
+            (now(),),
+        )
+        stale_xml = conn.execute(
+            """SELECT fa.file_id FROM archive_file_analyses fa
+               JOIN archive_files f ON f.id=fa.file_id
+               WHERE fa.status='error'
+                 AND fa.error_text='El XML no tiene la estructura de una partitura MusicXML.'
+                 AND lower(f.file_name) LIKE '%.xml'
+                 AND lower(f.file_name) NOT LIKE '%.musicxml'"""
+        ).fetchall()
+        for row in stale_xml:
+            conn.execute(
+                """UPDATE archive_file_analyses
+                   SET status='not_musicxml',analysis_json=?,error_text=NULL
+                   WHERE file_id=?""",
+                (
+                    json.dumps({
+                        "format": "xml",
+                        "status": "not_musicxml",
+                        "message": "XML válido, pero no es una partitura MusicXML.",
+                    }, ensure_ascii=False),
+                    row["file_id"],
+                ),
+            )
+        conn.execute(
+            """UPDATE archive_files SET relevant=0
+               WHERE lower(file_name) LIKE '%.xml'
+                 AND (
+                   lower(file_name) LIKE '%_files.xml'
+                   OR lower(file_name) LIKE '%_meta.xml'
+                   OR lower(file_name) LIKE '%_metadata.xml'
+                   OR lower(file_name) LIKE '%_contents.xml'
+                   OR lower(COALESCE(archive_format,'')) IN ('metadata','marc','dublin core','contents')
+                 )"""
+        )
+        conn.execute(
+            """UPDATE archive_files SET relevant=0
+               WHERE lower(file_name) LIKE '%thumb%'
+                  OR lower(file_name) LIKE '%thumbnail%'
+                  OR lower(file_name) LIKE '%tile%'
+                  OR lower(file_name) LIKE '%scandata%'
+                  OR lower(COALESCE(archive_format,'')) LIKE '%single page processed jp2%'
+                  OR lower(COALESCE(archive_format,'')) LIKE '%single page original jp2%'
+                  OR lower(COALESCE(archive_format,'')) LIKE '%jp2 zip%'
+                  OR lower(COALESCE(archive_format,'')) LIKE '%jp2 tar%'"""
+        )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    yield
+    workers = [
+        asyncio.create_task(capture_job_queue()),
+        asyncio.create_task(content_analysis_job_queue()),
+    ]
+    try:
+        yield
+    finally:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
 
 
 app = FastAPI(title="AI Importación", version="0.2.0", lifespan=lifespan)
 
 from app.file_catalog import (
+    MAX_DOWNLOAD_BYTES, _intake_priority, download_file, inventory_item_files,
     router as file_catalog_router, relevant_file, safe_filename, valid_identifier,
     METADATA_ENDPOINT, USER_AGENT,
 )
-from urllib.parse import quote
-from app.musicxml_analysis import analyze_musicxml
+from urllib.parse import quote, urlencode
+from app.musicxml_analysis import NotMusicXMLFileError, analyze_musicxml
 from app.midi_analysis import analyze_midi
 app.include_router(file_catalog_router)
 
@@ -601,9 +690,12 @@ async def discover(rows: Annotated[int, Form()] = 100):
 
 
 @app.get("/review", response_class=HTMLResponse)
-def review_uncertain_material():
+def review_uncertain_material(page_number: int = 1):
     """Show only downloaded candidates whose content still needs a human look."""
     with db() as conn:
+        total_cases = count_review_cases(conn)
+        total_pages = max(1, (total_cases + 49) // 50)
+        page_number = max(1, min(page_number, total_pages))
         items = conn.execute(
             """SELECT a.identifier,COALESCE(a.title,a.identifier) AS title,
                       s.score,s.reason,
@@ -695,10 +787,20 @@ def review_uncertain_material():
                          AND lower(f.file_name) NOT LIKE '%.bmp'
                          AND lower(f.file_name) NOT LIKE '%.jp2')
                )
-               ORDER BY pending_suggestions DESC,s.score DESC,a.last_seen_at DESC LIMIT 50"""
+               ORDER BY pending_suggestions DESC,s.score DESC,a.last_seen_at DESC LIMIT 50 OFFSET ?""",
+            ((page_number - 1) * 50,),
         ).fetchall()
     body = "<h1>Casos que necesitan una mirada</h1>"
     body += "<p>Aquí solo aparecen materiales descargados que necesitan una decisión concreta: un posible título, un error al leer el archivo o un formato que la aplicación aún no sabe interpretar. Que un archivo esté disponible para descargar no es motivo de revisión.</p>"
+    if total_cases:
+        first_case = (page_number - 1) * 50 + 1
+        last_case = min(page_number * 50, total_cases)
+        body += f"<p>Casos {first_case}–{last_case} de {total_cases} · página {page_number} de {total_pages}</p>"
+        if total_pages > 1:
+            if page_number > 1:
+                body += f"<a href='/review?page_number={page_number - 1}'>← Anteriores</a> "
+            if page_number < total_pages:
+                body += f"<a href='/review?page_number={page_number + 1}'>Siguientes →</a>"
     if not items:
         body += "<section class='panel'><p>No hay casos pendientes en este momento. Puedes continuar la captación automática.</p><p><a href='/'>Volver a captación</a></p></section>"
         return page("Revisión de material dudoso", body)
@@ -707,7 +809,7 @@ def review_uncertain_material():
         with db() as conn:
             files = conn.execute(
                 """SELECT id,file_name,archive_format,size_bytes,download_status,relevant
-                   FROM archive_files WHERE identifier=? AND download_status='downloaded'
+                   FROM archive_files WHERE identifier=? AND download_status='downloaded' AND relevant=1
                    ORDER BY relevant DESC,size_bytes,file_name""",
                 (identifier,),
             ).fetchall()
@@ -816,20 +918,130 @@ async def run_full_capture_job(job_id: int) -> None:
                          (now(), now(), "La recopilación se interrumpió por un error. Los archivos ya descargados y el avance de búsqueda se conservan.", str(exc)[:2000], job_id))
 
 
+async def run_queued_capture_job(job_id: int) -> bool:
+    with db() as conn:
+        claimed = conn.execute(
+            """UPDATE capture_jobs SET status='running',updated_at=?,completed_at=NULL
+               WHERE id=? AND status='pending'""",
+            (now(), job_id),
+        ).rowcount
+    if not claimed:
+        return False
+    try:
+        await run_full_capture_job(job_id)
+    except asyncio.CancelledError:
+        with db() as conn:
+            conn.execute(
+                """UPDATE capture_jobs SET status='pending',updated_at=?,completed_at=NULL,message=?
+                   WHERE id=? AND status='running'""",
+                (now(), "Recopilación pausada al cerrar la aplicación; se reanudará al volver a iniciar.", job_id),
+            )
+        raise
+    return True
+
+
+async def capture_job_queue() -> None:
+    """Run durable queued jobs sequentially."""
+    while True:
+        with db() as conn:
+            job = conn.execute(
+                "SELECT id FROM capture_jobs WHERE status='pending' ORDER BY id LIMIT 1"
+            ).fetchone()
+        if not job:
+            await asyncio.sleep(1)
+            continue
+        await run_queued_capture_job(int(job["id"]))
+
+
+def enqueue_content_analysis(identifier: str | None = None) -> int:
+    with db() as conn:
+        pending = conn.execute(
+            """SELECT id FROM content_analysis_jobs
+               WHERE status IN ('pending','running') AND identifier IS ?
+               ORDER BY id DESC LIMIT 1""",
+            (identifier,),
+        ).fetchone()
+        if pending:
+            return int(pending["id"])
+        return int(conn.execute(
+            """INSERT INTO content_analysis_jobs(identifier,status,queued_at,updated_at)
+               VALUES(?,'pending',?,?)""",
+            (identifier, now(), now()),
+        ).lastrowid)
+
+
+async def run_queued_content_analysis(job_id: int) -> bool:
+    with db() as conn:
+        claimed = conn.execute(
+            """UPDATE content_analysis_jobs SET status='running',updated_at=?,completed_at=NULL
+               WHERE id=? AND status='pending'""",
+            (now(), job_id),
+        ).rowcount
+    if not claimed:
+        return False
+    try:
+        with db() as conn:
+            job = conn.execute(
+                "SELECT identifier FROM content_analysis_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        identifier = job["identifier"] if job else None
+        if identifier:
+            await run_in_threadpool(process_downloaded_batch, identifier)
+        else:
+            await run_in_threadpool(process_downloaded_batch)
+    except asyncio.CancelledError:
+        with db() as conn:
+            conn.execute(
+                """UPDATE content_analysis_jobs SET status='pending',updated_at=?,completed_at=NULL
+                   WHERE id=? AND status='running'""",
+                (now(), job_id),
+            )
+        raise
+    except Exception as exc:
+        with db() as conn:
+            conn.execute(
+                """UPDATE content_analysis_jobs SET status='error',updated_at=?,completed_at=?,error_text=?
+                   WHERE id=?""",
+                (now(), now(), str(exc)[:2000], job_id),
+            )
+        return True
+    with db() as conn:
+        conn.execute(
+            """UPDATE content_analysis_jobs SET status='completed',updated_at=?,completed_at=?,error_text=NULL
+               WHERE id=?""",
+            (now(), now(), job_id),
+        )
+    return True
+
+
+async def content_analysis_job_queue() -> None:
+    """Process durable analysis jobs independently from download and web request flows."""
+    while True:
+        with db() as conn:
+            job = conn.execute(
+                "SELECT id FROM content_analysis_jobs WHERE status='pending' ORDER BY id LIMIT 1"
+            ).fetchone()
+        if not job:
+            await asyncio.sleep(1)
+            continue
+        await run_queued_content_analysis(int(job["id"]))
+
+
 @app.post("/capture/run", response_class=HTMLResponse)
-async def run_capture_pipeline(background_tasks: BackgroundTasks):
+async def run_capture_pipeline():
     """Start one resumable full collection job; the user does not need to run batches manually."""
     ensure_global_discovery_queries()
     with db() as conn:
-        active = conn.execute("SELECT id FROM capture_jobs WHERE status='running' ORDER BY id DESC LIMIT 1").fetchone()
+        active = conn.execute(
+            "SELECT id FROM capture_jobs WHERE status IN ('pending','running') ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         if active:
             job_id = int(active["id"])
         else:
             job_id = int(conn.execute(
-                "INSERT INTO capture_jobs(status,started_at,updated_at,message) VALUES('running',?,?,?)",
+                "INSERT INTO capture_jobs(status,started_at,updated_at,message) VALUES('pending',?,?,?)",
                 (now(), now(), "Recopilación automática iniciada."),
             ).lastrowid)
-            background_tasks.add_task(run_full_capture_job, job_id)
     return RedirectResponse(url=f"/capture/status/{job_id}", status_code=303)
 
 
@@ -854,11 +1066,11 @@ def capture_status(job_id: int):
         query_states = conn.execute("SELECT label,status,scanned_count FROM global_discovery_queries ORDER BY query_key").fetchall()
     if not job:
         raise HTTPException(status_code=404, detail="Recopilación no encontrada")
-    running = job["status"] == "running"
+    running = job["status"] in {"pending", "running"}
     refresh = "<meta http-equiv='refresh' content='15'>" if running else ""
     body = "<h1>" + ("Recopilación automática en curso" if running else "Resultado de la recopilación") + "</h1>"
     if running:
-        body += "<p>La aplicación está buscando y guardando archivos por sí sola. No hace falta pulsar nada ni permanecer en esta pantalla; puedes volver más tarde a esta dirección.</p>"
+        body += "<p>" + ("Recopilación en cola; comenzará automáticamente." if job["status"] == "pending" else "La aplicación está buscando y guardando archivos por sí sola.") + " No hace falta pulsar nada ni permanecer en esta pantalla; puedes volver más tarde a esta dirección.</p>"
     else:
         body += "<p>" + esc(job["message"]) + "</p>"
     body += "<div class='metrics'>" + "".join(
@@ -1005,15 +1217,48 @@ async def search(query: Annotated[str, Form()], rows: Annotated[int, Form()] = 2
 
 
 @app.get("/items", response_class=HTMLResponse)
-def items_page(q: str = ""):
+def items_page(q: str = "", page_number: int = 1):
+    page_size = 50
+    page_number = max(1, page_number)
+    query = q.strip()
     with db() as conn:
-        if q.strip():
-            like = "%" + q.strip() + "%"
-            items = conn.execute("SELECT * FROM archive_items WHERE title LIKE ? OR creator_json LIKE ? OR identifier LIKE ? ORDER BY last_seen_at DESC LIMIT 500", (like, like, like)).fetchall()
+        if query:
+            like = "%" + query + "%"
+            total = conn.execute(
+                "SELECT COUNT(*) FROM archive_items WHERE title LIKE ? OR creator_json LIKE ? OR identifier LIKE ?",
+                (like, like, like),
+            ).fetchone()[0]
+            page_count = max(1, (total + page_size - 1) // page_size)
+            page_number = min(page_number, page_count)
+            items = conn.execute(
+                """SELECT * FROM archive_items
+                   WHERE title LIKE ? OR creator_json LIKE ? OR identifier LIKE ?
+                   ORDER BY last_seen_at DESC LIMIT ? OFFSET ?""",
+                (like, like, like, page_size, (page_number - 1) * page_size),
+            ).fetchall()
         else:
-            items = conn.execute("SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT 500").fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM archive_items").fetchone()[0]
+            page_count = max(1, (total + page_size - 1) // page_size)
+            page_number = min(page_number, page_count)
+            items = conn.execute(
+                "SELECT * FROM archive_items ORDER BY last_seen_at DESC LIMIT ? OFFSET ?",
+                (page_size, (page_number - 1) * page_size),
+            ).fetchall()
     body = workflow_nav(None, 2)
-    body += "<h1>Catálogo local · elige un elemento</h1><p>Abre la ficha del elemento que quieras investigar. El catálogo conserva los resultados localmente y no crea obras en OSAP.</p><form method='get'><input type='text' name='q' value='" + esc(q) + "' placeholder='Título, identificador o creador'> <button>Filtrar</button></form><section class='panel'>" + item_table(items) + "</section>"
+    body += "<h1>Catálogo local · elige un elemento</h1><p>Abre la ficha del elemento que quieras investigar. El catálogo conserva los resultados localmente y no crea obras en OSAP.</p><form method='get'><input type='text' name='q' value='" + esc(q) + "' placeholder='Título, identificador o creador'> <button>Filtrar</button></form>"
+    start = (page_number - 1) * page_size + 1 if total else 0
+    end = min(page_number * page_size, total)
+    body += f"<p class='muted'>Mostrando {start}–{end} de {total} elementos. Página {page_number} de {page_count}.</p><section class='panel'>" + item_table(items) + "</section>"
+    if page_count > 1:
+        previous = ""
+        following = ""
+        if page_number > 1:
+            previous_url = "?" + urlencode({"q": q, "page_number": page_number - 1})
+            previous = "<a href='" + esc(previous_url) + "'>← Anterior</a>"
+        if page_number < page_count:
+            next_url = "?" + urlencode({"q": q, "page_number": page_number + 1})
+            following = "<a href='" + esc(next_url) + "'>Siguiente →</a>"
+        body += "<nav class='section-nav'>" + previous + following + "</nav>"
     return page("Catálogo local", body)
 
 
@@ -1021,31 +1266,199 @@ def items_page(q: str = ""):
 def item_detail(identifier: str):
     with db() as conn:
         item = conn.execute("SELECT * FROM archive_items WHERE identifier=?", (identifier,)).fetchone()
+        rights_reviews = conn.execute(
+            "SELECT * FROM archive_rights_reviews WHERE identifier=? ORDER BY reviewed_at DESC,id DESC",
+            (identifier,),
+        ).fetchall()
     if not item:
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
     item = dict(item)
     body = workflow_nav(identifier, 2)
     body += f"<p><a href='/items'>← Volver al catálogo</a></p><h1>{esc(item['title'] or identifier)}</h1><p><a target='_blank' rel='noopener' href='{esc(item['source_url'])}'>Abrir elemento original en Internet Archive ↗</a></p>"
-    body += "<section class='panel'><h2>¿Qué quieres hacer ahora?</h2><p>Si un resultado necesita comprobación, consulta sus archivos o abre directamente el análisis de contenido.</p><p><a href='/files/" + esc(identifier) + "'>Consultar archivos →</a> &nbsp; <a href='/items/" + esc(identifier) + "/content-analysis'>Ir al análisis →</a></p></section>"
+    body += "<section class='panel'><h2>Buscar archivos musicales</h2><p>Consulta automáticamente el inventario de Internet Archive, descarga hasta tres archivos musicales prioritarios y analiza lo que la aplicación pueda leer. No hace falta inventariar ni descargar cada archivo a mano.</p><form method='post' action='/items/" + esc(identifier) + "/analyze'><button>Buscar, descargar y analizar archivos</button></form><p><a href='/files/" + esc(identifier) + "'>Consultar archivos →</a> · <a href='/items/" + esc(identifier) + "/content-analysis'>Ver análisis de contenido</a></p></section>"
     body += "<section class='panel'><h2>Ficha local</h2>"
     for label, key in [("Identificador","identifier"),("Creador","creator_json"),("Fecha","item_date"),("Tipo","mediatype"),("Visto por primera vez","first_seen_at"),("Última observación","last_seen_at"),("Declaración de derechos de origen","rights_json")]:
         body += f"<p><b>{label}:</b> {esc(item[key] or '—')}</p>"
+    latest_review = rights_reviews[0] if rights_reviews else None
     body += f"<p><b>Revisión de derechos:</b> {esc(item['rights_status'])}</p><form method='post' action='/items/{esc(identifier)}/rights-status'><select name='status'>"
     for value, label in [("unreviewed","Sin revisar"),("evidence_found","Evidencia localizada; pendiente de validar"),("public_domain_confirmed","Dominio público confirmado"),("permission_required","Se requiere permiso"),("restricted","Uso restringido"),("unclear","No está claro")]:
         body += f"<option value='{value}' {'selected' if item['rights_status']==value else ''}>{label}</option>"
-    body += "</select> <button>Guardar estado</button></form></section><section class='panel'><h2>Metadatos originales conservados</h2><pre>" + esc(json.dumps(json.loads(item["metadata_json"]), ensure_ascii=False, indent=2)) + "</pre></section>"
+    body += "</select>"
+    body += "<p><label>URL de la evidencia (opcional)<br><input type='url' name='evidence_url' maxlength='2000' style='width:95%' value='" + esc(latest_review["evidence_url"] if latest_review else "") + "'></label></p>"
+    body += "<p><label>Base de la decisión / licencia / fuente<br><input type='text' name='basis' maxlength='500' style='width:95%' value='" + esc(latest_review["basis"] if latest_review else "") + "'></label></p>"
+    body += "<p><label>Jurisdicción (si aplica)<br><input type='text' name='jurisdiction' maxlength='120' value='" + esc(latest_review["jurisdiction"] if latest_review else "") + "'></label></p>"
+    body += "<p><label>Notas de revisión<br><textarea name='notes' maxlength='4000' rows='3' style='width:95%'>" + esc(latest_review["notes"] if latest_review else "") + "</textarea></label></p>"
+    body += "<p class='muted'>Registra la fuente y el razonamiento de cada revisión. El estado no constituye asesoramiento jurídico; la declaración de Archive.org por sí sola no confirma permisos.</p><button>Guardar revisión</button></form>"
+    if rights_reviews:
+        body += "<h3>Historial de revisiones</h3><ol>"
+        for review in rights_reviews:
+            body += "<li><b>" + esc(review["status"]) + "</b> · " + esc(review["reviewed_at"])
+            if review["basis"]:
+                body += "<br>Base: " + esc(review["basis"])
+            if review["jurisdiction"]:
+                body += "<br>Jurisdicción: " + esc(review["jurisdiction"])
+            if review["evidence_url"]:
+                body += "<br>Evidencia: <a href='" + esc(review["evidence_url"]) + "' target='_blank' rel='noopener'>" + esc(review["evidence_url"]) + "</a>"
+            if review["notes"]:
+                body += "<br>" + esc(review["notes"])
+            body += "</li>"
+        body += "</ol>"
+    body += "</section><section class='panel'><h2>Metadatos originales conservados</h2><pre>" + esc(json.dumps(json.loads(item["metadata_json"]), ensure_ascii=False, indent=2)) + "</pre></section>"
     return page("Ficha " + identifier, body)
 
 
+@app.post("/items/{identifier}/analyze", response_class=HTMLResponse)
+async def start_item_analysis(identifier: str):
+    if not valid_identifier(identifier):
+        raise HTTPException(status_code=422, detail="Identificador no válido")
+    with db() as conn:
+        item = conn.execute(
+            "SELECT title FROM archive_items WHERE identifier=?", (identifier,)
+        ).fetchone()
+        inventory = conn.execute(
+            "SELECT status FROM archive_item_inventories WHERE identifier=?", (identifier,)
+        ).fetchone()
+    if not item:
+        raise HTTPException(status_code=404, detail="Elemento no encontrado")
+
+    try:
+        if not inventory or inventory["status"] != "ok":
+            await inventory_item_files(identifier)
+    except Exception as exc:
+        body = (
+            "<h1>No se pudo consultar Internet Archive</h1>"
+            "<p>No se ha podido obtener el inventario de archivos. No se inició el análisis; "
+            "puedes volver a intentarlo.</p><p>Detalle: " + esc(str(exc)) + "</p>"
+            "<p><a href='/items/" + quote(identifier, safe="") + "'>Volver a la ficha</a></p>"
+        )
+        return HTMLResponse(
+            "<!doctype html><html lang='es'><meta charset='utf-8'><body>" + body + "</body></html>",
+            status_code=502,
+        )
+
+    with db() as conn:
+        candidates = conn.execute(
+            """SELECT id,file_name,archive_format,size_bytes,download_status
+               FROM archive_files WHERE identifier=? AND relevant=1
+                 AND download_status IN ('not_downloaded','error')
+               ORDER BY id""",
+            (identifier,),
+        ).fetchall()
+        downloaded_count = int(conn.execute(
+            """SELECT COUNT(*) FROM archive_files
+               WHERE identifier=? AND relevant=1 AND download_status='downloaded'""",
+            (identifier,),
+        ).fetchone()[0])
+
+    candidates = sorted(
+        candidates,
+        key=lambda row: _intake_priority(row["file_name"], row["archive_format"], row["size_bytes"]),
+        reverse=True,
+    )
+    attempted = 0
+    downloaded_now = 0
+    for candidate in candidates:
+        if attempted >= 3:
+            break
+        priority = _intake_priority(
+            candidate["file_name"], candidate["archive_format"], candidate["size_bytes"]
+        )
+        if priority <= 0:
+            continue
+        if candidate["size_bytes"] is not None and candidate["size_bytes"] > MAX_DOWNLOAD_BYTES:
+            with db() as conn:
+                conn.execute(
+                    "UPDATE archive_files SET download_status='too_large',download_error=? WHERE id=?",
+                    ("Supera el límite configurado", candidate["id"]),
+                )
+            continue
+        attempted += 1
+        await download_file(int(candidate["id"]))
+        with db() as conn:
+            status = conn.execute(
+                "SELECT download_status FROM archive_files WHERE id=?", (candidate["id"],)
+            ).fetchone()
+        if status and status["download_status"] == "downloaded":
+            downloaded_now += 1
+
+    with db() as conn:
+        downloaded_count = int(conn.execute(
+            """SELECT COUNT(*) FROM archive_files
+               WHERE identifier=? AND relevant=1 AND download_status='downloaded'""",
+            (identifier,),
+        ).fetchone()[0])
+        inventory_count = int(conn.execute(
+            "SELECT COUNT(*) FROM archive_files WHERE identifier=?", (identifier,)
+        ).fetchone()[0])
+        download_issues = conn.execute(
+            """SELECT file_name,download_status,download_error FROM archive_files
+               WHERE identifier=? AND download_status IN ('error','too_large')
+               ORDER BY id DESC LIMIT 5""",
+            (identifier,),
+        ).fetchall()
+    if not downloaded_count:
+        body = (
+            "<h1>No se encontraron archivos musicales descargables</h1><p>Se consultó el inventario "
+            "de Internet Archive (" + str(inventory_count) + " archivos), pero no hay archivos "
+            "musicales candidatos descargados. Puede que el elemento no tenga formatos compatibles, "
+            "que superen el límite de tamaño o que las descargas hayan fallado.</p>"
+        )
+        if download_issues:
+            body += "<h2>Incidencias de descarga</h2><ul>" + "".join(
+                "<li>" + esc(row["file_name"]) + " · "
+                + esc(row["download_error"] or row["download_status"]) + "</li>"
+                for row in download_issues
+            ) + "</ul>"
+        body += (
+            "<p><a href='/files/" + quote(identifier, safe="") + "'>Ver inventario y estados</a> · "
+            "<a href='/items/" + quote(identifier, safe="") + "'>Volver a la ficha</a></p>"
+        )
+        return HTMLResponse(
+            "<!doctype html><html lang='es'><meta charset='utf-8'><body>" + body + "</body></html>"
+        )
+
+    job_id = enqueue_content_analysis(identifier)
+    return RedirectResponse(
+        url=f"/intake/analysis-status/{job_id}"
+        + f"?descargados={downloaded_now}&archivos={downloaded_count}",
+        status_code=303,
+    )
+
+
 @app.post("/items/{identifier}/rights-status")
-def rights_status(identifier: str, status: Annotated[str, Form()] = "unreviewed"):
+def rights_status(
+    identifier: str,
+    status: Annotated[str, Form()] = "unreviewed",
+    evidence_url: Annotated[str, Form()] = "",
+    basis: Annotated[str, Form()] = "",
+    jurisdiction: Annotated[str, Form()] = "",
+    notes: Annotated[str, Form()] = "",
+):
     allowed = {"unreviewed","evidence_found","public_domain_confirmed","permission_required","restricted","unclear"}
     if status not in allowed:
         raise HTTPException(status_code=422, detail="Estado no válido")
+    evidence_url = evidence_url.strip()
+    try:
+        parsed_url = urlsplit(evidence_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="La URL de evidencia no es válida") from exc
+    if evidence_url and (parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc):
+        raise HTTPException(status_code=422, detail="La URL de evidencia debe usar http o https")
+    basis = basis.strip()
+    jurisdiction = jurisdiction.strip()
+    notes = notes.strip()
+    if len(evidence_url) > 2000 or len(basis) > 500 or len(jurisdiction) > 120 or len(notes) > 4000:
+        raise HTTPException(status_code=422, detail="Uno de los campos de revisión supera su longitud máxima")
     with db() as conn:
         cur = conn.execute("UPDATE archive_items SET rights_status=? WHERE identifier=?", (status, identifier))
         if not cur.rowcount:
             raise HTTPException(status_code=404, detail="Elemento no encontrado")
+        conn.execute(
+            """INSERT INTO archive_rights_reviews
+               (identifier,status,evidence_url,basis,jurisdiction,notes,reviewed_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (identifier, status, evidence_url, basis, jurisdiction, notes, now()),
+        )
     return RedirectResponse(url="/items/" + identifier, status_code=303)
 
 
@@ -1073,7 +1486,8 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
     body = workflow_nav(identifier, active_step)
     body += "<p class='muted'>Este flujo es independiente: no se crean ni exportan obras OSAP.</p>"
     body += f"<p><a href='/items/{esc(identifier)}'>← Volver a la ficha</a></p><h1>Análisis del contenido: {esc(item['title'] or identifier)}</h1>"
-    body += "<p>Clasifica el elemento, analiza los archivos disponibles y revisa las obras sugeridas. No tienes que completar todos los análisis técnicos: usa solo los que correspondan a los archivos descargados.</p>"
+    body += "<p>La búsqueda, descarga y análisis se hacen juntos desde un único botón. Solo necesitas intervenir para confirmar resultados dudosos o registrar las obras identificadas.</p>"
+    body += "<section class='panel'><h2>Proceso automático</h2><p>Busca archivos musicales en Internet Archive, descarga candidatos y analiza lo que se pueda leer.</p><form method='post' action='/items/" + esc(identifier) + "/analyze'><button>Buscar, descargar y analizar archivos</button></form></section>"
     if analizados is not None or omitidos is not None or fallidos is not None:
         body += (
             "<section class='panel'><h2>Resultado de la última ejecución</h2><p>"
@@ -1087,7 +1501,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
     body += f"</select></label><p><label>Justificación / evidencias consultadas<br><textarea name='rationale' rows='3' style='width:95%'>{esc(rationale)}</textarea></label></p><button>Guardar clasificación</button></form></section>"
     body += "<section class='panel' id='archivos'><h2>Archivos encontrados</h2>"
     if not files:
-        body += "<p>No hay inventario de ficheros todavía. <a href='/files/" + esc(identifier) + "'>Consultar el inventario</a> para identificar PDF, MusicXML, MIDI, ZIP o imágenes.</p>"
+        body += "<p>El inventario todavía no se ha consultado. El proceso automático de arriba lo consultará y buscará archivos candidatos.</p>"
     else:
         body += "<table><tr><th>Nombre</th><th>Formato</th><th>Tamaño</th><th>Candidato</th></tr>"
         for frow in files:
@@ -1107,7 +1521,7 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             ORDER BY file_name""", (identifier,)).fetchall()
     auto_analysis_suffixes = {".musicxml", ".mxl", ".xml", ".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx", ".mid", ".midi", ".kar", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".jp2"}
     unparsed_files = [f for f in downloaded_files if Path(f["file_name"]).suffix.lower() not in auto_analysis_suffixes]
-    body += "<section class='panel' id='analisis'><h2>Qué ha podido leer la aplicación</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados. Los títulos explícitos de formatos editables se preparan automáticamente como obras candidatas; solo el texto/OCR dudoso queda para revisión. No se exporta nada a OSAP.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Volver a comprobar los archivos</button></form>"
+    body += "<section class='panel' id='analisis'><h2>Qué ha podido leer la aplicación</h2><p>Examina localmente los MusicXML/MXL y MIDI/KAR descargados. Los títulos explícitos de formatos editables se preparan automáticamente como obras candidatas; solo el texto/OCR dudoso queda para revisión. No se exporta nada a OSAP.</p><details><summary>Herramientas manuales de análisis (opcional)</summary><form method='post' action='/items/" + esc(identifier) + "/content-analysis/analyze-files'><button>Volver a comprobar los archivos</button></form></details>"
     if analyses:
         body += "<table><tr><th>Archivo</th><th>Estado</th><th>Título</th><th>Creadores</th><th>Partes</th><th>Compases</th><th>Analizado</th></tr>"
         for result in analyses:
@@ -1118,12 +1532,21 @@ def content_analysis(identifier: str, step: int = 4, analizados: int | None = No
             parts = data.get("parts", [])
             part_names = ", ".join(p.get("name") or p.get("id") or "Parte" for p in parts)
             creators = ", ".join(c.get("name", "") for c in data.get("creators", []) if c.get("name"))
-            body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(result['status'])}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
+            status_label = {
+                "not_musicxml": "XML válido; no es una partitura MusicXML",
+            }.get(result["status"], result["status"])
+            body += f"<tr><td>{esc(result['file_name'])}</td><td>{esc(status_label)}{('<br>' + esc(result['error_text'])) if result['error_text'] else ''}</td><td>{esc(data.get('title') or '—')}</td><td>{esc(creators or '—')}</td><td>{esc(part_names or data.get('part_count', '—'))}</td><td>{esc(data.get('measure_count', '—'))}</td><td>{esc(result['analyzed_at'])}</td></tr>"
         body += "</table>"
     body += "</section>"
-    body += "<section class='panel' id='ocr'><h2>Buscar títulos dentro de los archivos</h2><p>La aplicación lee TXT/OCR y formatos de notación compatibles, extrae texto de PDF y aplica OCR local a PDF escaneados e imágenes de partituras (PNG, JPG, TIFF y otros formatos compatibles). Las sugerencias de títulos detectados en texto normal requieren confirmación; los títulos explícitos de los formatos de notación se registran automáticamente como candidatos.</p><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Leer texto y buscar posibles títulos</button></form>";
+    body += "<section class='panel' id='ocr'><h2>Buscar títulos dentro de los archivos</h2><p>La aplicación lee TXT/OCR y formatos de notación compatibles, extrae texto de PDF y aplica OCR local a PDF escaneados e imágenes de partituras (PNG, JPG, TIFF y otros formatos compatibles). Las sugerencias de títulos detectados en texto normal requieren confirmación; los títulos explícitos de los formatos de notación se registran automáticamente como candidatos.</p>"
+    extractable_suffixes = {".pdf", ".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx",
+                            ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".jp2"}
+    if any(Path(row["file_name"]).suffix.casefold() in extractable_suffixes for row in downloaded_files):
+        body += "<details><summary>Extracción manual de texto (opcional)</summary><form method='post' action='/items/" + esc(identifier) + "/content-analysis/extract'><button>Leer texto y buscar posibles títulos</button></form></details>"
+    else:
+        body += "<p>Aún no hay archivos descargados que este análisis pueda leer. El proceso automático de arriba buscará y analizará candidatos.</p>"
     if any(value is not None for value in (pdf_con_texto, pdf_ocr, pdf_ocr_realizados, pdf_ocr_sin_texto, errores_extraccion, sugerencias_nuevas, txt_leidos, notacion_leida, imagenes_ocr, imagenes_sin_texto, imagenes_leidas)):
-        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que aún necesitan OCR: " + esc(pdf_ocr or 0) + " · OCR realizado en PDF: " + esc(pdf_ocr_realizados or 0) + " · PDF sin texto legible: " + esc(pdf_ocr_sin_texto or 0) + " · Imágenes leídas por OCR: " + esc(imagenes_leidas or 0) + " · Imágenes con texto detectado: " + esc(imagenes_ocr or 0) + " · Imágenes sin texto legible: " + esc(imagenes_sin_texto or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>El OCR se limita a las primeras cinco páginas de cada PDF y reduce las imágenes grandes antes de leerlas. Si Tesseract no está instalado o no está disponible, la ficha indica qué requisito falta. El procesamiento es local: los archivos no se envían a servicios externos.</p></div>";
+        body += "<div class='notice'><h3>Resultado de la última extracción</h3><p>PDF con texto extraíble: " + esc(pdf_con_texto or 0) + " · PDF que aún necesitan OCR: " + esc(pdf_ocr or 0) + " · OCR realizado en PDF: " + esc(pdf_ocr_realizados or 0) + " · PDF sin texto legible: " + esc(pdf_ocr_sin_texto or 0) + " · Imágenes leídas por OCR: " + esc(imagenes_leidas or 0) + " · Imágenes con texto detectado: " + esc(imagenes_ocr or 0) + " · Imágenes sin texto legible: " + esc(imagenes_sin_texto or 0) + " · Ficheros TXT/OCR leídos: " + esc(txt_leidos or 0) + " · Errores de lectura: " + esc(errores_extraccion or 0) + " · Archivos ABC/LilyPond/MEI/MuseScore leídos: " + esc(notacion_leida or 0) + " · Sugerencias nuevas: " + esc(sugerencias_nuevas or 0) + "</p><p>Para que la revisión sea rápida, se extrae texto de un máximo de " + str(MAX_PDF_TEXT_PAGES) + " páginas por PDF y el OCR se limita a las primeras cinco páginas escaneadas. Las imágenes grandes se reducen antes de leerlas. Si Tesseract no está instalado o no está disponible, la ficha indica qué requisito falta. El procesamiento es local: los archivos no se envían a servicios externos.</p></div>";
     if pdf_extractions:
         body += "<h3>Estado de lectura de documentos e imágenes</h3><table><tr><th>Archivo</th><th>Resultado</th><th>Páginas</th><th>Caracteres extraídos</th><th>Último intento</th></tr>"
         pdf_status_labels = {"text_available": "Texto extraíble", "ocr_needed": "Necesita OCR", "ocr_completed": "OCR realizado", "ocr_no_text": "OCR realizado; sin texto legible", "image_ocr_completed": "Imagen leída por OCR", "image_ocr_no_text": "Imagen sin texto legible", "text_checked": "Lectura de texto realizada", "text_no_content": "Sin texto extraíble", "text_error": "Error al leer el archivo", "ocr_unavailable": "OCR no disponible", "ocr_error": "Error durante el OCR", "error": "Error de lectura"}
@@ -1375,7 +1798,7 @@ def analyze_downloaded_musicxml(identifier: str):
             ).fetchone()
         if (
             previous
-            and previous["status"] == "ok"
+            and previous["status"] in {"ok", "not_musicxml"}
             and file_row["sha256"]
             and previous["sha256"] == file_row["sha256"]
         ):
@@ -1403,6 +1826,18 @@ def analyze_downloaded_musicxml(identifier: str):
                 analysis = analyze_midi(path)
             else:
                 analysis = analyze_musicxml(path)
+        except NotMusicXMLFileError as exc:
+            if path.suffix.lower() != ".xml":
+                analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
+                status = "error"
+                error_text = str(exc)[:1000]
+            else:
+                analysis = {
+                    "format": "xml",
+                    "status": "not_musicxml",
+                    "message": "XML válido, pero no es una partitura MusicXML.",
+                }
+                status = "not_musicxml"
         except Exception as exc:
             analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
             status = "error"
@@ -1573,15 +2008,22 @@ def extract_content_suggestions(identifier: str):
                 reader = PdfReader(str(path))
                 pages = []
                 page_texts = []
-                for page_no, pdf_page in enumerate(reader.pages, 1):
+                page_count = len(reader.pages)
+                page_limit = min(page_count, MAX_PDF_TEXT_PAGES)
+                for page_no in range(page_limit):
+                    pdf_page = reader.pages[page_no]
                     page_text = pdf_page.extract_text() or ""
                     page_texts.append(page_text)
-                    pages.append(chr(10) + f"[PAGE {page_no}]" + chr(10) + page_text)
+                    pages.append(chr(10) + f"[PAGE {page_no + 1}]" + chr(10) + page_text)
                 text_content = chr(10).join(pages)
                 extracted_characters = sum(len(page_text) for page_text in page_texts)
                 if any(page_text.strip() for page_text in page_texts):
                     pdf_with_text += 1
-                    record_pdf_result(frow, "text_available", len(reader.pages), extracted_characters)
+                    record_pdf_result(
+                        frow, "text_available", page_count, extracted_characters,
+                        f"Texto extraído de las primeras {page_limit} páginas."
+                        if page_count > page_limit else None,
+                    )
                 else:
                     # Raster PDFs need OCR; process only a small, bounded prefix locally.
                     class OCRUnavailableError(RuntimeError):
@@ -1750,14 +2192,53 @@ def accept_content_suggestion(identifier: str, suggestion_id: int):
 
 
 
+@app.get("/intake/analysis-status/{job_id}", response_class=HTMLResponse)
+def content_analysis_job_status(
+    job_id: int, descargados: int | None = None, archivos: int | None = None
+):
+    with db() as conn:
+        job = conn.execute("SELECT * FROM content_analysis_jobs WHERE id=?", (job_id,)).fetchone()
+    if not job:
+        raise HTTPException(status_code=404, detail="Trabajo de análisis no encontrado")
+    active = job["status"] in {"pending", "running"}
+    refresh = "<meta http-equiv='refresh' content='3'>" if active else ""
+    body = "<h1>Estado del análisis automático</h1>"
+    if descargados is not None and archivos is not None:
+        body += (
+            "<p>Archivos candidatos descargados en esta ejecución: <b>"
+            + esc(descargados)
+            + "</b>. Archivos candidatos guardados para este elemento: <b>"
+            + esc(archivos)
+            + "</b>.</p>"
+        )
+    if job["status"] == "pending":
+        body += "<p>El análisis está en cola y comenzará cuando el trabajador esté disponible.</p>"
+    elif job["status"] == "running":
+        body += "<p>Se están analizando los archivos en segundo plano. Puedes salir de esta página; el resultado se conserva en el catálogo.</p>"
+    elif job["status"] == "completed":
+        body += "<p>Análisis terminado. Consulta las fichas de los elementos y la cola de revisión para ver los resultados.</p>"
+    else:
+        body += "<p>El análisis terminó con un error. Puedes volver a encolarlo desde Captación integrada.</p>"
+    if job["error_text"]:
+        body += "<details class='panel'><summary>Detalle del error</summary><pre>" + esc(job["error_text"]) + "</pre></details>"
+    if job["identifier"]:
+        body += "<p><a href='/items/" + quote(job["identifier"], safe="") + "/content-analysis'>Ver análisis del elemento</a> · <a href='/items/" + quote(job["identifier"], safe="") + "'>Volver a su ficha</a></p>"
+    body += "<p><a href='/review'>Revisar resultados</a> · <a href='/intake'>Captación integrada</a> · <a href='/'>Inicio</a></p>"
+    rendered = page("Análisis automático", body).body.decode("utf-8")
+    if active:
+        rendered = rendered.replace("<meta charset='utf-8'>", "<meta charset='utf-8'>" + refresh, 1)
+    return HTMLResponse(rendered)
+
+
 @app.post("/intake/process", response_class=HTMLResponse)
-def process_downloaded_batch():
+def process_downloaded_batch(identifier: str | None = None):
     """Analyze a bounded batch of already downloaded files without per-file user actions."""
     with db() as conn:
         targets = conn.execute(
             """SELECT a.identifier,COALESCE(a.title,a.identifier) AS title
                FROM archive_items a
-               WHERE EXISTS (
+               WHERE (? IS NULL OR a.identifier=?)
+                 AND EXISTS (
                  SELECT 1 FROM archive_files f
                  WHERE f.identifier=a.identifier AND f.download_status='downloaded'
                    AND (
@@ -1804,7 +2285,8 @@ def process_downloaded_batch():
                ORDER BY (
                  SELECT MAX(f2.id) FROM archive_files f2
                  WHERE f2.identifier=a.identifier AND f2.download_status='downloaded'
-               ) DESC LIMIT 10"""
+               ) DESC LIMIT 10""",
+            (identifier, identifier),
         ).fetchall()
 
     results = []

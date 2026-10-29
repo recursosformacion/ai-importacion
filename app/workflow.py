@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
-from urllib.parse import quote
 
-import httpx
 from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.file_catalog import (
-    METADATA_ENDPOINT, USER_AGENT, db as file_db, download_file, relevant_file,
-    safe_filename, valid_identifier,
+    download_file, esc, inventory_item_files,
 )
+from app.db import connect
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 router = APIRouter()
@@ -24,12 +21,7 @@ def now() -> str:
 
 
 def db():
-    path = Path(DB_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    return connect(DB_PATH)
 
 
 def priority(file_name: str, archive_format: str, size_bytes: int | None) -> tuple[int, str]:
@@ -63,42 +55,7 @@ def priority(file_name: str, archive_format: str, size_bytes: int | None) -> tup
 
 
 async def inventory_one(identifier: str) -> int:
-    if not valid_identifier(identifier):
-        raise ValueError("Identificador de Internet Archive no válido")
-    async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
-        response = await client.get(METADATA_ENDPOINT + quote(identifier, safe=""))
-        response.raise_for_status()
-        payload = response.json()
-    files = payload.get("files", [])
-    if not isinstance(files, list):
-        raise ValueError("Respuesta de inventario no válida: files no es una lista")
-    stamp = now()
-    recorded = 0
-    with db() as conn:
-        for item in files:
-            name = str(item.get("name", "")).strip()
-            if not name or name in {".", ".."} or any(part == ".." for part in name.replace("\\", "/").split("/")):
-                continue
-            try:
-                size = int(item["size"]) if item.get("size") not in (None, "") else None
-            except (ValueError, TypeError):
-                size = None
-            fmt = str(item.get("format") or "")
-            url = "https://archive.org/download/" + quote(identifier, safe="") + "/" + quote(name, safe="/")
-            conn.execute("""INSERT INTO archive_files
-              (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at)
-              VALUES(?,?,?,?,?,?,?,?,?,?)
-              ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
-              source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
-              md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
-              (identifier, name, safe_filename(name), url, size, fmt, item.get("md5"), item.get("sha1"),
-               int(relevant_file(name, fmt)), stamp))
-            recorded += 1
-        conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
-          VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET
-          checked_at=excluded.checked_at,file_count=excluded.file_count,status='ok',error_text=NULL""",
-          (identifier, stamp, recorded))
-    return recorded
+    return await inventory_item_files(identifier)
 
 
 def layout(title: str, body: str) -> HTMLResponse:
@@ -107,9 +64,10 @@ def layout(title: str, body: str) -> HTMLResponse:
     button{background:#174f89;color:white;border:0;border-radius:6px;cursor:pointer}table{border-collapse:collapse;width:100%}
     td,th{text-align:left;padding:.6rem;border-bottom:1px solid #e1e6eb;vertical-align:top}th{background:#edf1f5}
     .muted{color:#5d6977;font-size:.9rem}</style>"""
+    safe_title = esc(title)
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>"
-        + title + "</title>" + style + "<p><a href='/'>← Inicio</a> · <a href='/items'>Catálogo local</a></p><h1>"
-        + title + "</h1>" + body + "</html>")
+        + safe_title + "</title>" + style + "<p><a href='/'>← Inicio</a> · <a href='/items'>Catálogo local</a></p><h1>"
+        + safe_title + "</h1>" + body + "</html>")
 
 
 @router.get("/workflow", response_class=HTMLResponse)
@@ -130,7 +88,7 @@ def workflow_home():
             WHERE s.score>0 AND f.download_status='downloaded'
             ORDER BY f.id DESC LIMIT 30""").fetchall()
     body = "<p>Este flujo combina inventario y descarga selectiva. Para cada candidato nuevo consulta todos los metadatos de sus ficheros y, en el mismo proceso, descarga los archivos con mayor prioridad. No escribe en OSAP.</p><div class='panel'><table>"
-    body += "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k,v in [
+    body += "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k,v in [
         ("Candidatos musicales",counts["candidates"]),("Inventarios correctos",counts["inventoried"]),
         ("Archivos registrados",counts["files"]),("Descargas locales",counts["downloaded"]),
         ("Candidatos pendientes de inventario",counts["pending"])]) + "</table></div>"
@@ -144,7 +102,7 @@ def workflow_home():
         body += "<section class='panel'><h2>Descargas recientes</h2><table><tr><th>Elemento</th><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>Ruta local</th></tr>"
         for r in rows:
             size = f"{r['size_bytes']:,} bytes" if r["size_bytes"] is not None else "—"
-            body += f"<tr><td>{r['title'] or r['identifier']}<br><span class='muted'>{r['identifier']}</span></td><td>{r['file_name']}</td><td>{r['archive_format'] or 'No indicado'}</td><td>{size}</td><td>{r['local_path'] or '—'}</td></tr>"
+            body += f"<tr><td>{esc(r['title'] or r['identifier'])}<br><span class='muted'>{esc(r['identifier'])}</span></td><td>{esc(r['file_name'])}</td><td>{esc(r['archive_format'] or 'No indicado')}</td><td>{esc(size)}</td><td>{esc(r['local_path'] or '—')}</td></tr>"
         body += "</table></section>"
     return layout("Inventario y descarga integrados", body)
 
@@ -212,6 +170,6 @@ async def run_workflow(batch_size: int = Form(10), downloads_per_item: int = For
         inventories_total = conn.execute("SELECT COUNT(*) FROM archive_item_inventories WHERE status='ok'").fetchone()[0]
     body = f"<section class='panel'><p>Elementos procesados: <b>{len(targets)}</b>.</p><p>Nuevos inventarios: <b>{inventoried_now}</b>.</p><p>Archivos incorporados/actualizados al inventario: <b>{files_seen}</b>.</p><p>Descargas intentadas: <b>{downloads_started}</b>.</p><p>Inventarios correctos acumulados: <b>{inventories_total}</b>.</p><p>Descargas correctas acumuladas: <b>{downloaded_total}</b>.</p>"
     if failures:
-        body += "<h3>Incidencias</h3><ul>" + "".join("<li>" + str(x).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + "</li>" for x in failures) + "</ul>"
+        body += "<h3>Incidencias</h3><ul>" + "".join("<li>" + esc(x) + "</li>" for x in failures) + "</ul>"
     body += "<p>Las descargas respetan el límite por fichero y guardan SHA-256. Los archivos auxiliares se conservan en el inventario, pero no se descargan automáticamente. <a href='/workflow'>Volver al flujo</a></p></section>"
     return layout("Resultado del procesamiento", body)

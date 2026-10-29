@@ -2,6 +2,7 @@ import json
 from fastapi.testclient import TestClient
 import app.main as main
 import app.file_catalog as file_catalog
+import app.workflow as workflow
 
 
 def test_query_builder():
@@ -40,6 +41,230 @@ def test_health_and_home(tmp_path, monkeypatch):
     with TestClient(main.app) as client:
         assert client.get("/health").json()["status"] == "ok"
         assert "Captación de partituras" in client.get("/").text
+
+
+def test_capture_status_remains_readable_during_write_transaction(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "capture-status.sqlite3"))
+    with TestClient(main.app) as client:
+        with main.db() as conn:
+            job_id = conn.execute(
+                "INSERT INTO capture_jobs(status,started_at,updated_at,message) VALUES('running',?,?,?)",
+                (main.now(), main.now(), "Captura en curso"),
+            ).lastrowid
+
+        writer = main.db()
+        try:
+            writer.execute("BEGIN EXCLUSIVE")
+            writer.execute(
+                "UPDATE capture_jobs SET message=? WHERE id=?",
+                ("Actualización en curso", job_id),
+            )
+            response = client.get(f"/capture/status/{job_id}")
+        finally:
+            writer.rollback()
+            writer.close()
+    assert response.status_code == 200
+    assert response.status_code == 200
+    assert "Recopilación automática en curso" in response.text
+
+
+def test_local_catalog_paginates_and_preserves_filter(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "catalog-pagination.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    with TestClient(main.app) as client:
+        stamp = main.now()
+        with main.db() as conn:
+            for index in range(55):
+                identifier = f"catalog-item-{index:03d}"
+                conn.execute(
+                    """INSERT INTO archive_items
+                       (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (identifier, f"Catalog score {index}", f"https://archive.org/details/{identifier}",
+                     json.dumps({"identifier": identifier}), stamp, stamp),
+                )
+
+        first_page = client.get("/items", params={"q": "Catalog", "page_number": 1})
+        second_page = client.get("/items", params={"q": "Catalog", "page_number": 2})
+
+    assert first_page.status_code == 200
+    assert first_page.text.count("href='/items/catalog-item-") == 50
+    assert "Mostrando 1–50 de 55 elementos. Página 1 de 2." in first_page.text
+    assert "page_number=2" in first_page.text
+    assert second_page.text.count("href='/items/catalog-item-") == 5
+    assert "Mostrando 51–55 de 55 elementos. Página 2 de 2." in second_page.text
+    assert "q=Catalog" in second_page.text
+
+
+def test_review_queue_paginates_all_cases(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "review-pagination.sqlite3"))
+    with TestClient(main.app) as client:
+        stamp = main.now()
+        with main.db() as conn:
+            for index in range(51):
+                identifier = f"review-item-{index:03d}"
+                conn.execute(
+                    """INSERT INTO archive_items
+                       (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (identifier, f"Review score {index}", f"https://archive.org/details/{identifier}",
+                     "{}", stamp, stamp),
+                )
+                conn.execute(
+                    """INSERT INTO global_discovery_seen
+                       (identifier,first_query_key,score,reason,seen_at) VALUES(?,?,?,?,?)""",
+                    (identifier, "test", 10, "score candidate", stamp),
+                )
+                conn.execute(
+                    """INSERT INTO archive_files
+                       (identifier,file_name,file_name_safe,source_url,relevant,inventory_seen_at,download_status)
+                       VALUES(?,?,?,?,1,?,'downloaded')""",
+                    (identifier, "score.sib", "score.sib",
+                     f"https://archive.org/download/{identifier}/score.sib", stamp),
+                )
+
+        response = client.get("/review?page_number=2")
+
+    assert response.status_code == 200
+    assert "Casos 51–51 de 51" in response.text
+    assert "página 2 de 2" in response.text
+    assert "Anteriores" in response.text
+    assert "Siguientes" not in response.text
+
+
+def test_startup_reclassifies_known_generic_xml_analysis_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "xml-migration.sqlite3"))
+    main.init_db()
+    stamp = main.now()
+    with main.db() as conn:
+        for identifier, file_name, archive_format in (
+            ("metadata-xml", "item_meta.xml", "Metadata"),
+            ("score-xml", "score.musicxml", "MusicXML"),
+        ):
+            conn.execute(
+                """INSERT INTO archive_items
+                   (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                   VALUES(?,?,?,?,?,?)""",
+                (identifier, identifier, f"https://archive.org/details/{identifier}", "{}", stamp, stamp),
+            )
+            file_id = conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,archive_format,relevant,inventory_seen_at)
+                   VALUES(?,?,?,?,?,1,?)""",
+                (identifier, file_name, file_name, f"https://archive.org/download/{identifier}/{file_name}",
+                 archive_format, stamp),
+            ).lastrowid
+            conn.execute(
+                """INSERT INTO archive_file_analyses
+                   (file_id,identifier,analysis_type,status,analysis_json,error_text,analyzed_at)
+                   VALUES(?,?,'musicxml','error','{}',?,?)""",
+                (file_id, identifier, "El XML no tiene la estructura de una partitura MusicXML.", stamp),
+            )
+
+    main.init_db()
+
+    with main.db() as conn:
+        metadata = conn.execute(
+            """SELECT fa.status,fa.error_text,f.relevant
+               FROM archive_file_analyses fa JOIN archive_files f ON f.id=fa.file_id
+               WHERE fa.identifier='metadata-xml'"""
+        ).fetchone()
+        score = conn.execute(
+            "SELECT status FROM archive_file_analyses WHERE identifier='score-xml'"
+        ).fetchone()
+    assert metadata["status"] == "not_musicxml"
+    assert metadata["error_text"] is None
+    assert metadata["relevant"] == 0
+    assert score["status"] == "error"
+
+
+def test_workflow_escapes_catalog_values_and_page_title(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "workflow-escaping.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(workflow, "DB_PATH", db_path)
+    with TestClient(main.app) as client:
+        stamp = main.now()
+        with main.db() as conn:
+            identifier = "workflow-escaping-test"
+            conn.execute(
+                """INSERT INTO archive_items
+                   (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                   VALUES(?,?,?,?,?,?)""",
+                (identifier, "<script>alert(1)</script>", "https://archive.org/details/" + identifier,
+                 json.dumps({"identifier": identifier}), stamp, stamp),
+            )
+            conn.execute(
+                """INSERT INTO global_discovery_seen
+                   (identifier,first_query_key,score,reason,seen_at) VALUES(?,?,?,?,?)""",
+                (identifier, "test", 1, "test", stamp),
+            )
+            conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,archive_format,relevant,
+                    inventory_seen_at,download_status,local_path)
+                   VALUES(?,?,?,?,?,1,?,'downloaded',?)""",
+                (identifier, "<img src=x onerror=alert(1)>.pdf", "image.pdf",
+                 "https://archive.org/download/" + identifier + "/image.pdf", "PDF", stamp,
+                 "C:\\downloads\\<script>alert(1)</script>.pdf"),
+            )
+        response = workflow.workflow_home()
+
+    rendered = response.body.decode()
+    assert "<script>alert(1)</script>" not in rendered
+    assert "<img src=x onerror=alert(1)>" not in rendered
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
+    assert "&lt;img src=x onerror=alert(1)&gt;" in rendered
+    assert workflow.layout("<svg onload=alert(1)>", "").body.decode().count("<svg onload=alert(1)>") == 0
+
+
+def test_rights_review_stores_evidence_history_and_escapes_notes(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "rights-review.sqlite3"))
+    stamp = main.now()
+    with TestClient(main.app) as client:
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_items
+                   (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                   VALUES(?,?,?,?,?,?)""",
+                ("rights-review-test", "Rights test", "https://archive.org/details/rights-review-test",
+                 json.dumps({"identifier": "rights-review-test"}), stamp, stamp),
+            )
+        response = client.post(
+            "/items/rights-review-test/rights-status",
+            data={
+                "status": "evidence_found",
+                "evidence_url": "https://example.org/license",
+                "basis": "License page",
+                "jurisdiction": "ES",
+                "notes": "<script>alert(1)</script>",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        detail = client.get("/items/rights-review-test")
+        invalid_url = client.post(
+            "/items/rights-review-test/rights-status",
+            data={"status": "public_domain_confirmed", "evidence_url": "javascript:alert(1)"},
+        )
+
+    assert "href='https://example.org/license'" in detail.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in detail.text
+    assert "<script>alert(1)</script>" not in detail.text
+    assert invalid_url.status_code == 422
+    with main.db() as conn:
+        item = conn.execute(
+            "SELECT rights_status FROM archive_items WHERE identifier='rights-review-test'"
+        ).fetchone()
+        reviews = conn.execute(
+            "SELECT status,evidence_url,basis,jurisdiction,notes FROM archive_rights_reviews WHERE identifier=?",
+            ("rights-review-test",),
+        ).fetchall()
+    assert item["rights_status"] == "evidence_found"
+    assert len(reviews) == 1
+    assert tuple(reviews[0]) == (
+        "evidence_found", "https://example.org/license", "License page", "ES",
+        "<script>alert(1)</script>",
+    )
 
 
 

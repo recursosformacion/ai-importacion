@@ -5,7 +5,6 @@ import mimetypes
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -13,11 +12,17 @@ import httpx
 from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
+from app.db import (
+    MAX_DOWNLOAD_BYTES,
+    DOWNLOAD_DIR,
+    METADATA_ENDPOINT,
+    USER_AGENT,
+    connect,
+    esc,
+    now,
+)
+
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
-DOWNLOAD_DIR = Path(os.getenv("AI_IMPORTACION_DOWNLOAD_DIR", "downloads"))
-MAX_DOWNLOAD_BYTES = int(os.getenv("AI_IMPORTACION_MAX_DOWNLOAD_BYTES", str(100 * 1024 * 1024)))
-METADATA_ENDPOINT = "https://archive.org/metadata/"
-USER_AGENT = "OSAP-AI-Importacion/0.2 (+https://openmusicrepository.com)"
 # Broad inventory of notation, score-editor, archive, scan and supporting-text formats.
 # Unknown formats are still recorded; this set only affects prioritization/download eligibility.
 SUPPORTED_EXTENSIONS = {
@@ -31,25 +36,27 @@ SUPPORTED_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".jp2",
     ".txt", ".ocr", ".html"
 }
+# Suffixes the local analyzers can extract text/metadata from. Anything relevant+downloaded
+# that does NOT match one of these is surfaced as "unsupported" in the review queue.
+ANALYZABLE_SUFFIXES = {
+    ".pdf", ".txt", ".ocr", ".html",
+    ".xml", ".musicxml", ".mxl", ".mei", ".abc", ".ly", ".mscx", ".mscz", ".capx",
+    ".mid", ".midi", ".kar",
+    ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".jp2",
+}
 router = APIRouter()
 
 
 def db():
-    path = Path(DB_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    return connect(DB_PATH)
 
 
-def now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+_BATCH_ANALYZER = None
 
 
-def esc(value):
-    import html
-    return html.escape("" if value is None else str(value))
+def register_batch_analyzer(fn):
+    global _BATCH_ANALYZER
+    _BATCH_ANALYZER = fn
 
 
 def safe_filename(name: str) -> str:
@@ -63,8 +70,23 @@ def valid_identifier(identifier: str) -> bool:
 
 
 def relevant_file(name: str, fmt: str) -> bool:
-    suffix = Path(name.lower()).suffix
-    format_text = fmt.lower()
+    lower_name = name.casefold()
+    suffix = Path(lower_name).suffix
+    format_text = fmt.casefold()
+    if any(token in lower_name for token in ("thumb", "thumbnail", "tile", "torrent", "scandata")):
+        return False
+    if any(token in format_text for token in (
+        "single page processed jp2", "single page original jp2", "jp2 zip", "jp2 tar",
+    )):
+        return False
+    if suffix == ".xml":
+        if lower_name.endswith(("_files.xml", "_meta.xml", "_metadata.xml", "_contents.xml")):
+            return False
+        if any(label in format_text for label in ("metadata", "marc", "dublin core", "contents")):
+            return False
+        return any(label in format_text for label in ("musicxml", "musical score", "compressed score")) or any(
+            token in lower_name for token in ("score", "partitura", "sheetmusic", "sheet-music")
+        )
     return (suffix in SUPPORTED_EXTENSIONS and (suffix != ".txt" or any(token in name.lower() for token in ("djvu", "ocr", "fulltext", "full_text", "contents", "toc")))) or any(word in format_text for word in (
         "pdf", "musicxml", "midi", "musical score", "scorch", "capella", "sibelius",
         "finale", "compressed score", "djvu", "image", "postscript", "lilypond", "djvu text", "ocr text"
@@ -85,6 +107,82 @@ def download_status_label(status: str | None, error: str | None = None) -> str:
     return label
 
 
+def _is_safe_member_name(name: str) -> bool:
+    """Reject Archive.org path members that try to escape via `..`."""
+    if not name or name in {".", ".."}:
+        return False
+    return ".." not in name.replace("\\", "/").split("/")
+
+
+def normalize_file_records(identifier: str, files_payload, stamp: str) -> list[dict]:
+    """Turn an Archive.org metadata `files` list into sanitized DB records.
+
+    Pure (no DB): used by every inventory code path to guarantee identical
+    parsing, sanitization and relevance marking.
+    """
+    records = []
+    for item in files_payload:
+        name = str(item.get("name", "")).strip()
+        if not _is_safe_member_name(name):
+            continue
+        try:
+            size = int(item["size"]) if item.get("size") not in (None, "") else None
+        except (ValueError, TypeError):
+            size = None
+        fmt = str(item.get("format") or "")
+        source_url = "https://archive.org/download/" + quote(identifier, safe="") + "/" + quote(name, safe="/")
+        records.append({
+            "identifier": identifier, "file_name": name, "file_name_safe": safe_filename(name),
+            "source_url": source_url, "size_bytes": size, "archive_format": fmt,
+            "md5": item.get("md5"), "sha1": item.get("sha1"),
+            "relevant": int(relevant_file(name, fmt)), "inventory_seen_at": stamp,
+        })
+    return records
+
+
+def upsert_archive_files(conn, identifier: str, records: list[dict]) -> int:
+    """UPSERT file records in a single connection. Returns inserted count."""
+    conn.executemany("""INSERT INTO archive_files
+      (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at)
+      VALUES(:identifier,:file_name,:file_name_safe,:source_url,:size_bytes,:archive_format,
+             :md5,:sha1,:relevant,:inventory_seen_at)
+      ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
+      source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
+      md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
+        records)
+    return len(records)
+
+
+def record_inventory(conn, identifier: str, stamp: str, file_count: int, error_text: str | None = None) -> None:
+    if error_text:
+        status = "error"
+    else:
+        status = "ok"
+    conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
+      VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET
+      checked_at=excluded.checked_at,file_count=excluded.file_count,status=?,error_text=excluded.error_text""",
+        (identifier, stamp, file_count, status))
+
+
+async def inventory_item_files(identifier: str) -> int:
+    """Fetch Archive.org metadata and persist the file inventory. Returns recorded file count."""
+    if not valid_identifier(identifier):
+        raise ValueError("Identificador de Internet Archive no válido")
+    async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+        response = await client.get(METADATA_ENDPOINT + quote(identifier, safe=""))
+        response.raise_for_status()
+        payload = response.json()
+    files = payload.get("files", [])
+    if not isinstance(files, list):
+        raise ValueError("Respuesta de inventario no válida: files no es una lista")
+    stamp = now()
+    records = normalize_file_records(identifier, files, stamp)
+    with db() as conn:
+        upsert_archive_files(conn, identifier, records)
+        record_inventory(conn, identifier, stamp, len(records))
+    return len(records)
+
+
 @router.post("/items/{identifier}/inspect-files")
 async def inspect_files(identifier: str):
     if not valid_identifier(identifier):
@@ -94,39 +192,7 @@ async def inspect_files(identifier: str):
     if not exists:
         raise HTTPException(status_code=404, detail="Elemento no encontrado en el catálogo")
     try:
-        async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
-            response = await client.get(METADATA_ENDPOINT + quote(identifier, safe=""))
-            response.raise_for_status()
-            payload = response.json()
-        files = payload.get("files", [])
-        if not isinstance(files, list):
-            raise ValueError("Respuesta de inventario no válida")
-        stamp = now()
-        with db() as conn:
-            for item in files:
-                name = str(item.get("name", "")).strip()
-                if not name or name in {".", ".."} or any(part == ".." for part in name.replace("\\\\", "/").split("/")):
-                    continue
-                try:
-                    size = int(item["size"]) if item.get("size") not in (None, "") else None
-                except (ValueError, TypeError):
-                    size = None
-                fmt = str(item.get("format") or "")
-                source_url = "https://archive.org/download/" + quote(identifier, safe="") + "/" + quote(name, safe="/")
-                conn.execute("""INSERT INTO archive_files
-                  (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at)
-                  VALUES(?,?,?,?,?,?,?,?,?,?)
-                  ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
-                  source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
-                  md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
-                  (identifier, name, safe_filename(name), source_url, size, fmt, item.get("md5"), item.get("sha1"),
-                   int(relevant_file(name, fmt)), stamp))
-            conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
-                VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET
-                checked_at=excluded.checked_at,file_count=excluded.file_count,status='ok',error_text=NULL""",
-                (identifier, stamp, conn.execute(
-                    "SELECT COUNT(*) FROM archive_files WHERE identifier=?", (identifier,)
-                ).fetchone()[0]))
+        await inventory_item_files(identifier)
         return RedirectResponse(url="/files/" + quote(identifier, safe=""), status_code=303)
     except HTTPException:
         raise
@@ -267,7 +333,7 @@ def _intake_priority(name: str, fmt: str, size: int | None) -> int:
     # Prefer editable notation, then score PDFs; do not discard unfamiliar extensions
     # from inventory, but avoid automatically downloading unknown files.
     priority = {
-        ".musicxml": 120, ".mxl": 118, ".xml": 105, ".mei": 100, ".abc": 98,
+        ".musicxml": 120, ".mxl": 118, ".xml": 0, ".mei": 100, ".abc": 98,
         ".sib": 96, ".mscz": 95, ".mscx": 94, ".musx": 92, ".mus": 90,
         ".capx": 90, ".ove": 88, ".ly": 88, ".nwc": 86, ".nwctxt": 85,
         ".pdf": 80, ".djvu": 60, ".ps": 58, ".zip": 50, ".7z": 45, ".tar": 40, ".gz": 38,
@@ -277,8 +343,14 @@ def _intake_priority(name: str, fmt: str, size: int | None) -> int:
         ".bmp": 18, ".jpg": 18, ".jpeg": 18, ".png": 18, ".tif": 18, ".tiff": 18, ".jp2": 10,
         ".txt": 8, ".ocr": 8, ".html": 5,
     }.get(suffix, 0)
+    if suffix == ".xml" and any(token in f for token in ("musicxml", "musical score", "compressed score")):
+        priority = 115
+    elif suffix == ".xml" and any(token in name.casefold() for token in ("score", "partitura", "sheetmusic", "sheet-music")):
+        priority = 78
     if any(token in f for token in ("musicxml", "compressed score", "sibelius", "capella", "finale", "lilypond")):
         priority += 20
+    if any(token in f for token in ("single page processed jp2", "single page original jp2", "jp2 zip", "jp2 tar")):
+        priority = min(priority, -1)
     if any(token in name.casefold() for token in ("thumb", "thumbnail", "tile", "scandata", "djvu.xml", "hocr", "chocr", "ocr_search", "page_numbers", "torrent", "metadata")):
         priority -= 100
     if size is not None:
@@ -304,6 +376,9 @@ def intake_page():
             FROM archive_files f JOIN archive_items a ON a.identifier=f.identifier
             WHERE f.download_status IN ('downloaded','error','too_large')
             ORDER BY f.id DESC LIMIT 30""").fetchall()
+        analysis_jobs = conn.execute(
+            "SELECT id,status,queued_at,error_text FROM content_analysis_jobs ORDER BY id DESC LIMIT 5"
+        ).fetchall()
     body = "<p><a href='/'>← Volver a captación</a></p><h1>Actividad de archivos y descargas</h1>"
     body += "<p>Este proceso combina ambas tareas: inventaría candidatos que aún no tienen inventario y descarga unos pocos archivos priorizados. No descarga en masa y no escribe en OSAP.</p>"
     body += "<div style='display:flex;gap:1rem;flex-wrap:wrap'>" + "".join(
@@ -315,7 +390,19 @@ def intake_page():
     body += "<label>Máximo de descargas en esta ejecución <select name='downloads'><option>1</option><option selected>3</option><option>5</option><option>10</option></select></label> "
     body += "<button style='padding:.7rem 1rem;cursor:pointer'>Continuar captación automática</button></form>"
     body += "<p><small>Prioridad: formatos editables de notación, PDF y otros formatos de partitura. Se excluyen auxiliares obvios y archivos por encima del límite de tamaño configurado. Los formatos desconocidos permanecen registrados, pero no se descargan automáticamente hasta clasificarlos.</small></p></section>"
-    body += "<p class='workflow-help'>El análisis se ejecuta automáticamente después de cada lote de descargas. Solo tienes que continuar la captación; los formatos que todavía no podemos interpretar aparecerán con el motivo concreto en la revisión.</p>"
+    body += "<p class='workflow-help'>El análisis se encola automáticamente después de cada lote y se ejecuta en segundo plano, sin alargar la espera de la captación. Los resultados y errores se conservan para consultarlos después.</p>"
+    if analysis_jobs:
+        body += "<h2>Análisis automáticos recientes</h2><ul>"
+        for job in analysis_jobs:
+            body += (
+                "<li><a href='/intake/analysis-status/" + str(job["id"]) + "'>Trabajo "
+                + str(job["id"]) + "</a> · " + esc(job["status"]) + " · "
+                + esc(job["queued_at"])
+            )
+            if job["error_text"]:
+                body += " · " + esc(job["error_text"])
+            body += "</li>"
+        body += "</ul>"
     body += "<h2>Actividad reciente</h2><table><tr><th>Elemento / archivo</th><th>Formato</th><th>Tamaño</th><th>Estado</th><th>SHA-256 local</th></tr>"
     for row in recent:
         size = f"{row['size_bytes']:,} bytes" if row["size_bytes"] is not None else "—"
@@ -386,37 +473,7 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
     for target in targets:
         identifier = target["identifier"]
         try:
-            async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
-                response = await client.get(METADATA_ENDPOINT + quote(identifier, safe=""))
-                response.raise_for_status()
-                payload = response.json()
-            files = payload.get("files", [])
-            if not isinstance(files, list):
-                raise ValueError("Respuesta de inventario no válida")
-            stamp = now()
-            recorded = 0
-            with db() as conn:
-                for item in files:
-                    name = str(item.get("name", "")).strip()
-                    if not name or name in {".", ".."} or any(part == ".." for part in name.replace("\\\\", "/").split("/")):
-                        continue
-                    try:
-                        size = int(item["size"]) if item.get("size") not in (None, "") else None
-                    except (ValueError, TypeError):
-                        size = None
-                    fmt = str(item.get("format") or "")
-                    url = "https://archive.org/download/" + quote(identifier, safe="") + "/" + quote(name, safe="/")
-                    conn.execute("""INSERT INTO archive_files
-                        (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
-                        source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
-                        md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
-                        (identifier,name,safe_filename(name),url,size,fmt,item.get("md5"),item.get("sha1"),int(relevant_file(name,fmt)),stamp))
-                    recorded += 1
-                conn.execute("""INSERT INTO archive_item_inventories(identifier,checked_at,file_count,status,error_text)
-                    VALUES(?,?,?,'ok',NULL) ON CONFLICT(identifier) DO UPDATE SET checked_at=excluded.checked_at,
-                    file_count=excluded.file_count,status='ok',error_text=NULL""", (identifier,stamp,recorded))
+            await inventory_item_files(identifier)
             inventoried_now += 1
             inventoried_items.append((identifier, target['title'] or identifier))
         except Exception as exc:
@@ -461,19 +518,13 @@ async def run_integrated_intake(items: int = Form(10), downloads: int = Form(3))
         summary += "<h3>Errores de inventario · se pueden reintentar</h3><ul>" + "".join(_intake_error_link(identifier, identifier, detail) for identifier, detail in inventory_errors) + "</ul>"
     if download_errors:
         summary += "<h3>Errores de descarga · revisar o reintentar</h3><ul>" + "".join(_intake_error_link(identifier, file_name, detail) for identifier, file_name, detail in download_errors) + "</ul>"
-    # Automatically analyze downloaded files after the inventory/download phase.
-    # Import at request time: the FastAPI app and its routes are fully initialized by then.
-    try:
-        from app.main import process_downloaded_batch
-        analysis_response = process_downloaded_batch()
-        analysis_html = analysis_response.body.decode("utf-8", errors="replace")
-        analysis_start = analysis_html.find("<h1>Resultado del análisis automático</h1>")
-        analysis_end = analysis_html.rfind("</body>")
-        if analysis_start >= 0 and analysis_end > analysis_start:
-            summary += "<section style='padding:1rem;margin:1rem 0;background:#fff;border:1px solid #ddd;border-radius:8px'>" + analysis_html[analysis_start:analysis_end] + "</section>"
-        else:
-            summary += "<p>La descarga terminó; el análisis automático no devolvió un resumen reconocible. Puedes abrir /intake/process para reintentarlo.</p>"
-    except Exception as exc:
-        summary += "<section><h2>Análisis automático pendiente</h2><p>Las descargas se han conservado. No se pudo completar el análisis en esta ejecución; puedes reintentarlo desde Captación integrada.</p><p>" + esc(str(exc)[:250]) + "</p></section>"
+    from app.main import enqueue_content_analysis
+    analysis_job_id = enqueue_content_analysis()
+    summary += (
+        "<section style='padding:1rem;margin:1rem 0;background:#fff;border:1px solid #ddd;border-radius:8px'>"
+        "<h2>Análisis automático en segundo plano</h2><p>La captación ha terminado sin esperar al OCR ni al análisis de contenido. "
+        "El análisis se conserva como trabajo reanudable.</p><p><a href='/intake/analysis-status/"
+        + str(analysis_job_id) + "'>Consultar estado del análisis</a></p></section>"
+    )
     summary += "<p>Los inventarios, descargas y análisis se guardan localmente. No se ha escrito en OSAP.</p><p><a href='/intake'>Ver captación integrada</a> · <a href='/'>Inicio</a></p>"
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Resultado de captación</title><body style='font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem'>" + summary + "</body></html>")

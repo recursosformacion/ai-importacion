@@ -7,6 +7,10 @@ from xml.etree import ElementTree as ET
 MAX_XML_BYTES = 25 * 1024 * 1024
 
 
+class NotMusicXMLFileError(ValueError):
+    """The file is XML, but its document root is not a MusicXML score."""
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -68,7 +72,7 @@ def analyze_musicxml(path: str | Path) -> dict:
         raise ValueError(f"XML no válido: {exc}") from exc
     root_name = _local_name(root.tag)
     if root_name not in {"score-partwise", "score-timewise"}:
-        raise ValueError("El XML no tiene la estructura de una partitura MusicXML.")
+        raise NotMusicXMLFileError("El XML no tiene la estructura de una partitura MusicXML.")
     title = _first_text(root, "movement-title") or _first_text(root, "work-title")
     creators = []
     seen_creators = set()
