@@ -4,7 +4,7 @@ import html
 import os
 import re
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
@@ -238,13 +238,20 @@ async def github_scan(repository_id: int):
                     extension=excluded.extension,size_bytes=excluded.size_bytes,sha=excluded.sha,
                     blob_url=excluded.blob_url,html_url=excluded.html_url,last_seen_at=excluded.last_seen_at
                 """, (repository_id, path, name, extension, size, sha, blob_url, html_url, "", stamp, stamp))
+            # Only a complete tree is authoritative enough to remove files no longer present.
+            truncated = bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
+            if not truncated:
+                conn.execute(
+                    "DELETE FROM github_files WHERE repository_id=? AND last_seen_at<>?",
+                    (repository_id, stamp),
+                )
             conn.execute("UPDATE github_repositories SET default_branch=?,last_scanned_at=? WHERE id=?",
                          (branch, stamp, repository_id))
             conn.execute("""
                 INSERT INTO github_scans(repository_id,commit_sha,tree_sha,file_count,candidate_count,truncated,status,started_at,completed_at)
                 VALUES(?,?,?,?,?,?,?,?,?)
             """, (repository_id, "", tree.get("sha") or "",
-                  len(entries), len(candidates), int(bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES),
+                  len(entries), len(candidates), int(truncated),
                   "completed", started, stamp))
         return RedirectResponse(f"/github/{repository_id}?scan=ok", status_code=303)
     except (ValueError, httpx.HTTPError) as exc:
