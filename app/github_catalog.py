@@ -248,8 +248,13 @@ async def github_scan(repository_id: int):
                     (repository_id,path,name,extension,size_bytes,sha,blob_url,html_url,download_url,first_seen_at,last_seen_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(repository_id,path) DO UPDATE SET name=excluded.name,
-                    extension=excluded.extension,size_bytes=excluded.size_bytes,sha=excluded.sha,
-                    blob_url=excluded.blob_url,html_url=excluded.html_url,last_seen_at=excluded.last_seen_at
+                    extension=excluded.extension,size_bytes=excluded.size_bytes,
+                    download_status=CASE WHEN github_files.sha<>excluded.sha THEN 'not_downloaded' ELSE github_files.download_status END,
+                    local_path=CASE WHEN github_files.sha<>excluded.sha THEN NULL ELSE github_files.local_path END,
+                    sha256=CASE WHEN github_files.sha<>excluded.sha THEN NULL ELSE github_files.sha256 END,
+                    downloaded_bytes=CASE WHEN github_files.sha<>excluded.sha THEN NULL ELSE github_files.downloaded_bytes END,
+                    download_error=CASE WHEN github_files.sha<>excluded.sha THEN NULL ELSE github_files.download_error END,
+                    sha=excluded.sha,blob_url=excluded.blob_url,html_url=excluded.html_url,last_seen_at=excluded.last_seen_at
                 """, (repository_id, path, name, extension, size, sha, blob_url, html_url, "", stamp, stamp))
             # Only a complete tree is authoritative enough to remove files no longer present.
             truncated = bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
