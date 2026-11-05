@@ -448,8 +448,8 @@ def github_repository(repository_id: int, q: str = ""):
         if not repo:
             raise HTTPException(status_code=404, detail="Repositorio no encontrado")
         files = conn.execute("""
-            SELECT f.*,a.status AS analysis_status,a.sha256 AS analysis_sha256,a.analysis_json,a.error_text AS analysis_error
-            FROM github_files f LEFT JOIN github_file_analyses a ON a.github_file_id=f.id
+            SELECT f.*,a.status AS analysis_status,a.sha256 AS analysis_sha256,a.analysis_json,a.error_text AS analysis_error,x.status AS extraction_status,x.sha256 AS extraction_sha256,x.extracted_characters,x.extracted_text,x.error_text AS extraction_error
+            FROM github_files f LEFT JOIN github_file_analyses a ON a.github_file_id=f.id LEFT JOIN github_content_extractions x ON x.github_file_id=f.id
             WHERE f.repository_id=? AND (?='' OR f.path LIKE ?)
             ORDER BY f.path LIMIT 500
         """, (repository_id, q, "%" + q + "%")).fetchall()
@@ -459,6 +459,8 @@ def github_repository(repository_id: int, q: str = ""):
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
+    body += "<form method='post' action='/github/" + str(repository_id) + "/extract'><button>Extraer texto, PDF y OCR de archivos descargados</button></form>"
+    body += "<p class='muted'>Extracción local de PDF, imágenes y formatos de notación. Los resultados permanecen separados de Internet Archive.</p>"
     body += "<p class='muted'>El análisis utiliza el mismo motor estructural que Internet Archive para MusicXML, MXL, XML y MIDI. Los resultados GitHub se guardan por separado, sin mezclar catálogos ni procedencias.</p>"
     if scan:
         body += "<p class='muted'>Última lectura: " + esc(scan["completed_at"] or scan["started_at"]) + " · " + str(scan["candidate_count"]) + " archivos candidatos · " + ("árbol truncado: la lectura puede ser parcial" if scan["truncated"] else "árbol completo") + "</p>"
@@ -466,7 +468,7 @@ def github_repository(repository_id: int, q: str = ""):
             body += "<p class='muted'>" + esc(scan["error_text"]) + "</p>"
     body += "<h2>Archivos localizados (" + str(total) + ")</h2><form method='get'><input name='q' type='text' value='" + esc(q) + "' placeholder='Filtrar por ruta'><button>Filtrar</button></form>"
     if files:
-        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th><th>Descarga local</th><th>Análisis</th></tr>"
+        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th><th>Descarga local</th><th>Análisis musical</th><th>Extracción PDF/OCR</th></tr>"
         for item in files:
             status = item["download_status"] or "not_downloaded"
             if status == "downloaded":
@@ -484,7 +486,18 @@ def github_repository(repository_id: int, q: str = ""):
             analysis_label = {"ok": "Correcto", "not_musicxml": "XML no musical", "error": "Error", "stale": "Desactualizado"}.get(analysis_status, "Pendiente")
             if item["analysis_error"]:
                 analysis_label += " · " + item["analysis_error"][:120]
-            body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td><td>" + action + "</td><td>" + esc(analysis_label) + "</td></tr>"
+            extraction_status = item["extraction_status"] or "pendiente"
+            if item["extraction_sha256"] and item["extraction_sha256"] != item["sha256"]:
+                extraction_status = "desactualizado"
+            extraction_label = extraction_status
+            if item["extraction_status"]:
+                extraction_label += " · " + str(item["extracted_characters"] or 0) + " caracteres"
+            if item["extraction_error"]:
+                extraction_label += " · " + item["extraction_error"][:100]
+            extraction_preview = ""
+            if item["extracted_text"]:
+                extraction_preview = "<details><summary>Ver texto extraído</summary><pre style='white-space:pre-wrap;max-height:22rem;overflow:auto'>" + esc(item["extracted_text"][:12000]) + "</pre></details>"
+            body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td><td>" + action + "</td><td>" + esc(analysis_label) + "</td><td>" + esc(extraction_label) + extraction_preview + "</td></tr>"
         body += "</table>"
     else:
         body += "<p>No hay archivos inventariados que coincidan. Ejecuta una lectura del repositorio.</p>"
