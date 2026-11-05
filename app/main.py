@@ -295,6 +295,9 @@ from app.musicxml_analysis import NotMusicXMLFileError, analyze_musicxml
 from app.midi_analysis import analyze_midi
 app.include_router(file_catalog_router)
 
+from app.github_catalog import router as github_catalog_router
+app.include_router(github_catalog_router)
+
 
 def query_for(text: str, scope: str = "all") -> str:
     term = text.strip()
