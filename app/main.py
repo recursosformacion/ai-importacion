@@ -1923,6 +1923,10 @@ def extract_content_suggestions(identifier: str):
         text_content = extraction["text"]
         extraction_status = extraction["status"]
         extracted_characters = extraction["extracted_characters"]
+        if suffix in {".txt", ".ocr"}:
+            text_files_read += 1
+        elif suffix in {".abc", ".ly", ".mei", ".mscx", ".mscz", ".capx"}:
+            notation_files_read += 1
         if extraction_status == "text_available":
             pdf_with_text += 1
         elif extraction_status == "ocr_unavailable":
