@@ -120,3 +120,18 @@ Los archivos descargados desde Internet Archive y GitHub pueden utilizar el mism
 - El motor compartido `app/content_extraction.py` extrae texto de PDF (hasta 50 páginas), aplica OCR local opcional a PDF escaneados (hasta cinco páginas) e imágenes, y lee texto y notación ABC/LilyPond/MEI/MuseScore/Capella. No envía documentos a servicios externos. Internet Archive y GitHub usan el mismo extractor y conservan resultados separados por proveedor.
 
 Todo el proceso se inicia y consulta desde la interfaz web. No se exportan obras ni archivos a OSAP.
+## Despliegue web con Docker
+
+La aplicación incluye una imagen Docker y un archivo compose.yaml para ejecutarla como servicio web persistente. La base SQLite y las descargas quedan fuera del contenedor, en los directorios locales data/ y downloads/.
+
+```bash
+docker compose up -d --build
+```
+
+La interfaz queda disponible en http://localhost:9500 (o en el puerto configurado mediante AI_IMPORTACION_PORT). Para consultar el arranque:
+
+```bash
+docker compose logs -f ai-importacion
+```
+
+Configura un proxy inverso HTTPS delante del puerto publicado antes de exponerlo a Internet. Define GITHUB_TOKEN sólo si necesitas ampliar los límites de consulta de la API GitHub; nunca lo guardes en el repositorio. El contenedor instala Tesseract y los paquetes de idioma inglés/español. Los datos persistentes no se eliminan al actualizar la imagen.
