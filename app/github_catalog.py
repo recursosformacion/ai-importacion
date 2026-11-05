@@ -91,6 +91,16 @@ def ensure_schema() -> None:
           analyzed_at TEXT NOT NULL,
           sha256 TEXT
         );
+        CREATE TABLE IF NOT EXISTS github_content_extractions (
+          github_file_id INTEGER PRIMARY KEY REFERENCES github_files(id) ON DELETE CASCADE,
+          status TEXT NOT NULL,
+          page_count INTEGER NOT NULL DEFAULT 0,
+          extracted_characters INTEGER NOT NULL DEFAULT 0,
+          extracted_text TEXT NOT NULL DEFAULT '',
+          error_text TEXT,
+          analyzed_at TEXT NOT NULL,
+          sha256 TEXT
+        );
         CREATE INDEX IF NOT EXISTS idx_github_files_extension ON github_files(extension);
         CREATE INDEX IF NOT EXISTS idx_github_files_repo ON github_files(repository_id,path);
         """)
