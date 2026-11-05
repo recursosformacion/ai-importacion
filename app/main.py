@@ -293,6 +293,7 @@ from app.file_catalog import (
 from urllib.parse import quote, urlencode
 from app.musicxml_analysis import NotMusicXMLFileError, analyze_musicxml
 from app.midi_analysis import analyze_midi
+from app.analysis_engine import analyze_local_music_file
 app.include_router(file_catalog_router)
 
 from app.github_catalog import router as github_catalog_router
@@ -1820,31 +1821,10 @@ def analyze_downloaded_musicxml(identifier: str):
             continue
 
         path = Path(file_row["local_path"])
-        status = "ok"
-        error_text = None
-        try:
-            if not path.is_file():
-                raise FileNotFoundError("El archivo descargado no existe en la ruta local registrada.")
-            if path.suffix.lower() in {".mid", ".midi", ".kar"}:
-                analysis = analyze_midi(path)
-            else:
-                analysis = analyze_musicxml(path)
-        except NotMusicXMLFileError as exc:
-            if path.suffix.lower() != ".xml":
-                analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
-                status = "error"
-                error_text = str(exc)[:1000]
-            else:
-                analysis = {
-                    "format": "xml",
-                    "status": "not_musicxml",
-                    "message": "XML válido, pero no es una partitura MusicXML.",
-                }
-                status = "not_musicxml"
-        except Exception as exc:
-            analysis = {"format": path.suffix.lower().lstrip("."), "status": "error"}
-            status = "error"
-            error_text = str(exc)[:1000]
+        result = analyze_local_music_file(path)
+        status = result["status"]
+        error_text = result["error_text"]
+        analysis = result["analysis"]
         analyzed_count += 1
         if status == "error":
             failed_count += 1
@@ -1864,7 +1844,7 @@ def analyze_downloaded_musicxml(identifier: str):
                 analysis_json=excluded.analysis_json,error_text=excluded.error_text,
                 analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
                 (file_row["id"], identifier,
-                 "midi" if path.suffix.lower() in {".mid", ".midi", ".kar"} else "musicxml",
+                 result["analysis_type"],
                  status, json.dumps(analysis, ensure_ascii=False), error_text, now(), file_row["sha256"]))
     return RedirectResponse(
         url=(
