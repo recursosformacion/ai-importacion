@@ -294,6 +294,7 @@ from urllib.parse import quote, urlencode
 from app.musicxml_analysis import NotMusicXMLFileError, analyze_musicxml
 from app.midi_analysis import analyze_midi
 from app.analysis_engine import analyze_local_music_file
+from app.content_extraction import extract_local_content
 app.include_router(file_catalog_router)
 
 from app.github_catalog import router as github_catalog_router
@@ -1918,170 +1919,35 @@ def extract_content_suggestions(identifier: str):
                 and previous_pdf["status"] in {"text_available", "ocr_completed", "ocr_no_text", "image_ocr_completed", "image_ocr_no_text", "text_checked", "text_no_content"}
             ):
                 continue
-        try:
-            if suffix in {".txt", ".ocr", ".abc", ".ly", ".mei", ".mscx"}:
-                text_content = path.read_text(encoding="utf-8-sig", errors="replace")
-                if text_content.strip():
-                    if suffix in {".abc", ".ly", ".mei", ".mscx", ".capx"}:
-                        notation_files_read += 1
-                    else:
-                        text_files_read += 1
-            elif suffix in {".mscz", ".capx"}:
-                import zipfile
-                member_limit = 20 * 1024 * 1024
-                with zipfile.ZipFile(path) as archive:
-                    candidates = [
-                        info for info in archive.infolist()
-                        if (
-                            info.filename.lower().endswith(".mscx") if suffix == ".mscz"
-                            else info.filename.lower().endswith((".xml", ".capella", ".capx"))
-                        )
-                        and not info.filename.startswith("/")
-                        and ".." not in Path(info.filename).parts
-                    ]
-                    if not candidates:
-                        expected = "un archivo MSCX" if suffix == ".mscz" else "un XML de partitura reconocible"
-                        raise ValueError("El paquete no contiene " + expected + ".")
-                    member = candidates[0]
-                    if member.file_size > member_limit:
-                        raise ValueError("El archivo MSCX interno supera el límite de 20 MiB.")
-                    with archive.open(member) as source:
-                        payload = source.read(member_limit + 1)
-                    if len(payload) > member_limit:
-                        raise ValueError("El archivo MSCX interno supera el límite de 20 MiB.")
-                    text_content = payload.decode("utf-8-sig", errors="replace")
-                if text_content.strip():
-                    notation_files_read += 1
-            elif suffix in image_suffixes:
-                images_read += 1
-                try:
-                    import pytesseract
-                    from PIL import Image, ImageOps
-                except ImportError as dependency_error:
-                    extraction_errors += 1
-                    record_pdf_result(frow, "ocr_unavailable", error_text="OCR de imágenes no disponible: instala Pillow y pytesseract.")
-                    continue
-                try:
-                    try:
-                        pytesseract.get_tesseract_version()
-                    except Exception as availability_error:
-                        extraction_errors += 1
-                        record_pdf_result(frow, "ocr_unavailable", error_text="OCR de imágenes no disponible: instala Tesseract y comprueba que esté en PATH.")
-                        continue
-                    with Image.open(path) as source_image:
-                        image = ImageOps.exif_transpose(source_image)
-                        image.thumbnail((2500, 2500))
-                        if image.mode not in {"RGB", "L"}:
-                            image = image.convert("RGB")
-                        ocr_language = os.getenv("AI_IMPORTACION_OCR_LANG", "eng").strip() or "eng"
-                        text_content = pytesseract.image_to_string(image, lang=ocr_language) or ""
-                    extracted_characters = len(text_content)
-                    if text_content.strip():
-                        image_ocr_completed += 1
-                        record_pdf_result(frow, "image_ocr_completed", 1, extracted_characters)
-                    else:
-                        image_ocr_no_text += 1
-                        record_pdf_result(frow, "image_ocr_no_text", 1, 0, "El OCR no encontró texto legible en la imagen.")
-                except Exception as image_error:
-                    extraction_errors += 1
-                    record_pdf_result(frow, "ocr_error", error_text=str(image_error)[:1000])
-                    continue
-            elif suffix == ".pdf":
-                from pypdf import PdfReader
-                reader = PdfReader(str(path))
-                pages = []
-                page_texts = []
-                page_count = len(reader.pages)
-                page_limit = min(page_count, MAX_PDF_TEXT_PAGES)
-                for page_no in range(page_limit):
-                    pdf_page = reader.pages[page_no]
-                    page_text = pdf_page.extract_text() or ""
-                    page_texts.append(page_text)
-                    pages.append(chr(10) + f"[PAGE {page_no + 1}]" + chr(10) + page_text)
-                text_content = chr(10).join(pages)
-                extracted_characters = sum(len(page_text) for page_text in page_texts)
-                if any(page_text.strip() for page_text in page_texts):
-                    pdf_with_text += 1
-                    record_pdf_result(
-                        frow, "text_available", page_count, extracted_characters,
-                        f"Texto extraído de las primeras {page_limit} páginas."
-                        if page_count > page_limit else None,
-                    )
-                else:
-                    # Raster PDFs need OCR; process only a small, bounded prefix locally.
-                    class OCRUnavailableError(RuntimeError):
-                        pass
-
-                    try:
-                        import io
-                        try:
-                            import fitz
-                            import pytesseract
-                            from PIL import Image
-                        except ImportError as dependency_error:
-                            raise OCRUnavailableError(
-                                "OCR local no disponible: instala las dependencias Python del proyecto."
-                            ) from dependency_error
-
-                        try:
-                            pytesseract.get_tesseract_version()
-                        except Exception as availability_error:
-                            raise OCRUnavailableError(
-                                "OCR local no disponible: instala Tesseract y comprueba que esté en PATH."
-                            ) from availability_error
-
-                        ocr_pages = []
-                        with fitz.open(str(path)) as document:
-                            for page_index in range(min(len(reader.pages), 5)):
-                                page = document[page_index]
-                                page_dimension = max(
-                                    float(page.rect.width), float(page.rect.height), 1.0
-                                )
-                                scale = min(2.0, 2500.0 / page_dimension)
-                                pixmap = page.get_pixmap(
-                                    matrix=fitz.Matrix(scale, scale), alpha=False
-                                )
-                                image = Image.open(io.BytesIO(pixmap.tobytes("png")))
-                                ocr_language = os.getenv("AI_IMPORTACION_OCR_LANG", "eng").strip() or "eng"
-                                recognized = pytesseract.image_to_string(image, lang=ocr_language)
-                                ocr_pages.append(recognized or "")
-                        text_content = chr(10).join(
-                            chr(10) + f"[PAGE {page_index + 1} OCR]" + chr(10) + page_text
-                            for page_index, page_text in enumerate(ocr_pages)
-                        )
-                        extracted_characters = sum(len(page_text) for page_text in ocr_pages)
-                        if any(page_text.strip() for page_text in ocr_pages):
-                            pdf_ocr_completed += 1
-                            record_pdf_result(
-                                frow, "ocr_completed", len(reader.pages), extracted_characters,
-                                "OCR aplicado a las primeras cinco páginas como máximo."
-                                if len(reader.pages) > 5 else None,
-                            )
-                        else:
-                            pdf_ocr_no_text += 1
-                            record_pdf_result(
-                                frow, "ocr_no_text", len(reader.pages), extracted_characters,
-                                "El OCR terminó, pero no encontró texto legible en las páginas procesadas.",
-                            )
-                    except OCRUnavailableError as ocr_unavailable:
-                        pdf_needs_ocr += 1
-                        record_pdf_result(
-                            frow, "ocr_unavailable", len(reader.pages), 0, str(ocr_unavailable)
-                        )
-                    except Exception as ocr_error:
-                        extraction_errors += 1
-                        record_pdf_result(
-                            frow, "ocr_error", len(reader.pages), 0, str(ocr_error)[:1000]
-                        )
-        except Exception as exc:
+        extraction = extract_local_content(path, max_pdf_pages=MAX_PDF_TEXT_PAGES)
+        text_content = extraction["text"]
+        extraction_status = extraction["status"]
+        extracted_characters = extraction["extracted_characters"]
+        if extraction_status == "text_available":
+            pdf_with_text += 1
+        elif extraction_status == "ocr_unavailable":
+            pdf_needs_ocr += 1
+        elif extraction_status == "ocr_completed":
+            pdf_ocr_completed += 1
+        elif extraction_status == "ocr_no_text":
+            pdf_ocr_no_text += 1
+        elif extraction_status == "image_ocr_completed":
+            image_ocr_completed += 1
+            images_read += 1
+        elif extraction_status == "image_ocr_no_text":
+            image_ocr_no_text += 1
+            images_read += 1
+        elif suffix in image_suffixes:
+            images_read += 1
+        elif extraction_status == "error":
             extraction_errors += 1
-            if suffix == ".pdf":
-                record_pdf_result(frow, "error", error_text=str(exc)[:1000])
-            elif suffix in image_suffixes:
-                record_pdf_result(frow, "ocr_error", error_text=str(exc)[:1000])
-            elif suffix in text_suffixes:
-                record_pdf_result(frow, "text_error", error_text=str(exc)[:1000])
-            continue
+        if extraction_status in {"text_available", "ocr_completed", "ocr_no_text",
+                                 "image_ocr_completed", "image_ocr_no_text",
+                                 "text_checked", "text_no_content", "ocr_unavailable", "error"}:
+            record_pdf_result(
+                frow, extraction_status, extraction["page_count"],
+                extracted_characters, extraction["error_text"]
+            )
         if suffix in text_suffixes:
             record_pdf_result(
                 frow,
