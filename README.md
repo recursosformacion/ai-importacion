@@ -115,8 +115,8 @@ Los archivos descargados desde Internet Archive y GitHub pueden utilizar el mism
 
 - Internet Archive conserva sus resultados en sus tablas históricas de análisis y mantiene su flujo de sugerencias/revisión.
 - GitHub conserva los resultados en `github_file_analyses`, relacionados con `github_files`; no se crean elementos ficticios de Archive.org.
-- Desde la ficha web de un repositorio GitHub, descarga primero los archivos y utiliza **Analizar archivos musicales descargados** para procesar MusicXML, MXL, XML y MIDI/KAR.
+- Desde la ficha web de un repositorio GitHub, descarga primero los archivos. Después utiliza **Analizar archivos musicales descargados** para MusicXML/MXL/XML y MIDI/KAR, o **Extraer texto, PDF y OCR de archivos descargados** para PDF, imágenes y formatos de notación. El texto extraído se puede consultar en la propia ficha.
 - Los resultados se vuelven a calcular cuando cambia el SHA-256 del archivo descargado. Si la exploración detecta un SHA Git distinto, el resultado anterior se muestra como desactualizado.
-- Esta primera integración común cubre el análisis estructural MusicXML/MXL/XML y MIDI/KAR. El análisis de PDF, OCR y extracción de texto sigue ligado al flujo de Internet Archive; su desacoplamiento queda pendiente.
+- El motor compartido `app/content_extraction.py` extrae texto de PDF (hasta 50 páginas), aplica OCR local opcional a PDF escaneados (hasta cinco páginas) e imágenes, y lee texto y notación ABC/LilyPond/MEI/MuseScore/Capella. No envía documentos a servicios externos. Internet Archive y GitHub usan el mismo extractor y conservan resultados separados por proveedor.
 
 Todo el proceso se inicia y consulta desde la interfaz web. No se exportan obras ni archivos a OSAP.
