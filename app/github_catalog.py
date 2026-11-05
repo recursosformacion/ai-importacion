@@ -243,7 +243,7 @@ async def github_scan(repository_id: int):
             conn.execute("""
                 INSERT INTO github_scans(repository_id,commit_sha,tree_sha,file_count,candidate_count,truncated,status,started_at,completed_at)
                 VALUES(?,?,?,?,?,?,?,?,?)
-            """, (repository_id, metadata.get("pushed_at") or "", tree.get("sha") or "",
+            """, (repository_id, "", tree.get("sha") or "",
                   len(entries), len(candidates), int(bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES),
                   "completed", started, stamp))
         return RedirectResponse(f"/github/{repository_id}?scan=ok", status_code=303)
