@@ -135,3 +135,16 @@ docker compose logs -f ai-importacion
 ```
 
 Configura un proxy inverso HTTPS delante del puerto publicado antes de exponerlo a Internet. Define GITHUB_TOKEN sólo si necesitas ampliar los límites de consulta de la API GitHub; nunca lo guardes en el repositorio. El contenedor instala Tesseract y los paquetes de idioma inglés/español. Los datos persistentes no se eliminan al actualizar la imagen.
+
+## Ejecución local en Windows (puerto 8900)
+
+Para arrancar la aplicación en el equipo de desarrollo sin Docker:
+
+- Doble clic en \`scripts/start-local.bat\`, o ejecuta \`.\scripts/start-local.ps1\` desde PowerShell.
+- El lanzador crea el entorno virtual \`.venv\` si hace falta, instala las dependencias y arranca Uvicorn en \`127.0.0.1:8900\`.
+- Abre http://127.0.0.1:8900. Para detenerla, pulsa Ctrl+C en la ventana de consola.
+- SQLite queda en \`data/ai-importacion.sqlite3\` y los archivos descargados en \`downloads/\`.
+
+La escucha en loopback permite que Apache actúe como proxy inverso local sin publicar directamente el servidor Python. Consulta [la guía de ejecución local y configuración de Apache](docs/LOCAL-WINDOWS.md). No copies el proyecto a \`htdocs\`; si Apache permite acceso desde otros equipos, protege el VirtualHost con autenticación.
+
+Docker continúa disponible como alternativa independiente y conserva su puerto predeterminado 9500.
