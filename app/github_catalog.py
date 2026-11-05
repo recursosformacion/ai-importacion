@@ -4,7 +4,7 @@ import html
 import os
 import re
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
