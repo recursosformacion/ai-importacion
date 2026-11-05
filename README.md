@@ -108,3 +108,15 @@ La aplicación incorpora un lector de repositorios públicos de GitHub, accesibl
 5. Los ficheros quedan inventariados como candidatos; la descarga selectiva y su conexión con la cola de análisis son una fase posterior.
 
 La disponibilidad pública de un fichero no acredita permiso para redistribuirlo. Antes de descargar o incorporar contenidos hay que revisar la licencia aplicable y las condiciones del proyecto de origen.
+
+## Análisis común de archivos musicales
+
+Los archivos descargados desde Internet Archive y GitHub pueden utilizar el mismo motor estructural de análisis local (`app/analysis_engine.py`). El motor recibe una ruta local y devuelve tipo, estado, resultado y error sin consultar ni modificar tablas de ningún proveedor.
+
+- Internet Archive conserva sus resultados en sus tablas históricas de análisis y mantiene su flujo de sugerencias/revisión.
+- GitHub conserva los resultados en `github_file_analyses`, relacionados con `github_files`; no se crean elementos ficticios de Archive.org.
+- Desde la ficha web de un repositorio GitHub, descarga primero los archivos y utiliza **Analizar archivos musicales descargados** para procesar MusicXML, MXL, XML y MIDI/KAR.
+- Los resultados se vuelven a calcular cuando cambia el SHA-256 del archivo descargado. Si la exploración detecta un SHA Git distinto, el resultado anterior se muestra como desactualizado.
+- Esta primera integración común cubre el análisis estructural MusicXML/MXL/XML y MIDI/KAR. El análisis de PDF, OCR y extracción de texto sigue ligado al flujo de Internet Archive; su desacoplamiento queda pendiente.
+
+Todo el proceso se inicia y consulta desde la interfaz web. No se exportan obras ni archivos a OSAP.
