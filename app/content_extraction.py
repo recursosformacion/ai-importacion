@@ -58,6 +58,7 @@ def extract_local_content(path: str | Path, *, max_pdf_pages: int = 50,
             result["page_count"] = len(reader.pages)
             page_texts = [(reader.pages[n].extract_text() or "")
                           for n in range(min(len(reader.pages), max_pdf_pages))]
+            result["extracted_characters"] = sum(len(page) for page in page_texts)
             text = "\n".join(f"\n[PAGE {n + 1}]\n{page}" for n, page in enumerate(page_texts))
             if any(x.strip() for x in page_texts):
                 result["status"] = "text_available"
@@ -75,7 +76,7 @@ def extract_local_content(path: str | Path, *, max_pdf_pages: int = 50,
                     return result
                 recognized_pages = []
                 with fitz.open(str(source)) as document:
-                    for page_index in range(min(len(document), max_ocr_pages)):
+                    for page_index in range(min(len(reader.pages), max_ocr_pages)):
                         page = document[page_index]
                         dimension = max(float(page.rect.width), float(page.rect.height), 1.0)
                         scale = min(2.0, 2500.0 / dimension)
@@ -83,6 +84,7 @@ def extract_local_content(path: str | Path, *, max_pdf_pages: int = 50,
                         image = Image.open(io.BytesIO(pixmap.tobytes("png")))
                         language = os.getenv("AI_IMPORTACION_OCR_LANG", "eng").strip() or "eng"
                         recognized_pages.append(pytesseract.image_to_string(image, lang=language) or "")
+                result["extracted_characters"] = sum(len(page) for page in recognized_pages)
                 text = "\n".join(f"\n[PAGE {n + 1} OCR]\n{page}"
                                   for n, page in enumerate(recognized_pages))
                 result["status"] = "ocr_completed" if any(x.strip() for x in recognized_pages) else "ocr_no_text"
@@ -107,7 +109,8 @@ def extract_local_content(path: str | Path, *, max_pdf_pages: int = 50,
             result["page_count"] = 1
             result["status"] = "image_ocr_completed" if text.strip() else "image_ocr_no_text"
         result["text"] = text
-        result["extracted_characters"] = len(text)
+        if suffix != ".pdf":
+            result["extracted_characters"] = len(text)
         return result
     except Exception as exc:
         result.update(status="error", error_text=str(exc)[:1000])
