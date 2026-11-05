@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 import re
+from pathlib import Path
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.db import connect
+from app.db import DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, connect
 
 router = APIRouter()
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
@@ -83,6 +85,17 @@ def ensure_schema() -> None:
         CREATE INDEX IF NOT EXISTS idx_github_files_extension ON github_files(extension);
         CREATE INDEX IF NOT EXISTS idx_github_files_repo ON github_files(repository_id,path);
         """)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_files)")}
+        additions = {
+            "download_status": "TEXT NOT NULL DEFAULT 'not_downloaded'",
+            "local_path": "TEXT",
+            "sha256": "TEXT",
+            "downloaded_bytes": "INTEGER",
+            "download_error": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE github_files ADD COLUMN {name} {definition}")
 
 
 def parse_repository(value: str) -> tuple[str, str]:
@@ -139,7 +152,7 @@ def github_home():
         """).fetchall()
     body = """<h1>Fuentes GitHub</h1>
     <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
-    Esta primera versión inventaría los ficheros: no descarga contenidos ni los incorpora a OSAP.</p>
+    Puedes descargar candidatos para su análisis local. La procedencia GitHub se conserva y no se incorporan automáticamente a OSAP.</p>
     <section class="panel"><h2>Añadir repositorio</h2>
     <form method="post" action="/github/add">
       <input name="repository" type="text" required placeholder="OpenScore/Lieder o https://github.com/OpenScore/Lieder">
@@ -261,6 +274,66 @@ async def github_scan(repository_id: int):
         return HTMLResponse(_page("Error al leer GitHub", "<h1>No se pudo leer el repositorio</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver a GitHub</a></p>"), status_code=502)
 
 
+@router.post("/github/files/{file_id}/download")
+async def github_download_file(file_id: int):
+    ensure_schema()
+    with db() as conn:
+        row = conn.execute("""
+            SELECT f.*,r.full_name,r.default_branch
+            FROM github_files f JOIN github_repositories r ON r.id=f.repository_id
+            WHERE f.id=?
+        """, (file_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Archivo GitHub no encontrado")
+    if row["size_bytes"] is not None and int(row["size_bytes"]) > MAX_DOWNLOAD_BYTES:
+        with db() as conn:
+            conn.execute("UPDATE github_files SET download_status='too_large',download_error=? WHERE id=?",
+                         ("Supera el límite configurado", file_id))
+        return RedirectResponse(f"/github/{row['repository_id']}", status_code=303)
+
+    parts = row["path"].split("/")
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise HTTPException(status_code=422, detail="Ruta GitHub no válida")
+    owner, repository = row["full_name"].split("/", 1)
+    raw_url = ("https://raw.githubusercontent.com/" + quote(owner, safe="") + "/"
+        + quote(repository, safe="") + "/" + quote(row["default_branch"], safe="") + "/"
+        + quote(row["path"], safe="/"))
+    destination = DOWNLOAD_DIR / "github" / str(row["repository_id"])
+    for part in parts:
+        destination = destination / part
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".part")
+    total = 0
+    digest = hashlib.sha256()
+    try:
+        with db() as conn:
+            conn.execute("UPDATE github_files SET download_status='downloading',download_error=NULL WHERE id=?", (file_id,))
+        async with httpx.AsyncClient(timeout=90, headers=headers(), follow_redirects=True) as client:
+            async with client.stream("GET", raw_url) as response:
+                response.raise_for_status()
+                length = response.headers.get("content-length")
+                if length and int(length) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("El servidor anuncia un fichero mayor que el límite")
+                with temporary.open("wb") as output:
+                    async for chunk in response.aiter_bytes(128 * 1024):
+                        total += len(chunk)
+                        if total > MAX_DOWNLOAD_BYTES:
+                            raise ValueError("Descarga detenida al superar el límite de tamaño")
+                        digest.update(chunk)
+                        output.write(chunk)
+        os.replace(temporary, destination)
+        with db() as conn:
+            conn.execute("""UPDATE github_files SET download_status='downloaded',local_path=?,
+                sha256=?,downloaded_bytes=?,download_error=NULL WHERE id=?""",
+                (str(destination), digest.hexdigest(), total, file_id))
+    except Exception as exc:
+        temporary.unlink(missing_ok=True)
+        with db() as conn:
+            conn.execute("""UPDATE github_files SET download_status='error',download_error=?,
+                downloaded_bytes=? WHERE id=?""", (str(exc)[:1000], total, file_id))
+    return RedirectResponse(f"/github/{row['repository_id']}", status_code=303)
+
+
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
 def github_repository(repository_id: int, q: str = ""):
     ensure_schema()
@@ -283,9 +356,19 @@ def github_repository(repository_id: int, q: str = ""):
             body += "<p class='muted'>" + esc(scan["error_text"]) + "</p>"
     body += "<h2>Archivos localizados (" + str(total) + ")</h2><form method='get'><input name='q' type='text' value='" + esc(q) + "' placeholder='Filtrar por ruta'><button>Filtrar</button></form>"
     if files:
-        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th></tr>"
+        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th><th>Descarga local</th></tr>"
         for item in files:
-            body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td></tr>"
+            status = item["download_status"] or "not_downloaded"
+            if status == "downloaded":
+                action = "Descargado · " + str(item["downloaded_bytes"] or 0) + " bytes"
+            elif status == "too_large":
+                action = "Supera el límite configurado"
+            else:
+                label = "Reintentar" if status == "error" else "Descargar"
+                action = "<form method='post' action='/github/files/" + str(item["id"]) + "/download'><button>" + label + "</button></form>"
+            if item["download_error"]:
+                action += "<div class='muted'>" + esc(item["download_error"]) + "</div>"
+            body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td><td>" + action + "</td></tr>"
         body += "</table>"
     else:
         body += "<p>No hay archivos inventariados que coincidan. Ejecuta una lectura del repositorio.</p>"
@@ -308,4 +391,4 @@ def _page(title: str, body: str) -> str:
     return ("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>" + esc(title) + "</title>" + style +
             "<header><b><a href='/'>AI Importación</a></b><a href='/items'>Catálogo local</a><a href='/intake'>Captación integrada</a><a href='/github'>Fuentes GitHub</a></header>"
-            "<main>" + body + "<p class='muted'>La presencia de un fichero público no acredita derechos de redistribución. No se han descargado archivos ni escrito en OSAP.</p></main></html>")
+            "<main>" + body + "<p class='muted'>La presencia de un fichero público no acredita derechos de redistribución. Los archivos descargados se conservan localmente y no se escriben en OSAP.</p></main></html>")
