@@ -82,6 +82,15 @@ def ensure_schema() -> None:
           last_seen_at TEXT NOT NULL,
           UNIQUE(repository_id,path)
         );
+        CREATE TABLE IF NOT EXISTS github_file_analyses (
+          github_file_id INTEGER PRIMARY KEY REFERENCES github_files(id) ON DELETE CASCADE,
+          analysis_type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          analysis_json TEXT NOT NULL,
+          error_text TEXT,
+          analyzed_at TEXT NOT NULL,
+          sha256 TEXT
+        );
         CREATE INDEX IF NOT EXISTS idx_github_files_extension ON github_files(extension);
         CREATE INDEX IF NOT EXISTS idx_github_files_repo ON github_files(repository_id,path);
         """)
@@ -339,6 +348,48 @@ async def github_download_file(file_id: int):
     return RedirectResponse(f"/github/{row['repository_id']}", status_code=303)
 
 
+@router.post("/github/{repository_id}/analyze")
+def github_analyze_repository(repository_id: int):
+    """Analyze downloaded GitHub MusicXML/MIDI files with the shared engine."""
+    ensure_schema()
+    from app.analysis_engine import analyze_local_music_file
+    with db() as conn:
+        repo = conn.execute("SELECT id FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+        if not repo:
+            raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+        files = conn.execute("""
+            SELECT id,path,local_path,sha256 FROM github_files
+            WHERE repository_id=? AND download_status='downloaded' AND local_path IS NOT NULL
+              AND extension IN ('.musicxml','.mxl','.xml','.mid','.midi','.kar')
+            ORDER BY path
+        """, (repository_id,)).fetchall()
+    for item in files:
+        previous = None
+        with db() as conn:
+            previous = conn.execute(
+                "SELECT status,sha256 FROM github_file_analyses WHERE github_file_id=?",
+                (item["id"],),
+            ).fetchone()
+        if previous and previous["sha256"] and previous["sha256"] == item["sha256"] and previous["status"] in {"ok","not_musicxml"}:
+            continue
+        result = analyze_local_music_file(item["local_path"])
+        with db() as conn:
+            conn.execute("""
+                INSERT INTO github_file_analyses
+                  (github_file_id,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(github_file_id) DO UPDATE SET
+                  analysis_type=excluded.analysis_type,status=excluded.status,
+                  analysis_json=excluded.analysis_json,error_text=excluded.error_text,
+                  analyzed_at=excluded.analyzed_at,sha256=excluded.sha256
+            """, (
+                item["id"], result["analysis_type"], result["status"],
+                __import__("json").dumps(result["analysis"], ensure_ascii=False),
+                result["error_text"], now(), item["sha256"],
+            ))
+    return RedirectResponse(f"/github/{repository_id}?analysis=done", status_code=303)
+
+
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
 def github_repository(repository_id: int, q: str = ""):
     ensure_schema()
@@ -347,21 +398,25 @@ def github_repository(repository_id: int, q: str = ""):
         if not repo:
             raise HTTPException(status_code=404, detail="Repositorio no encontrado")
         files = conn.execute("""
-            SELECT * FROM github_files WHERE repository_id=? AND (?='' OR path LIKE ?)
-            ORDER BY path LIMIT 500
+            SELECT f.*,a.status AS analysis_status,a.analysis_json,a.error_text AS analysis_error
+            FROM github_files f LEFT JOIN github_file_analyses a ON a.github_file_id=f.id
+            WHERE f.repository_id=? AND (?='' OR f.path LIKE ?)
+            ORDER BY f.path LIMIT 500
         """, (repository_id, q, "%" + q + "%")).fetchall()
         scan = conn.execute("SELECT * FROM github_scans WHERE repository_id=? ORDER BY id DESC LIMIT 1", (repository_id,)).fetchone()
         total = conn.execute("SELECT COUNT(*) FROM github_files WHERE repository_id=?", (repository_id,)).fetchone()[0]
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
+    body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
+    body += "<p class='muted'>El análisis utiliza el mismo motor estructural que Internet Archive para MusicXML, MXL, XML y MIDI. Los resultados GitHub se guardan por separado, sin mezclar catálogos ni procedencias.</p>"
     if scan:
         body += "<p class='muted'>Última lectura: " + esc(scan["completed_at"] or scan["started_at"]) + " · " + str(scan["candidate_count"]) + " archivos candidatos · " + ("árbol truncado: la lectura puede ser parcial" if scan["truncated"] else "árbol completo") + "</p>"
         if scan["error_text"]:
             body += "<p class='muted'>" + esc(scan["error_text"]) + "</p>"
     body += "<h2>Archivos localizados (" + str(total) + ")</h2><form method='get'><input name='q' type='text' value='" + esc(q) + "' placeholder='Filtrar por ruta'><button>Filtrar</button></form>"
     if files:
-        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th><th>Descarga local</th></tr>"
+        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th><th>Descarga local</th><th>Análisis</th></tr>"
         for item in files:
             status = item["download_status"] or "not_downloaded"
             if status == "downloaded":
@@ -373,7 +428,11 @@ def github_repository(repository_id: int, q: str = ""):
                 action = "<form method='post' action='/github/files/" + str(item["id"]) + "/download'><button>" + label + "</button></form>"
             if item["download_error"]:
                 action += "<div class='muted'>" + esc(item["download_error"]) + "</div>"
-            body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td><td>" + action + "</td></tr>"
+            analysis_status = item["analysis_status"] or "pendiente"
+            analysis_label = {"ok": "Correcto", "not_musicxml": "XML no musical", "error": "Error"}.get(analysis_status, "Pendiente")
+            if item["analysis_error"]:
+                analysis_label += " · " + item["analysis_error"][:120]
+            body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td><td>" + action + "</td><td>" + esc(analysis_label) + "</td></tr>"
         body += "</table>"
     else:
         body += "<p>No hay archivos inventariados que coincidan. Ejecuta una lectura del repositorio.</p>"
