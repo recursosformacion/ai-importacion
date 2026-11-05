@@ -400,6 +400,46 @@ def github_analyze_repository(repository_id: int):
     return RedirectResponse(f"/github/{repository_id}?analysis=done", status_code=303)
 
 
+@router.post("/github/{repository_id}/extract")
+def github_extract_repository(repository_id: int):
+    """Extract text locally from downloaded PDFs, images and notation files."""
+    ensure_schema()
+    from app.content_extraction import extract_local_content
+    with db() as conn:
+        repo = conn.execute("SELECT id FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+        if not repo:
+            raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+        files = conn.execute("""
+            SELECT id,path,local_path,sha256 FROM github_files
+            WHERE repository_id=? AND download_status='downloaded' AND local_path IS NOT NULL
+              AND extension IN ('.pdf','.txt','.ocr','.abc','.ly','.mei','.mscx','.mscz',
+                                '.capx','.png','.jpg','.jpeg','.webp','.tif','.tiff','.bmp','.jp2')
+            ORDER BY path
+        """, (repository_id,)).fetchall()
+    for item in files:
+        with db() as conn:
+            previous = conn.execute(
+                "SELECT status,sha256 FROM github_content_extractions WHERE github_file_id=?",
+                (item["id"],),
+            ).fetchone()
+        if previous and previous["sha256"] and previous["sha256"] == item["sha256"] and previous["status"] not in {"error","ocr_error","ocr_unavailable"}:
+            continue
+        result = extract_local_content(item["local_path"])
+        with db() as conn:
+            conn.execute("""
+                INSERT INTO github_content_extractions
+                  (github_file_id,status,page_count,extracted_characters,extracted_text,error_text,analyzed_at,sha256)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(github_file_id) DO UPDATE SET status=excluded.status,
+                  page_count=excluded.page_count,extracted_characters=excluded.extracted_characters,
+                  extracted_text=excluded.extracted_text,error_text=excluded.error_text,
+                  analyzed_at=excluded.analyzed_at,sha256=excluded.sha256
+            """, (item["id"], result["status"], result["page_count"],
+                  result["extracted_characters"], result["text"][:200000],
+                  result["error_text"], now(), item["sha256"]))
+    return RedirectResponse(f"/github/{repository_id}?extraction=done", status_code=303)
+
+
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
 def github_repository(repository_id: int, q: str = ""):
     ensure_schema()
