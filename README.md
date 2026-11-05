@@ -86,3 +86,25 @@ Este repositorio es una herramienta independiente del ecosistema **OSAP — Open
 - [AI_osap-storage](https://github.com/recursosformacion/AI_osap-storage) — servicio de datos y almacenamiento del catálogo.
 - [AI_osap-support](https://github.com/recursosformacion/AI_osap-support) — soporte, donaciones y membresías.
 - Sitio público: [openmusicrepository.com](https://openmusicrepository.com)
+
+## Fuente adicional: GitHub
+
+La aplicación incorpora un lector de repositorios públicos de GitHub, accesible en `/github`.
+
+- Permite registrar un repositorio mediante `propietario/repositorio` o su URL de GitHub.
+- Consulta los metadatos públicos del repositorio y conserva la licencia declarada por GitHub cuando existe. La licencia del repositorio no se considera automáticamente aplicable a cada fichero.
+- Lee el árbol Git recursivo de la rama predeterminada y registra rutas, extensiones musicales, tamaños, SHA de Git y enlaces al fichero original.
+- Reconoce inicialmente MusicXML/XML, MXL, MIDI/KAR, PDF, Humdrum/Kern, LilyPond, ABC, MEI, MuseScore, Capella, Sibelius, Finale y ZIP.
+- Las lecturas se pueden repetir para actualizar el inventario. GitHub informa cuando el árbol está truncado; en ese caso el resultado se presenta como parcial.
+- La primera versión **sólo inventaría**: no descarga archivos GitHub, no los mezcla con las tablas de Internet Archive y no exporta ni escribe en OSAP.
+- La API pública de GitHub tiene límites de consulta. Se puede configurar opcionalmente `GITHUB_TOKEN` en el entorno del servicio para aumentar el límite; no se introduce el token en la interfaz.
+
+### Primer uso de GitHub
+
+1. Abre `/github`.
+2. Añade, por ejemplo, `OpenScore/Lieder` o `OpenScore/StringQuartets`.
+3. Pulsa **Leer repositorio**.
+4. Revisa los ficheros encontrados y su licencia declarada.
+5. Los ficheros quedan inventariados como candidatos; la descarga selectiva y su conexión con la cola de análisis son una fase posterior.
+
+La disponibilidad pública de un fichero no acredita permiso para redistribuirlo. Antes de descargar o incorporar contenidos hay que revisar la licencia aplicable y las condiciones del proyecto de origen.
