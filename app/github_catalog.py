@@ -398,7 +398,7 @@ def github_repository(repository_id: int, q: str = ""):
         if not repo:
             raise HTTPException(status_code=404, detail="Repositorio no encontrado")
         files = conn.execute("""
-            SELECT f.*,a.status AS analysis_status,a.analysis_json,a.error_text AS analysis_error
+            SELECT f.*,a.status AS analysis_status,a.sha256 AS analysis_sha256,a.analysis_json,a.error_text AS analysis_error
             FROM github_files f LEFT JOIN github_file_analyses a ON a.github_file_id=f.id
             WHERE f.repository_id=? AND (?='' OR f.path LIKE ?)
             ORDER BY f.path LIMIT 500
@@ -429,7 +429,9 @@ def github_repository(repository_id: int, q: str = ""):
             if item["download_error"]:
                 action += "<div class='muted'>" + esc(item["download_error"]) + "</div>"
             analysis_status = item["analysis_status"] or "pendiente"
-            analysis_label = {"ok": "Correcto", "not_musicxml": "XML no musical", "error": "Error"}.get(analysis_status, "Pendiente")
+            if item["analysis_sha256"] and item["analysis_sha256"] != item["sha256"]:
+                analysis_status = "stale"
+            analysis_label = {"ok": "Correcto", "not_musicxml": "XML no musical", "error": "Error", "stale": "Desactualizado"}.get(analysis_status, "Pendiente")
             if item["analysis_error"]:
                 analysis_label += " · " + item["analysis_error"][:120]
             body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td><td>" + action + "</td><td>" + esc(analysis_label) + "</td></tr>"
