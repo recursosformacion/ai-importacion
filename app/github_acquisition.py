@@ -135,28 +135,34 @@ def extract_reference_candidates(markdown: str, readme_path: str) -> list[dict]:
             continue
         links = LINK_RE.findall(paragraph)
         project_match = re.search(
-            r"(?:mention|mencion\w*|credit|cite|acknowledg\w*)\s+(?:a\s+)?([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*){1,5})",
+            r"(?:mention|mencion\w*|credit|cite|acknowledg\w*)\s+(?:that you\s+)?(?:a\s+)?([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*){1,5})",
             paragraph,
+            re.I,
         )
+        urls = URL_RE.findall(paragraph)
+        # A heading such as "For public use:" is context, not an attribution
+        # reference. Only create a record when the paragraph identifies a link.
         if links:
-            for label, url in links:
+            for link_label, url in links:
+                public_text = re.sub(r"[*_]", "", link_label).strip()
+                entity = project_match.group(1).strip() if project_match else public_text
                 found.append({
                     "reference_type": "attribution",
-                    "label": project_match.group(1).strip() if project_match else (re.sub(r"[*_]", "", label).strip() or "Referencia indicada en README"),
-                    "display_text": project_match.group(1).strip() if project_match else (re.sub(r"[*_]", "", label).strip() or "Referencia indicada en README"),
+                    "label": entity or "Referencia indicada en README",
+                    "display_text": public_text or entity or "Referencia indicada en README",
                     "url": url.rstrip(".,;"),
                     "instruction_text": re.sub(r"[*_]", "", normalized),
                     "source_path": readme_path,
                     "source_excerpt": normalized[:4000],
                     "required": 1,
                 })
-        else:
-            urls = URL_RE.findall(paragraph)
+        elif urls and project_match:
+            entity = project_match.group(1).strip()
             found.append({
                 "reference_type": "attribution",
-                "label": "Referencia indicada en README",
-                "display_text": "Referencia indicada en README",
-                "url": urls[0].rstrip(".,;") if urls else "",
+                "label": entity,
+                "display_text": entity,
+                "url": urls[0].rstrip(".,;"),
                 "instruction_text": re.sub(r"[*_]", "", normalized),
                 "source_path": readme_path,
                 "source_excerpt": normalized[:4000],
@@ -232,15 +238,26 @@ def resolve_manifest_entries(manifest_path: str, payload, tree_paths: set[str]) 
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        for field, target in (("in", inputs), ("out", outputs)):
+        resolved_entry = {}
+        entry_invalid = False
+        for field in ("in", "out"):
             raw = entry.get(field)
             if not isinstance(raw, str) or not raw.strip():
                 continue
             resolved = posixpath.normpath(posixpath.join(posixpath.dirname(manifest_path), raw.strip()))
-            if resolved.startswith("../") or resolved == ".." or resolved.startswith("/"):
-                invalid += 1
-                continue
-            target.append(resolved)
+            if resolved in ("..", ".") or resolved.startswith("../") or resolved.startswith("/") or re.match(r"^[A-Za-z]:", resolved):
+                entry_invalid = True
+                break
+            resolved_entry[field] = resolved
+        # Treat input/output as one conversion pair. Reject the whole entry
+        # if either path escapes the repository root.
+        if entry_invalid:
+            invalid += 1
+            continue
+        if "in" in resolved_entry:
+            inputs.append(resolved_entry["in"])
+        if "out" in resolved_entry:
+            outputs.append(resolved_entry["out"])
     inputs = list(dict.fromkeys(inputs))
     outputs = list(dict.fromkeys(outputs))
     return {
