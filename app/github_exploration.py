@@ -305,8 +305,11 @@ def exploration_home(page: int = 1, status: str = "", q: str = ""):
     body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
     body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
     body+="<label>Tiempo máximo (minutos) <input type='number' name='minutes' min='1' value='60'></label> "
-    body+="<button>Continuar exploración</button></form>"
-    body+="<p class='muted'>Se alterna descubrimiento por páginas y comprobación de repositorios. El proceso se detiene al alcanzar el presupuesto o agotar las tareas disponibles. Puedes volver a ejecutarlo cuando quieras.</p></section>"
+    body+="<button"+(" disabled" if state["job_status"] in ("queued","running") else "")+">Continuar exploración</button></form>"
+    body+="<div class='panel' id='exploration-live' data-status-url='/github/exploration/status'><b>Estado del trabajo:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span>"
+    body+="<p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p>"
+    body+="<p id='job-message'>"+esc(state["last_message"])+"</p></div>"
+    body+="<p class='muted'>La exploración continúa en segundo plano. Puedes cerrar esta página; el progreso se guarda en SQLite y se reanuda si se reinicia la aplicación.</p></section>"
     body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q_pending)+"</b></p><ul>"
     for label in ("pending","qualified","below_threshold","partial","error","ignored"):
         body+="<li>"+label+": "+str(counts.get(label,0))+"</li>"
@@ -347,7 +350,24 @@ def exploration_home(page: int = 1, status: str = "", q: str = ""):
     else:
         body+="<p>No hay repositorios para estos filtros.</p>"
     body+="</section><p><a href='/github'>Volver a Fuentes GitHub</a></p>"
-    return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem'>"+body+"</body></html>")
+    live_script = """<script>
+(async function(){
+ const statusUrl='/github/exploration/status';
+ async function refresh(){
+  try{
+   const r=await fetch(statusUrl,{cache:'no-store'});
+   if(!r.ok)return;
+   const d=await r.json();
+   document.getElementById('job-status').textContent=d.job_status;
+   document.getElementById('job-progress').textContent='Páginas: '+d.progress_discoveries+' · Repositorios inspeccionados: '+d.progress_inspections;
+   document.getElementById('job-message').textContent=d.last_message;
+   if(['completed','rate_limited','error'].includes(d.job_status)) location.reload();
+  }catch(e){}
+ }
+ setInterval(refresh,3000);
+})();
+</script>"""
+    return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem'>"+body+live_script+"</body></html>")
 
 @router.post("/github/exploration/repositories/action")
 def exploration_repository_action(
