@@ -29,3 +29,15 @@ def test_musical_threshold_is_not_lowered():
     assert ".mxl" in exploration.EXTENSIONS
     assert ".mid" in exploration.EXTENSIONS
     assert ".pdf" not in exploration.EXTENSIONS
+
+
+def test_exploration_static_route_is_not_captured_by_repository_id(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import app.main as main
+
+    monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "routes.sqlite3"))
+    with TestClient(main.app) as client:
+        response = client.get("/github/exploration")
+
+    assert response.status_code == 200
+    assert "Exploración persistente de GitHub" in response.text
