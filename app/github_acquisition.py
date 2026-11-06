@@ -25,7 +25,7 @@ MAX_TREE_ENTRIES = 50_000
 REFERENCE_TERMS = (
     "cite", "citation", "credit", "acknowledg", "attribution",
     "public use", "please mention", "please acknowledge", "mention",
-    "mencionar", "mención", "atribución", "crédito", "agradecimiento",
+    "mencionar", "mencion", "mención", "uso público", "enlace", "atribución", "crédito", "agradecimiento",
 )
 LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)(?:\s+[^)]*)?\)", re.I)
 URL_RE = re.compile(r"https?://[^\s)>]+", re.I)
@@ -117,11 +117,15 @@ def extract_reference_candidates(markdown: str, readme_path: str) -> list[dict]:
         if not any(term in lowered for term in REFERENCE_TERMS):
             continue
         links = LINK_RE.findall(paragraph)
+        project_match = re.search(
+            r"(?:mention|mencion\\w*)\\s+(?:a\\s+)?([A-ZÁÉÍÓÚÑ][\\wÁÉÍÓÚÑáéíóúñ-]*(?:\\s+[A-ZÁÉÍÓÚÑ][\\wÁÉÍÓÚÑáéíóúñ-]*){1,5})",
+            paragraph,
+        )
         if links:
             for label, url in links:
                 found.append({
                     "reference_type": "attribution",
-                    "label": re.sub(r"[*_]", "", label).strip() or "Referencia indicada en README",
+                    "label": project_match.group(1).strip() if project_match else (re.sub(r"[*_]", "", label).strip() or "Referencia indicada en README"),
                     "url": url.rstrip(".,;"),
                     "instruction_text": re.sub(r"[*_]", "", normalized),
                     "source_path": readme_path,
