@@ -19,10 +19,22 @@ DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 API = "https://api.github.com"
 TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 USER_AGENT = "OSAP-AI-Importacion/0.1 (+https://openmusicrepository.com)"
+# Discovery inventory: notation, native score-editor files, audio and containers.
+# Not every inventoried format has a structural analyzer yet; unknown internals
+# remain downloadable candidates rather than being silently discarded.
 MUSIC_EXTENSIONS = {
-    ".musicxml", ".xml", ".mxl", ".mid", ".midi", ".kar", ".pdf",
-    ".krn", ".ly", ".abc", ".mei", ".mscx", ".mscz", ".capx",
-    ".sib", ".musx", ".zip",
+    # Interchange and text notation
+    ".musicxml", ".xml", ".mxl", ".mid", ".midi", ".kar", ".krn",
+    ".ly", ".ily", ".abc", ".mei", ".mml", ".txt",
+    # Score editors and notation applications
+    ".mscx", ".mscz", ".capx", ".sib", ".musx", ".gp", ".gp3",
+    ".gp4", ".gp5", ".gpx", ".ptb", ".nwc", ".nwctxt", ".nwz",
+    ".bww", ".ove", ".enc", ".mgu", ".sgu", ".not",
+    # Audio
+    ".mp3", ".wav", ".flac", ".ogg", ".opus", ".m4a", ".aac",
+    ".aiff", ".aif", ".wma", ".ape", ".alac",
+    # Scanned scores and containers
+    ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".zip",
 }
 MAX_TREE_ENTRIES = 50000
 
