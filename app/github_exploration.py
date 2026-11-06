@@ -4,6 +4,7 @@ import asyncio
 import html
 import os
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
 
@@ -16,7 +17,46 @@ from app.db import connect
 router = APIRouter()
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 API = "https://api.github.com"
-TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+def load_github_token():
+    """Load a private token from the environment or a local, git-ignored file."""
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if token:
+        return token
+
+    root = Path(__file__).resolve().parents[1]
+    for filename in ("secrets", "secrets.txt"):
+        path = root / filename
+        try:
+            content = path.read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            continue
+        if not content:
+            continue
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            candidate = ""
+            if "=" in line:
+                key, value = line.split("=", 1)
+                if key.strip().lower() not in {"github_token", "github.token", "github-token", "token"}:
+                    continue
+                candidate = value.strip()
+            elif ":" in line:
+                key, value = line.split(":", 1)
+                if key.strip().lower() not in {"github_token", "github.token", "github-token", "token"}:
+                    continue
+                candidate = value.strip()
+            else:
+                candidate = line
+            candidate = candidate.strip().strip('"').strip("'")
+            if candidate:
+                return candidate
+    return ""
+
+
+TOKEN = load_github_token()
 MIN_MUSICAL_FILES = 11
 PER_PAGE = 100
 MAX_SEARCH_PAGES = 10
@@ -80,6 +120,26 @@ def ensure_schema():
         state_cols = {r["name"] for r in c.execute("PRAGMA table_info(github_exploration_state)")}
         if "resume_after" not in state_cols:
             c.execute("ALTER TABLE github_exploration_state ADD COLUMN resume_after TEXT")
+
+        # One-time clean reset of the old persistent exploration state.
+        # The separate GitHub catalog, downloaded files and analyses are untouched.
+        c.execute("""CREATE TABLE IF NOT EXISTS github_exploration_migrations(
+          migration_key TEXT PRIMARY KEY, applied_at TEXT NOT NULL)""")
+        reset_done = c.execute(
+            "SELECT 1 FROM github_exploration_migrations WHERE migration_key=?",
+            ("reset_exploration_before_token_auth",),
+        ).fetchone()
+        if not reset_done:
+            c.execute("DELETE FROM github_discovery_queries")
+            c.execute("DELETE FROM github_discovered_repositories")
+            c.execute("""UPDATE github_exploration_state
+              SET enabled=0,last_run_at=NULL,last_run_seconds=0,
+                  last_message='Exploración reiniciada para comenzar un catálogo limpio.',
+                  resume_after=NULL WHERE id=1""")
+            c.execute(
+                "INSERT INTO github_exploration_migrations(migration_key,applied_at) VALUES(?,?)",
+                ("reset_exploration_before_token_auth", now()),
+            )
         cols = {r["name"] for r in c.execute("PRAGMA table_info(github_discovered_repositories)")}
         if "commit_sha" not in cols:
             c.execute("ALTER TABLE github_discovered_repositories ADD COLUMN commit_sha TEXT NOT NULL DEFAULT ''")
@@ -217,6 +277,7 @@ def exploration_home():
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
+    body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
     body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
     body+="<label>Tiempo máximo (minutos) <input type='number' name='minutes' min='1' max='20' value='3'></label> "
     body+="<button>Continuar exploración</button></form>"
