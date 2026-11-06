@@ -39,6 +39,10 @@ uvicorn app.main:app --reload --port 9500
 
 Abrir http://127.0.0.1:9500. La base de datos se crea en `data/ai-importacion.sqlite3`. Para cambiar la ruta, definir `AI_IMPORTACION_DB` antes de arrancar.
 
+### Ejecución local en Windows
+
+Se conserva el entorno virtual `.venv` y la configuración SQLite existentes. El arranque habitual sigue siendo `python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 9500`; no es necesario crear otro entorno ni cambiar el puerto de Apache. Consulta [docs/LOCAL-WINDOWS.md](docs/LOCAL-WINDOWS.md) para la configuración del proxy.
+
 ### OCR de PDF escaneados en Windows
 
 El OCR es opcional y se ejecuta en el equipo local. `pip install -r requirements.txt` instala las bibliotecas Python, pero **no instala el ejecutable Tesseract**. Instala Tesseract OCR para Windows, añade la carpeta que contiene `tesseract.exe` al `PATH` y abre una nueva terminal. Comprueba la instalación con `tesseract --version`. Para verificar los idiomas disponibles, ejecuta `tesseract --list-langs`; configura `AI_IMPORTACION_OCR_LANG` solo con idiomas instalados. Si Tesseract no está disponible, la aplicación conserva el estado del PDF y lo indica en la ficha, sin enviar el documento a un servicio externo. El OCR procesa como máximo las primeras cinco páginas por PDF.
@@ -148,13 +152,13 @@ docker compose logs -f ai-importacion
 
 Configura un proxy inverso HTTPS delante del puerto publicado antes de exponerlo a Internet. Define GITHUB_TOKEN sólo si necesitas ampliar los límites de consulta de la API GitHub; nunca lo guardes en el repositorio. El contenedor instala Tesseract y los paquetes de idioma inglés/español. Los datos persistentes no se eliminan al actualizar la imagen.
 
-## Ejecución local en Windows (puerto 8900)
+## Ejecución local en Windows (puerto 9500)
 
 Para arrancar la aplicación en el equipo de desarrollo sin Docker:
 
 - Doble clic en \`scripts/start-local.bat\`, o ejecuta \`.\scripts/start-local.ps1\` desde PowerShell.
-- El lanzador crea el entorno virtual \`.venv\` si hace falta, instala las dependencias y arranca Uvicorn en \`127.0.0.1:8900\`.
-- Abre http://127.0.0.1:8900. Para detenerla, pulsa Ctrl+C en la ventana de consola.
+- El lanzador crea el entorno virtual \`.venv\` si hace falta, instala las dependencias y arranca Uvicorn en \`127.0.0.1:9500\`.
+- Abre http://127.0.0.1:9500. Para detenerla, pulsa Ctrl+C en la ventana de consola.
 - SQLite queda en \`data/ai-importacion.sqlite3\` y los archivos descargados en \`downloads/\`.
 
 La escucha en loopback permite que Apache actúe como proxy inverso local sin publicar directamente el servidor Python. Consulta [la guía de ejecución local y configuración de Apache](docs/LOCAL-WINDOWS.md). No copies el proyecto a \`htdocs\`; si Apache permite acceso desde otros equipos, protege el VirtualHost con autenticación.
