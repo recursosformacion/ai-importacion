@@ -4,6 +4,7 @@ import base64
 import html
 import json
 import os
+import posixpath
 import re
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -203,6 +204,80 @@ def build_acquisition_plan(readme: str, tree: list[dict]) -> dict:
         "requires_review": True,
     }
 
+
+def resolve_manifest_entries(manifest_path: str, payload, tree_paths: set[str]) -> dict:
+    """Resolve manifest-relative input/output paths without allowing repo escapes."""
+    entries = payload if isinstance(payload, list) else (
+        payload.get("entries") or payload.get("files") or []
+        if isinstance(payload, dict) else []
+    )
+    inputs = []
+    outputs = []
+    invalid = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for field, target in (("in", inputs), ("out", outputs)):
+            raw = entry.get(field)
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(manifest_path), raw.strip()))
+            if resolved.startswith("../") or resolved == ".." or resolved.startswith("/"):
+                invalid += 1
+                continue
+            target.append(resolved)
+    inputs = list(dict.fromkeys(inputs))
+    outputs = list(dict.fromkeys(outputs))
+    return {
+        "entry_count": len(entries) if isinstance(entries, list) else 0,
+        "input_paths": inputs,
+        "output_paths": outputs,
+        "missing_input_paths": [path for path in inputs if path not in tree_paths],
+        "invalid_path_count": invalid,
+    }
+
+
+async def inspect_json_manifests(full_name: str, branch: str, plan: dict, tree: list[dict]) -> None:
+    """Read small JSON manifests referenced by the plan; do not execute their contents."""
+    tree_paths = {
+        str(item.get("path")) for item in tree
+        if item.get("type") == "blob" and item.get("path")
+    }
+    details = []
+    selected_inputs = []
+    for path in plan.get("manifest_paths", [])[:5]:
+        if not path.casefold().endswith(".json"):
+            continue
+        try:
+            payload = await github_get(
+                f"{API}/repos/{full_name}/contents/{quote(path, safe='/')}?ref={quote(branch, safe='')}"
+            )
+            raw = payload.get("content") or ""
+            if payload.get("encoding") == "base64":
+                decoded = base64.b64decode(raw).decode("utf-8", errors="replace")
+            else:
+                decoded = str(raw)
+            if len(decoded) > 2_000_000:
+                raise ValueError("El manifiesto supera el límite de lectura de 2 MB.")
+            parsed = json.loads(decoded)
+            summary = resolve_manifest_entries(path, parsed, tree_paths)
+            details.append({
+                "path": path,
+                "entry_count": summary["entry_count"],
+                "input_count": len(summary["input_paths"]),
+                "output_count": len(summary["output_paths"]),
+                "missing_input_paths": summary["missing_input_paths"][:50],
+                "invalid_path_count": summary["invalid_path_count"],
+                "sample_inputs": summary["input_paths"][:8],
+                "sample_outputs": summary["output_paths"][:8],
+            })
+            selected_inputs.extend(summary["input_paths"])
+        except (ValueError, UnicodeError, json.JSONDecodeError, httpx.HTTPError) as exc:
+            details.append({"path": path, "error": str(exc)[:500]})
+    plan["manifest_details"] = details
+    plan["manifest_input_paths"] = list(dict.fromkeys(selected_inputs))
+    plan["manifest_input_count"] = len(plan["manifest_input_paths"])
+
 def page(title: str, body: str) -> HTMLResponse:
     style = """
     <style>
@@ -276,6 +351,17 @@ def acquisition_page(repository_id: int):
             body += "<p class='muted'>" + str(plan.get("file_count", 0)) + " archivos en el árbol · revisión humana obligatoria</p>"
             if plan.get("manifest_paths"):
                 body += "<p><b>Manifiestos candidatos:</b></p><ul>" + "".join("<li><code>" + esc(path) + "</code></li>" for path in plan["manifest_paths"]) + "</ul>"
+            for manifest in plan.get("manifest_details", []):
+                body += "<p><b>Manifiesto leído:</b> <code>" + esc(manifest.get("path", "")) + "</code>"
+                if manifest.get("error"):
+                    body += " · " + esc(manifest["error"])
+                else:
+                    body += " · " + str(manifest.get("entry_count", 0)) + " entradas · " + str(manifest.get("input_count", 0)) + " entradas de origen · " + str(manifest.get("output_count", 0)) + " salidas previstas"
+                    if manifest.get("missing_input_paths"):
+                        body += " · " + str(len(manifest["missing_input_paths"])) + " rutas de entrada no encontradas"
+                    if manifest.get("sample_inputs"):
+                        body += "<details><summary>Ver ejemplos de ficheros de entrada</summary><pre>" + esc("\n".join(manifest["sample_inputs"])) + "</pre></details>"
+                body += "</p>"
             if plan.get("score_directories"):
                 body += "<p><b>Carpetas de partituras:</b> " + esc(", ".join(plan["score_directories"])) + "</p>"
             if plan.get("documented_commands"):
@@ -335,6 +421,7 @@ async def inspect_repository(repository_id: int):
         tree = tree[:MAX_TREE_ENTRIES]
         references = extract_reference_candidates(readme_content, readme_path)
         plan = build_acquisition_plan(readme_content, tree)
+        await inspect_json_manifests(full_name, branch, plan, tree)
         stamp = now()
         with db() as conn:
             conn.execute("""
