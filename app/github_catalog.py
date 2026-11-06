@@ -24,8 +24,8 @@ USER_AGENT = "OSAP-AI-Importacion/0.1 (+https://openmusicrepository.com)"
 # remain downloadable candidates rather than being silently discarded.
 MUSIC_EXTENSIONS = {
     # Interchange and text notation
-    ".musicxml", ".xml", ".mxl", ".mid", ".midi", ".kar", ".krn",
-    ".ly", ".ily", ".abc", ".mei", ".mml", ".txt",
+    ".musicxml", ".mxl", ".mid", ".midi", ".kar", ".krn",
+    ".ly", ".ily", ".abc", ".mei", ".mml",
     # Score editors and notation applications
     ".mscx", ".mscz", ".capx", ".sib", ".musx", ".gp", ".gp3",
     ".gp4", ".gp5", ".gpx", ".ptb", ".nwc", ".nwctxt", ".nwz",
@@ -37,6 +37,36 @@ MUSIC_EXTENSIONS = {
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".zip",
 }
 MAX_TREE_ENTRIES = 50000
+
+# Only explicit music/notation/audio formats count towards the repository threshold.
+# Generic documents, images and archives are not evidence of a musical piece.
+MUSICAL_PIECE_EXTENSIONS = MUSIC_EXTENSIONS - {
+    ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".zip",
+}
+MIN_MUSICAL_PIECES = 11
+MAX_REPOSITORIES_TO_INSPECT = 30
+
+
+async def count_musical_pieces(repository: dict) -> tuple[int, bool]:
+    """Return recognized musical files in a repository tree and truncation state."""
+    full_name = repository.get("full_name") or ""
+    branch = repository.get("default_branch") or "main"
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name):
+        return 0, False
+    tree = await github_json(
+        f"{API}/repos/{full_name}/git/trees/{quote(branch, safe='')}?recursive=1"
+    )
+    entries = tree.get("tree") or []
+    count = 0
+    for entry in entries[:MAX_TREE_ENTRIES]:
+        if entry.get("type") != "blob":
+            continue
+        extension = os.path.splitext(str(entry.get("path") or ""))[1].lower()
+        if extension in MUSICAL_PIECE_EXTENSIONS:
+            count += 1
+    return count, bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
+
+
 
 
 def now() -> str:
@@ -268,15 +298,29 @@ async def github_search(q: str = "", sort: str = "updated", license: str = ""):
             if not query and len(errors) == len(discovery_queries):
                 break
 
-    results = list(merged.values())
-    results.sort(
+    discovered = list(merged.values())
+    discovered.sort(
         key=lambda item: (
             int(item.get("stargazers_count") or 0) if sort == "stars"
             else str(item.get("updated_at") or "")
         ),
         reverse=True,
     )
-    results = results[:60]
+
+    # Verify actual repository contents before presenting a useful candidate.
+    results = []
+    inspected = 0
+    inspection_errors = []
+    for item in discovered[:MAX_REPOSITORIES_TO_INSPECT]:
+        try:
+            musical_count, tree_truncated = await count_musical_pieces(item)
+            inspected += 1
+            if musical_count >= MIN_MUSICAL_PIECES:
+                item["musical_file_count"] = musical_count
+                item["tree_truncated"] = tree_truncated
+                results.append(item)
+        except (ValueError, httpx.HTTPError) as exc:
+            inspection_errors.append(str(exc))
     total = sum(totals)
     body = "<h1>Repositorios candidatos</h1>"
     body += "<form method='get' action='/github/search'><input name='q' type='search' value='" + esc(query) + "' placeholder='Opcional: compositor, colección o tema...' />"
@@ -291,21 +335,24 @@ async def github_search(q: str = "", sort: str = "updated", license: str = ""):
     else:
         body += "<p class='muted'>Búsqueda automática por siete familias de términos musicales. "
     body += "GitHub ha devuelto " + str(total) + " coincidencias acumuladas; se muestran hasta 60 repositorios únicos."
-    body += " Son candidatos por metadatos, todavía no una confirmación de que contengan partituras.</p>"
+    body += " Se han inspeccionado " + str(inspected) + " árboles; sólo se muestran repositorios con al menos 11 archivos musicales reconocibles.</p>"
     if errors:
-        body += "<p class='muted'>Algunas consultas no pudieron completarse: " + esc("; ".join(errors)) + "</p>"
+        body += "<p class='muted'>Algunas consultas de búsqueda no pudieron completarse: " + esc("; ".join(errors)) + "</p>"
+    if inspection_errors:
+        body += "<p class='muted'>No se pudieron inspeccionar algunos repositorios: " + esc("; ".join(inspection_errors[:3])) + "</p>"
     if results:
-        body += "<table><tr><th>Repositorio</th><th>Lenguaje</th><th>Estrellas</th><th>Licencia declarada</th><th>Actualizado</th><th></th></tr>"
+        body += "<table><tr><th>Repositorio</th><th>Piezas musicales</th><th>Lenguaje</th><th>Estrellas</th><th>Licencia declarada</th><th>Actualizado</th><th></th></tr>"
         for item in results:
             full_name = item.get("full_name") or ""
             license_data = item.get("license") or {}
             license_name = license_data.get("spdx_id") or license_data.get("name") or "No declarada"
             body += "<tr><td><a href='" + esc(item.get("html_url") or "") + "'><b>" + esc(full_name) + "</b></a><div class='muted'>" + esc(item.get("description") or "") + "</div></td>"
-            body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>"
+            body += "<td>" + str(item.get("musical_file_count", 0)) + ("+" if item.get("tree_truncated") else "") + "</td>"
+            body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>
             body += "<td>" + esc(license_name) + "</td><td>" + esc((item.get("updated_at") or "")[:10]) + "</td>"
             body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir al catálogo</button></form></td></tr>"
         body += "</table>"
-        body += "<p class='muted'>Al añadir un repositorio, abre su ficha y pulsa «Leer repositorio»: esa inspección recorre el árbol y confirma los archivos musicales por extensión, sin limitarse a lo que diga la descripción.</p>"
+        body += "<p class='muted'>El recuento se basa en extensiones musicales explícitas del árbol GitHub. Archivos genéricos .xml/.txt, PDF, imágenes y ZIP no se cuentan como piezas confirmadas.</p>"
     else:
         body += "<p>No se han encontrado repositorios en estas consultas. Puedes probar una búsqueda afinada o añadir una URL conocida.</p>"
     body += "<p><a href='/github'>Volver a Fuentes GitHub</a></p>"
