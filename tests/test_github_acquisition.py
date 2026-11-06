@@ -1,4 +1,4 @@
-from app.github_acquisition import extract_reference_candidates
+from app.github_acquisition import extract_reference_candidates, resolve_manifest_entries
 
 
 def test_extracts_public_attribution_and_named_project_link():
@@ -56,3 +56,24 @@ def test_extracts_plain_url_and_project_name_from_credit_request():
     assert len(references) == 1
     assert references[0]["label"] == "OpenScore Lieder"
     assert references[0]["url"] == "https://musescore.com/openscore-lieder-corpus"
+
+
+
+def test_manifest_paths_are_resolved_relative_to_manifest_and_checked_against_tree():
+    manifest = [
+        {"in": "../scores/Composer/Set/Song/lc123.mscx",
+         "out": "../scores/Composer/Set/Song/lc123.mxl"},
+        {"in": "../../outside.mscx", "out": "../outside.mxl"},
+    ]
+
+    result = resolve_manifest_entries(
+        "data/corpus_conversion.json",
+        manifest,
+        {"scores/Composer/Set/Song/lc123.mscx"},
+    )
+
+    assert result["entry_count"] == 2
+    assert result["input_paths"] == ["scores/Composer/Set/Song/lc123.mscx"]
+    assert result["output_paths"] == ["scores/Composer/Set/Song/lc123.mxl"]
+    assert result["missing_input_paths"] == []
+    assert result["invalid_path_count"] == 2
