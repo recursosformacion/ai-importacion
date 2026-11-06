@@ -42,6 +42,12 @@ SEEDS = [
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+
+class GitHubRateLimit(RuntimeError):
+    def __init__(self, message, resume_after):
+        super().__init__(message)
+        self.resume_after = resume_after
+
 def esc(v):
     return html.escape("" if v is None else str(v))
 
@@ -68,9 +74,12 @@ def ensure_schema():
         CREATE TABLE IF NOT EXISTS github_exploration_state(
           id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0,
           last_run_at TEXT, last_run_seconds REAL NOT NULL DEFAULT 0,
-          last_message TEXT NOT NULL DEFAULT '');
+          last_message TEXT NOT NULL DEFAULT '', resume_after TEXT);
         INSERT OR IGNORE INTO github_exploration_state(id) VALUES(1);
         """)
+        state_cols = {r["name"] for r in c.execute("PRAGMA table_info(github_exploration_state)")}
+        if "resume_after" not in state_cols:
+            c.execute("ALTER TABLE github_exploration_state ADD COLUMN resume_after TEXT")
         cols = {r["name"] for r in c.execute("PRAGMA table_info(github_discovered_repositories)")}
         if "commit_sha" not in cols:
             c.execute("ALTER TABLE github_discovered_repositories ADD COLUMN commit_sha TEXT NOT NULL DEFAULT ''")
@@ -90,8 +99,33 @@ def headers():
 
 async def get_json(client,url):
     r=await client.get(url)
-    if r.status_code==403 and r.headers.get("X-RateLimit-Remaining")=="0":
-        raise RuntimeError("Límite de API GitHub alcanzado; la exploración queda guardada para reanudar.")
+    if r.status_code in (403, 429):
+        body = (r.text or "").lower()
+        remaining = r.headers.get("X-RateLimit-Remaining")
+        retry_after = r.headers.get("Retry-After")
+        reset = r.headers.get("X-RateLimit-Reset")
+        limited = (remaining == "0" or bool(retry_after) or
+                   "rate limit" in body or "secondary rate" in body)
+        if limited:
+            resume_after = None
+            try:
+                if retry_after:
+                    resume_after = datetime.fromtimestamp(
+                        time.time() + max(1, int(retry_after)), timezone.utc
+                    ).isoformat(timespec="seconds")
+                elif reset:
+                    resume_after = datetime.fromtimestamp(int(reset), timezone.utc).isoformat(timespec="seconds")
+            except (TypeError, ValueError, OverflowError):
+                resume_after = None
+            if not resume_after:
+                resume_after = datetime.fromtimestamp(
+                    time.time() + 60, timezone.utc
+                ).isoformat(timespec="seconds")
+            raise GitHubRateLimit(
+                "GitHub ha aplicado un límite de solicitudes. El avance queda guardado; "
+                f"se podrá reanudar después de {resume_after}.",
+                resume_after,
+            )
     r.raise_for_status()
     return r.json()
 
@@ -160,6 +194,9 @@ async def inspect_one(client):
                ((meta.get("license") or {}).get("spdx_id") or ""),count,tree_sha,
                now(),meta.get("updated_at") or "",status,int(count<MIN_MUSICAL_FILES),commit_sha,name))
         return True,f"{name}: {count} archivos musicales"+(" (árbol parcial)" if truncated else "")+"."
+    except GitHubRateLimit:
+        # A rate limit is a pause, not a repository inspection failure.
+        raise
     except Exception as exc:
         with db() as c:
             c.execute("UPDATE github_discovered_repositories SET status='error',last_checked_at=?,last_error=? WHERE full_name=?",
@@ -187,7 +224,10 @@ def exploration_home():
     body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q)+"</b></p><ul>"
     for label in ("pending","qualified","below_threshold","partial","error"):
         body+="<li>"+label+": "+str(counts.get(label,0))+"</li>"
-    body+="</ul><p>Última ejecución: "+esc(state["last_run_at"] or "ninguna")+" · "+esc(state["last_message"])+"</p></section>"
+    body+="</ul><p>Última ejecución: "+esc(state["last_run_at"] or "ninguna")+" · "+esc(state["last_message"])+"</p>"
+    if state["resume_after"]:
+        body+="<p><b>Reanudación disponible a partir de:</b> "+esc(state["resume_after"])+" (UTC)</p>"
+    body+="</section>"
     body+="<section class='panel'><h2>Repositorios que cumplen el mínimo de 11 archivos</h2>"
     if qualified:
         body+="<table><tr><th>Repositorio</th><th>Archivos musicales</th><th>Actualización</th><th>Comprobado</th></tr>"
@@ -203,25 +243,44 @@ async def exploration_run(minutes:int=Form(3)):
     ensure_schema()
     budget=max(1,min(20,int(minutes)))*60
     started=time.monotonic(); messages=[]; discoveries=0; inspections=0
-    async with httpx.AsyncClient(timeout=25,headers=headers(),follow_redirects=True) as client:
-        while time.monotonic()-started < budget:
-            did,msg=await discover_one(client)
-            if did:
-                discoveries+=1; messages.append(msg)
-            if time.monotonic()-started >= budget: break
-            did,msg=await inspect_one(client)
-            if did:
-                inspections+=1; messages.append(msg)
-            if not did and discoveries==0 and inspections==0: break
-            if not did and discoveries>0:
-                # Continue discovery pages until the budget is used or the queue has no more work.
-                with db() as c:
-                    pending=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories WHERE status IN ('pending','error')").fetchone()["n"]
-                    todo=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status IN ('pending','running') AND page<=?",(MAX_SEARCH_PAGES,)).fetchone()["n"]
-                if not pending and not todo: break
-    elapsed=round(time.monotonic()-started,1)
-    message=f"{discoveries} páginas de descubrimiento y {inspections} repositorios inspeccionados en {elapsed} s."
+    rate_limit = None
     with db() as c:
-        c.execute("UPDATE github_exploration_state SET last_run_at=?,last_run_seconds=?,last_message=? WHERE id=1",
-                  (now(),elapsed,message))
+        state = c.execute("SELECT resume_after FROM github_exploration_state WHERE id=1").fetchone()
+    if state and state["resume_after"]:
+        try:
+            resume_dt = datetime.fromisoformat(state["resume_after"])
+            if datetime.now(timezone.utc) < resume_dt:
+                message = f"GitHub ha pedido esperar hasta {state['resume_after']} (UTC). No se ha iniciado otra petición."
+                with db() as c:
+                    c.execute("UPDATE github_exploration_state SET last_run_at=?,last_run_seconds=0,last_message=? WHERE id=1",
+                              (now(),message))
+                return RedirectResponse("/github/exploration",status_code=303)
+        except ValueError:
+            pass
+    try:
+        async with httpx.AsyncClient(timeout=25,headers=headers(),follow_redirects=True) as client:
+            while time.monotonic()-started < budget:
+                did,msg=await discover_one(client)
+                if did:
+                    discoveries+=1; messages.append(msg)
+                if time.monotonic()-started >= budget: break
+                did,msg=await inspect_one(client)
+                if did:
+                    inspections+=1; messages.append(msg)
+                if not did and discoveries==0 and inspections==0: break
+                if not did and discoveries>0:
+                    with db() as c:
+                        pending=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories WHERE status IN ('pending','error')").fetchone()["n"]
+                        todo=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status IN ('pending','running') AND page<=?",(MAX_SEARCH_PAGES,)).fetchone()["n"]
+                    if not pending and not todo: break
+    except GitHubRateLimit as exc:
+        rate_limit = exc
+    elapsed=round(time.monotonic()-started,1)
+    if rate_limit:
+        message=f"Exploración pausada por límite de GitHub. {discoveries} páginas y {inspections} repositorios procesados en {elapsed} s. {rate_limit}"
+    else:
+        message=f"{discoveries} páginas de descubrimiento y {inspections} repositorios inspeccionados en {elapsed} s."
+    with db() as c:
+        c.execute("UPDATE github_exploration_state SET last_run_at=?,last_run_seconds=?,last_message=?,resume_after=? WHERE id=1",
+                  (now(),elapsed,message,rate_limit.resume_after if rate_limit else None))
     return RedirectResponse("/github/exploration",status_code=303)
