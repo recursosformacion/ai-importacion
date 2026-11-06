@@ -264,19 +264,34 @@ async def inspect_one(client):
         return True,f"{name}: error: {str(exc)[:160]}"
 
 @router.get("/github/exploration",response_class=HTMLResponse)
-def exploration_home():
+def exploration_home(page: int = 1, status: str = "", q: str = ""):
     ensure_schema()
+    page = max(1, int(page or 1))
+    status = status if status in {"pending","qualified","below_threshold","partial","error","ignored"} else ""
+    q = q.strip()[:120]
+    page_size = 100
+    where = []
+    params = []
+    if status:
+        where.append("status=?")
+        params.append(status)
+    if q:
+        where.append("(full_name LIKE ? OR description LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
     with db() as c:
         counts={r["status"]:r["n"] for r in c.execute(
           "SELECT status,COUNT(*) n FROM github_discovered_repositories GROUP BY status")}
-        q=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status!='done'").fetchone()["n"]
+        q_pending=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status!='done'").fetchone()["n"]
         state=c.execute("SELECT * FROM github_exploration_state WHERE id=1").fetchone()
+        filtered_total=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories"+clause,params).fetchone()["n"]
         repositories=c.execute("""SELECT full_name,description,status,musical_file_count,
-          updated_at,last_checked_at,last_error FROM github_discovered_repositories
+          updated_at,last_checked_at,last_error FROM github_discovered_repositories"""+clause+"""
           ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'error' THEN 1
             WHEN 'qualified' THEN 2 WHEN 'below_threshold' THEN 3
             WHEN 'partial' THEN 4 WHEN 'ignored' THEN 5 ELSE 6 END,
-            discovered_at DESC LIMIT 200""").fetchall()
+            discovered_at DESC LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
+        catalog_names={r["full_name"] for r in c.execute("SELECT full_name FROM github_repositories")} if False else set()
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
@@ -285,7 +300,7 @@ def exploration_home():
     body+="<label>Tiempo máximo (minutos) <input type='number' name='minutes' min='1' value='60'></label> "
     body+="<button>Continuar exploración</button></form>"
     body+="<p class='muted'>Se alterna descubrimiento por páginas y comprobación de repositorios. El proceso se detiene al alcanzar el presupuesto o agotar las tareas disponibles. Puedes volver a ejecutarlo cuando quieras.</p></section>"
-    body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q)+"</b></p><ul>"
+    body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q_pending)+"</b></p><ul>"
     for label in ("pending","qualified","below_threshold","partial","error","ignored"):
         body+="<li>"+label+": "+str(counts.get(label,0))+"</li>"
     body+="</ul><p>Última ejecución: "+esc(state["last_run_at"] or "ninguna")+" · "+esc(state["last_message"])+"</p>"
@@ -293,13 +308,20 @@ def exploration_home():
         body+="<p><b>Reanudación disponible a partir de:</b> "+esc(state["resume_after"])+" (UTC)</p>"
     body+="</section>"
     body+="<section class='panel'><h2>Repositorios descubiertos</h2>"
-    body+="<p>Selecciona uno o varios repositorios. Puedes ignorarlos para excluirlos de futuras inspecciones o devolverlos a la cola de procesamiento. Se muestran hasta 200 resultados.</p>"
+    body+="<p>Se muestran "+str(len(repositories))+" de "+str(filtered_total)+" resultados filtrados. La paginación permite recorrer todo el catálogo.</p>"
+    body+="<form method='get' action='/github/exploration'><label>Buscar <input name='q' value='"+esc(q)+"' placeholder='Propietario, repositorio o descripción'></label> "
+    body+="<label>Estado <select name='status'><option value=''>Todos</option>"
+    for value,label in (("pending","Pendiente"),("qualified","Cumple mínimo"),("below_threshold","Por debajo del mínimo"),("partial","Árbol parcial"),("error","Error"),("ignored","Ignorado")):
+        body+="<option value='"+value+"'"+(" selected" if status==value else "")+">"+label+"</option>"
+    body+="</select></label> <button>Filtrar</button> <a href='/github/exploration'>Limpiar</a></form>"
     if repositories:
         body+="<form method='post' action='/github/exploration/repositories/action'>"
+        body+="<input type='hidden' name='return_page' value='"+str(page)+"'><input type='hidden' name='return_status' value='"+esc(status)+"'><input type='hidden' name='return_q' value='"+esc(q)+"'>"
         body+="<p><label><input type='checkbox' onclick='document.querySelectorAll(\"input.repo-select\").forEach(x=>x.checked=this.checked)'> Seleccionar todos los visibles</label> "
-        body+="<button name='action' value='ignore'>Ignorar seleccionados</button> "
-        body+="<button name='action' value='process'>Procesar seleccionados</button> "
-        body+="<button name='action' value='restore'>Restaurar seleccionados</button></p>"
+        body+="<button name='action' value='ignore'>Ignorar</button> "
+        body+="<button name='action' value='process'>Volver a inspeccionar</button> "
+        body+="<button name='action' value='restore'>Restaurar</button> "
+        body+="<button name='action' value='catalog'>Incorporar al catálogo</button></p>"
         body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales</th><th>Actualizado</th><th>Comprobado</th></tr>"
         for r in repositories:
             status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
@@ -309,15 +331,24 @@ def exploration_home():
             body+="<td>"+esc(status_label)+"</td><td>"+str(r["musical_file_count"])+"</td>"
             body+="<td>"+esc((r["updated_at"] or "")[:10])+"</td><td>"+esc(r["last_checked_at"] or "—")+"</td></tr>"
         body+="</table></form>"
+        pages=max(1,(filtered_total+page_size-1)//page_size)
+        body+="<p class='pagination'>"
+        if page>1: body+="<a href='/github/exploration?page="+str(page-1)+"&status="+esc(status)+"&q="+quote(q)+"'>← Anterior</a> "
+        body+="Página "+str(page)+" de "+str(pages)
+        if page<pages: body+=" <a href='/github/exploration?page="+str(page+1)+"&status="+esc(status)+"&q="+quote(q)+"'>Siguiente →</a>"
+        body+="</p>"
     else:
-        body+="<p>Aún no hay repositorios descubiertos.</p>"
+        body+="<p>No hay repositorios para estos filtros.</p>"
     body+="</section><p><a href='/github'>Volver a Fuentes GitHub</a></p>"
-    return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem'>"+body+"</body></html>")
+    return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem'>"+body+"</body></html>")
 
 @router.post("/github/exploration/repositories/action")
 def exploration_repository_action(
     action: str = Form(...),
     repositories: list[str] = Form(default=[]),
+    return_page: int = Form(1),
+    return_status: str = Form(""),
+    return_q: str = Form(""),
 ):
     ensure_schema()
     selected = list(dict.fromkeys(
@@ -326,6 +357,29 @@ def exploration_repository_action(
     ))
     if not selected or action not in {"ignore", "process", "restore"}:
         return RedirectResponse("/github/exploration", status_code=303)
+    if action == "catalog":
+        from app import github_catalog
+        github_catalog.ensure_schema()
+        with db() as source:
+            rows = source.execute(
+                "SELECT * FROM github_discovered_repositories WHERE full_name IN ("+
+                ",".join("?" for _ in selected)+")", selected
+            ).fetchall()
+        added = 0
+        with github_catalog.db() as target:
+            for row in rows:
+                target.execute("""
+                    INSERT INTO github_repositories
+                    (full_name,html_url,default_branch,description,license_spdx,license_name,stars,added_at)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(full_name) DO UPDATE SET
+                      html_url=excluded.html_url,default_branch=excluded.default_branch,
+                      description=excluded.description,license_spdx=excluded.license_spdx,
+                      stars=excluded.stars
+                """, (row["full_name"],row["html_url"],row["default_branch"],row["description"],
+                      row["license_spdx"],row["license_spdx"],row["stars"],now()))
+                added += 1
+        return RedirectResponse("/github?imported="+str(added), status_code=303)
     placeholders = ",".join("?" for _ in selected)
     with db() as c:
         if action == "ignore":
@@ -348,7 +402,10 @@ def exploration_repository_action(
                     WHERE full_name IN ({placeholders}) AND status='ignored'""",
                 selected,
             )
-    return RedirectResponse("/github/exploration", status_code=303)
+    destination = "/github/exploration?page="+str(max(1,return_page))
+    if return_status: destination += "&status="+quote(return_status)
+    if return_q: destination += "&q="+quote(return_q)
+    return RedirectResponse(destination, status_code=303)
 
 
 @router.post("/github/exploration/run")
