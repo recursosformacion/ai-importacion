@@ -39,6 +39,10 @@ uvicorn app.main:app --reload --port 9500
 
 Abrir http://127.0.0.1:9500. La base de datos se crea en `data/ai-importacion.sqlite3`. Para cambiar la ruta, definir `AI_IMPORTACION_DB` antes de arrancar.
 
+### Ejecución local en Windows
+
+Se conserva el entorno virtual `.venv` y la configuración SQLite existentes. El arranque habitual sigue siendo `python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 9500`; no es necesario crear otro entorno ni cambiar el puerto de Apache. Consulta [docs/LOCAL-WINDOWS.md](docs/LOCAL-WINDOWS.md) para la configuración del proxy.
+
 ### OCR de PDF escaneados en Windows
 
 El OCR es opcional y se ejecuta en el equipo local. `pip install -r requirements.txt` instala las bibliotecas Python, pero **no instala el ejecutable Tesseract**. Instala Tesseract OCR para Windows, añade la carpeta que contiene `tesseract.exe` al `PATH` y abre una nueva terminal. Comprueba la instalación con `tesseract --version`. Para verificar los idiomas disponibles, ejecuta `tesseract --list-langs`; configura `AI_IMPORTACION_OCR_LANG` solo con idiomas instalados. Si Tesseract no está disponible, la aplicación conserva el estado del PDF y lo indica en la ficha, sin enviar el documento a un servicio externo. El OCR procesa como máximo las primeras cinco páginas por PDF.
@@ -76,6 +80,25 @@ Las pruebas no necesitan una conexión real a Internet Archive; la búsqueda HTT
 Los identificadores de Archive.org son únicos en el catálogo local. Si una nueva búsqueda devuelve el mismo identificador, se actualizan los metadatos y se conserva el primer momento de captación.
 
 
+## Adquisición guiada desde GitHub
+
+La siguiente etapa separa el descubrimiento de repositorios de su comprensión y adquisición. Cada repositorio tendrá un plan revisable, basado en su README, licencia, árbol y manifiestos, ejecutado por un motor común con estrategias reutilizables. La arquitectura y el caso de referencia OpenScore/Lieder están descritos en [docs/GITHUB-ADQUISICION-GUIADA.md](docs/GITHUB-ADQUISICION-GUIADA.md). Esta capacidad está especificada como siguiente bloque de implementación; no debe confundirse con una función ya disponible en la interfaz.
+
+## Captación desde GitHub
+
+La sección web **Fuentes GitHub** permite descubrir repositorios públicos sin conocer previamente su URL:
+
+- La búsqueda automática funciona sin que el usuario escriba formatos ni nombres de repositorios: lanza consultas de descubrimiento para música, partituras, MusicXML, MIDI, LilyPond y notación ABC, entre otras familias.
+- Se puede afinar opcionalmente por compositor, colección, repertorio o tema.
+- Los resultados se deduplican y se pueden ordenar por actividad reciente o estrellas y filtrar por licencia declarada.
+- Revisar descripción, lenguaje, estrellas y licencia antes de añadir un repositorio al catálogo local.
+- Añadir directamente una URL cuando ya se conoce el repositorio.
+- Leer el árbol completo del repositorio e inventariar los archivos por extensión; esta inspección confirma los formatos presentes y no depende de la descripción del proyecto.
+- El inventario contempla formatos de intercambio y notación (MusicXML, MIDI, ABC, LilyPond, MEI, Kern), editores de partituras (MuseScore, Sibelius, Guitar Pro, Capella, Finale y otros), audio (MP3, WAV, FLAC, OGG, M4A, etc.) y partituras escaneadas (PDF e imágenes). Los formatos que aún no tienen analizador se conservan como candidatos descargables.
+- Para evitar repositorios de pruebas o demostraciones, la búsqueda inspecciona el árbol GitHub de hasta 30 repositorios candidatos y sólo presenta los que contienen al menos 11 archivos con extensiones musicales explícitas. Los `.txt` auxiliares se ocultan; los `.xml` se inventarían como candidatos, pero no cuentan para el umbral hasta validar que contienen una partitura MusicXML. PDF, imágenes y ZIP tampoco incrementan el umbral sin inspección de contenido.
+
+La búsqueda inicial descubre candidatos mediante metadatos de repositorios; no es un índice exhaustivo de todos los ficheros públicos de GitHub. La confirmación de archivos musicales se realiza al leer el árbol del repositorio, donde se detectan las extensiones reconocidas con independencia del término usado para descubrirlo. GitHub impone límites de consulta y de tamaño de árbol, por lo que no se puede prometer cobertura absoluta. Los filtros de licencia son criterios de descubrimiento, no una comprobación jurídica: la licencia declarada debe revisarse antes de reutilizar o redistribuir archivos. La búsqueda no descarga archivos ni incorpora contenido a OSAP; esas acciones siguen siendo pasos explícitos posteriores.
+
 ## Ecosistema OSAP
 
 Este repositorio es una herramienta independiente del ecosistema **OSAP — Open Score Acquisition Platform**. Su base de datos es propia y el flujo actual de importación sirve para descubrir y revisar materiales; no escribe directamente en el catálogo de producción.
@@ -87,13 +110,26 @@ Este repositorio es una herramienta independiente del ecosistema **OSAP — Open
 - [AI_osap-support](https://github.com/recursosformacion/AI_osap-support) — soporte, donaciones y membresías.
 - Sitio público: [openmusicrepository.com](https://openmusicrepository.com)
 
+## Exploración persistente y dosificada de GitHub
+
+La ruta web `/github/exploration`, enlazada desde **Fuentes GitHub**, mantiene un proceso de descubrimiento independiente de la búsqueda puntual:
+
+- Inicializa una lista de consultas temáticas y repositorios semilla conocidos (OpenScore, Mutopia y MuseTrainer).
+- Pagina las búsquedas de repositorios de GitHub (100 resultados por página, hasta 10 páginas por consulta) y guarda cada página completada en SQLite.
+- Conserva todos los repositorios descubiertos, incluidos los que no alcanzan el mínimo. El umbral sigue siendo **11 archivos musicales reconocidos**; los repositorios por debajo quedan registrados como no elegibles en vez de desaparecer.
+- Cada ejecución admite un presupuesto de 1 a 20 minutos. Al terminar, las consultas y repositorios ya recibidos permanecen guardados; la siguiente ejecución continúa con las páginas y repositorios pendientes.
+- Guarda metadatos, rama, SHA del último commit y SHA del árbol inspeccionado. Los árboles truncados quedan marcados como parciales y no se presentan como inventarios completos.
+- La búsqueda y la inspección de árboles son operaciones distintas. Los repositorios que cumplen el umbral se muestran en el panel persistente para poder revisarlos y añadirlos al catálogo de trabajo.
+
+**Límite de cobertura:** no existe una API pública que permita enumerar exhaustivamente todos los repositorios de GitHub ni todos sus archivos. La búsqueda de repositorios trabaja sobre consultas textuales, tiene límites de resultados y depende de los límites de API. Esta exploración amplía la cobertura por varias familias de términos, páginas y semillas, pero no debe describirse como un barrido total de GitHub. El presupuesto limita la duración aproximada de cada ejecución; una petición HTTP individual puede terminar unos segundos después del límite.
+
 ## Fuente adicional: GitHub
 
 La aplicación incorpora un lector de repositorios públicos de GitHub, accesible en `/github`.
 
 - Permite registrar un repositorio mediante `propietario/repositorio` o su URL de GitHub.
 - Consulta los metadatos públicos del repositorio y conserva la licencia declarada por GitHub cuando existe. La licencia del repositorio no se considera automáticamente aplicable a cada fichero.
-- Lee el árbol Git recursivo de la rama predeterminada y registra rutas, extensiones musicales, tamaños, SHA de Git y enlaces al fichero original.
+- Lee el árbol Git recursivo de la rama predeterminada y registra rutas relativas, extensiones, tamaños, SHA de Git y enlaces al fichero original. La ficha presenta un índice de carpetas y agrupa los archivos por directorio. Los XML ambiguos se conservan como candidatos y el análisis posterior distingue MusicXML real de XML genérico.
 - Reconoce inicialmente MusicXML/XML, MXL, MIDI/KAR, PDF, Humdrum/Kern, LilyPond, ABC, MEI, MuseScore, Capella, Sibelius, Finale y ZIP.
 - Las lecturas se pueden repetir para actualizar el inventario. GitHub informa cuando el árbol está truncado; en ese caso el resultado se presenta como parcial.
 - La primera versión **sólo inventaría**: no descarga archivos GitHub, no los mezcla con las tablas de Internet Archive y no exporta ni escribe en OSAP.
@@ -108,3 +144,43 @@ La aplicación incorpora un lector de repositorios públicos de GitHub, accesibl
 5. Los ficheros quedan inventariados como candidatos; la descarga selectiva y su conexión con la cola de análisis son una fase posterior.
 
 La disponibilidad pública de un fichero no acredita permiso para redistribuirlo. Antes de descargar o incorporar contenidos hay que revisar la licencia aplicable y las condiciones del proyecto de origen.
+
+## Análisis común de archivos musicales
+
+Los archivos descargados desde Internet Archive y GitHub pueden utilizar el mismo motor estructural de análisis local (`app/analysis_engine.py`). El motor recibe una ruta local y devuelve tipo, estado, resultado y error sin consultar ni modificar tablas de ningún proveedor.
+
+- Internet Archive conserva sus resultados en sus tablas históricas de análisis y mantiene su flujo de sugerencias/revisión.
+- GitHub conserva los resultados en `github_file_analyses`, relacionados con `github_files`; no se crean elementos ficticios de Archive.org.
+- Desde la ficha web de un repositorio GitHub, descarga primero los archivos. Después utiliza **Analizar archivos musicales descargados** para MusicXML/MXL/XML y MIDI/KAR, o **Extraer texto, PDF y OCR de archivos descargados** para PDF, imágenes y formatos de notación. El texto extraído se puede consultar en la propia ficha.
+- Los resultados se vuelven a calcular cuando cambia el SHA-256 del archivo descargado. Si la exploración detecta un SHA Git distinto, el resultado anterior se muestra como desactualizado.
+- El motor compartido `app/content_extraction.py` extrae texto de PDF (hasta 50 páginas), aplica OCR local opcional a PDF escaneados (hasta cinco páginas) e imágenes, y lee texto y notación ABC/LilyPond/MEI/MuseScore/Capella. No envía documentos a servicios externos. Internet Archive y GitHub usan el mismo extractor y conservan resultados separados por proveedor.
+
+Todo el proceso se inicia y consulta desde la interfaz web. No se exportan obras ni archivos a OSAP.
+## Despliegue web con Docker
+
+La aplicación incluye una imagen Docker y un archivo compose.yaml para ejecutarla como servicio web persistente. La base SQLite y las descargas quedan fuera del contenedor, en los directorios locales data/ y downloads/.
+
+```bash
+docker compose up -d --build
+```
+
+La interfaz queda disponible en http://localhost:9500 (o en el puerto configurado mediante AI_IMPORTACION_PORT). Para consultar el arranque:
+
+```bash
+docker compose logs -f ai-importacion
+```
+
+Configura un proxy inverso HTTPS delante del puerto publicado antes de exponerlo a Internet. Define GITHUB_TOKEN sólo si necesitas ampliar los límites de consulta de la API GitHub; nunca lo guardes en el repositorio. El contenedor instala Tesseract y los paquetes de idioma inglés/español. Los datos persistentes no se eliminan al actualizar la imagen.
+
+## Ejecución local en Windows (puerto 9500)
+
+Para arrancar la aplicación en el equipo de desarrollo sin Docker:
+
+- Doble clic en \`scripts/start-local.bat\`, o ejecuta \`.\scripts/start-local.ps1\` desde PowerShell.
+- El lanzador crea el entorno virtual \`.venv\` si hace falta, instala las dependencias y arranca Uvicorn en \`127.0.0.1:9500\`.
+- Abre http://127.0.0.1:9500. Para detenerla, pulsa Ctrl+C en la ventana de consola.
+- SQLite queda en \`data/ai-importacion.sqlite3\` y los archivos descargados en \`downloads/\`.
+
+La escucha en loopback permite que Apache actúe como proxy inverso local sin publicar directamente el servidor Python. Consulta [la guía de ejecución local y configuración de Apache](docs/LOCAL-WINDOWS.md). No copies el proyecto a \`htdocs\`; si Apache permite acceso desde otros equipos, protege el VirtualHost con autenticación.
+
+Docker continúa disponible como alternativa independiente y conserva su puerto predeterminado 9500.

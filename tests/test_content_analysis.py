@@ -623,7 +623,8 @@ def test_musicxml_analysis_retries_failures_and_skips_unchanged_success(tmp_path
             raise ValueError("temporary malformed file")
         return {"title": "Test score", "part_count": 1, "measure_count": 8}
 
-    monkeypatch.setattr(main, "analyze_musicxml", flaky_analysis)
+    import app.analysis_engine as analysis_engine
+    monkeypatch.setattr(analysis_engine, "analyze_musicxml", flaky_analysis)
     with TestClient(main.app) as client:
         seed_item()
         with main.db() as conn:

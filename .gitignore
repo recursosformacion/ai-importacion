@@ -6,3 +6,6 @@ data/
 *.sqlite3
 *.py[cod]
 downloads/
+secrets.txt
+secrets
+secrets_example.txt
