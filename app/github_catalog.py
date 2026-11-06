@@ -199,7 +199,7 @@ async def github_json(url: str) -> dict:
 
 
 @router.get("/github", response_class=HTMLResponse)
-def github_home():
+def github_home(imported: int = 0):
     ensure_schema()
     with db() as conn:
         repositories = conn.execute("""
@@ -231,6 +231,8 @@ def github_home():
     </form>
     <p class="muted">También puedes registrar directamente un repositorio público si ya conoces su dirección. No pegues tokens ni credenciales en este formulario.</p></section>
     <section class="panel"><h2>Repositorios registrados</h2>"""
+    if imported > 0:
+        body += "<p class='panel'>Se han incorporado "+str(min(imported,10000))+" repositorios al catálogo. Pulsa «Leer repositorio» para obtener el inventario de archivos; todavía no se ha descargado ningún fichero.</p>"
     if repositories:
         body += "<table><tr><th>Repositorio</th><th>Licencia declarada</th><th>Archivos musicales</th><th>Última lectura</th><th>Acción</th></tr>"
         for repo in repositories:
