@@ -1,4 +1,5 @@
 from app.github_acquisition import extract_reference_candidates, resolve_manifest_entries
+from app.github_catalog import parse_repository
 
 
 def test_extracts_public_attribution_and_named_project_link():
@@ -80,3 +81,7 @@ def test_manifest_paths_are_resolved_relative_to_manifest_and_checked_against_tr
     assert result["output_paths"] == ["scores/Composer/Set/Song/lc123.mxl"]
     assert result["missing_input_paths"] == []
     assert result["invalid_path_count"] == 2
+
+
+def test_musetrainer_library_page_resolves_to_github_repository():
+    assert parse_repository("https://musetrainer.github.io/library/") == ("musetrainer", "library")
