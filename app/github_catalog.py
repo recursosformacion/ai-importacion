@@ -209,6 +209,7 @@ def github_home():
         """).fetchall()
         recent_files = conn.execute("""
             SELECT f.*,r.full_name FROM github_files f JOIN github_repositories r ON r.id=f.repository_id
+            WHERE f.extension NOT IN ('.txt','.xml')
             ORDER BY f.last_seen_at DESC LIMIT 40
         """).fetchall()
     body = """<h1>Fuentes GitHub</h1>
@@ -602,7 +603,8 @@ def github_repository(repository_id: int, q: str = ""):
         files = conn.execute("""
             SELECT f.*,a.status AS analysis_status,a.sha256 AS analysis_sha256,a.analysis_json,a.error_text AS analysis_error,x.status AS extraction_status,x.sha256 AS extraction_sha256,x.extracted_characters,x.extracted_text,x.error_text AS extraction_error
             FROM github_files f LEFT JOIN github_file_analyses a ON a.github_file_id=f.id LEFT JOIN github_content_extractions x ON x.github_file_id=f.id
-            WHERE f.repository_id=? AND (?='' OR f.path LIKE ?)
+            WHERE f.repository_id=? AND f.extension NOT IN ('.txt','.xml')
+              AND (?='' OR f.path LIKE ?)
             ORDER BY f.path LIMIT 500
         """, (repository_id, q, "%" + q + "%")).fetchall()
         scan = conn.execute("SELECT * FROM github_scans WHERE repository_id=? ORDER BY id DESC LIMIT 1", (repository_id,)).fetchone()
