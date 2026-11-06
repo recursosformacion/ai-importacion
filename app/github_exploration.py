@@ -361,7 +361,8 @@ def exploration_home(page: int = 1, status: str = "", q: str = ""):
    document.getElementById('job-status').textContent=d.job_status;
    document.getElementById('job-progress').textContent='Páginas: '+d.progress_discoveries+' · Repositorios inspeccionados: '+d.progress_inspections;
    document.getElementById('job-message').textContent=d.last_message;
-   if(['completed','rate_limited','error'].includes(d.job_status)) location.reload();
+   const button=document.querySelector("form[action='/github/exploration/run'] button");
+   if(button) button.disabled=['queued','running'].includes(d.job_status);
   }catch(e){}
  }
  setInterval(refresh,3000);
