@@ -148,7 +148,7 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
                     "WHERE full_name LIKE 'example/%'"
                 )
             }
-        assert statuses == {"example/one": "ignored", "example/two": "ignored"}
+        assert statuses == {"example/one": "ignored", "example/two": "ignored", "example/three": "qualified"}
 
         restored = client.post(
             "/github/exploration/repositories/action",
