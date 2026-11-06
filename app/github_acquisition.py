@@ -142,6 +142,60 @@ def extract_reference_candidates(markdown: str, readme_path: str) -> list[dict]:
     return found
 
 
+
+def build_acquisition_plan(readme: str, tree: list[dict]) -> dict:
+    """Infer a reviewable acquisition strategy; never execute README commands."""
+    paths = [
+        str(item.get("path") or "")
+        for item in tree
+        if item.get("type") == "blob" and item.get("path")
+    ]
+    lowered = [path.casefold() for path in paths]
+    readme_lower = readme.casefold()
+    manifest_names = (
+        "manifest", "corpus_conversion", "scores.tsv", "scores.yaml",
+        "scores.yml", "files.tsv", "files.csv", "inventory", "catalog",
+        "catalogue", "index.json",
+    )
+    manifests = [
+        path for path in paths
+        if any(name in path.casefold().rsplit("/", 1)[-1] for name in manifest_names)
+        and path.casefold().endswith((".json", ".csv", ".tsv", ".yaml", ".yml", ".xml"))
+    ]
+    score_dirs = sorted({
+        path.split("/", 1)[0] if "/" in path else ""
+        for path in paths
+        if any(token in path.casefold().split("/") for token in ("scores", "score", "music", "parts", "partitions"))
+    })
+    command_blocks = re.findall(r"```(?:[a-zA-Z0-9_-]+)?\s*\n(.*?)\n```", readme, re.S)
+    documented_commands = [
+        block.strip()[:2000] for block in command_blocks
+        if re.search(r"mscore|musescore|convert|batch|corpus_conversion|download", block, re.I)
+    ][:10]
+    if manifests and any(term in readme_lower for term in ("manifest", "corpus_conversion", "batch convert")):
+        strategy = "manifest"
+        rationale = "La documentación y el árbol apuntan a uno o varios manifiestos que describen los ficheros o sus conversiones."
+    elif score_dirs:
+        strategy = "directory_rules"
+        rationale = "El árbol organiza partituras en carpetas reconocibles; conviene seleccionar por reglas de directorio y preservar rutas."
+    else:
+        strategy = "github_tree"
+        rationale = "No se ha identificado todavía un manifiesto o una estructura musical suficientemente explícita; se propone adquirir desde el árbol GitHub."
+    extension_counts = {}
+    for path in paths:
+        extension = os.path.splitext(path)[1].lower() or "(sin extensión)"
+        extension_counts[extension] = extension_counts.get(extension, 0) + 1
+    return {
+        "strategy_type": strategy,
+        "rationale": rationale,
+        "manifest_paths": manifests[:100],
+        "score_directories": [value for value in score_dirs if value][:100],
+        "documented_commands": documented_commands,
+        "file_count": len(paths),
+        "extension_counts": dict(sorted(extension_counts.items())),
+        "requires_review": True,
+    }
+
 def page(title: str, body: str) -> HTMLResponse:
     style = """
     <style>
@@ -205,6 +259,23 @@ def acquisition_page(repository_id: int):
             for folder, count in sorted(folders.items()):
                 body += "<div><code>" + esc(folder) + "</code><div class='muted'>" + str(count) + " archivos</div></div>"
             body += "</div>"
+        try:
+            plan = json.loads(acquisition["plan_json"] or "{}")
+        except json.JSONDecodeError:
+            plan = {}
+        if plan:
+            body += "<h3>Plan preliminar · " + esc(plan.get("strategy_type", acquisition["strategy_type"])) + "</h3>"
+            body += "<p>" + esc(plan.get("rationale", "")) + "</p>"
+            body += "<p class='muted'>" + str(plan.get("file_count", 0)) + " archivos en el árbol · revisión humana obligatoria</p>"
+            if plan.get("manifest_paths"):
+                body += "<p><b>Manifiestos candidatos:</b></p><ul>" + "".join("<li><code>" + esc(path) + "</code></li>" for path in plan["manifest_paths"]) + "</ul>"
+            if plan.get("score_directories"):
+                body += "<p><b>Carpetas de partituras:</b> " + esc(", ".join(plan["score_directories"])) + "</p>"
+            if plan.get("documented_commands"):
+                body += "<details><summary>Comandos documentados (sólo informativos; no ejecutados)</summary>"
+                for command in plan["documented_commands"]:
+                    body += "<pre>" + esc(command) + "</pre>"
+                body += "</details>"
         if acquisition["readme_content"]:
             body += "<details><summary>Ver README conservado</summary><pre>" + esc(acquisition["readme_content"]) + "</pre></details>"
     body += "</section>"
@@ -256,19 +327,22 @@ async def inspect_repository(repository_id: int):
             raise ValueError("El árbol GitHub no tiene el formato esperado.")
         tree = tree[:MAX_TREE_ENTRIES]
         references = extract_reference_candidates(readme_content, readme_path)
+        plan = build_acquisition_plan(readme_content, tree)
         stamp = now()
         with db() as conn:
             conn.execute("""
                 INSERT INTO github_repository_acquisition
                 (repository_id,readme_path,readme_sha,readme_content,tree_json,strategy_type,plan_json,inspection_status,inspection_error,inspected_at,updated_at)
-                VALUES(?,?,?,?,?,'github_tree','{}','completed',NULL,?,?)
+                VALUES(?,?,?,?,?,?,?,'completed',NULL,?,?)
                 ON CONFLICT(repository_id) DO UPDATE SET
                   readme_path=excluded.readme_path,readme_sha=excluded.readme_sha,
                   readme_content=excluded.readme_content,tree_json=excluded.tree_json,
+                  strategy_type=excluded.strategy_type,plan_json=excluded.plan_json,
                   inspection_status='completed',inspection_error=NULL,
                   inspected_at=excluded.inspected_at,updated_at=excluded.updated_at
             """, (repository_id, readme_path, str(readme.get("sha") or ""),
-                  readme_content, json.dumps(tree, ensure_ascii=False), stamp, stamp))
+                  readme_content, json.dumps(tree, ensure_ascii=False), plan["strategy_type"],
+                  json.dumps(plan, ensure_ascii=False), stamp, stamp))
             for ref in references:
                 conn.execute("""
                     INSERT INTO github_repository_references
