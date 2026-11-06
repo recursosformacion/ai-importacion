@@ -20,6 +20,22 @@ def test_extracts_public_attribution_and_named_project_link():
     assert reference["required"] == 1
 
 
+def test_extracts_spanish_attribution_entity_and_url():
+    readme = (
+        "Les pedimos amablemente que, en cualquier uso público de estas partituras, "
+        "mencionen a OpenScore String Quartets y proporcionen un enlace a "
+        "[OSSQ o a este repositorio.](https://musescore.com/openscore-string-quartets)"
+    )
+
+    references = extract_reference_candidates(readme, "README.md")
+
+    assert len(references) == 1
+    assert references[0]["label"] == "OpenScore String Quartets"
+    assert references[0]["url"] == "https://musescore.com/openscore-string-quartets"
+    assert "uso público" in references[0]["instruction_text"].lower()
+    assert references[0]["required"] == 1
+
+
 def test_does_not_treat_unrelated_readme_links_as_attribution():
     readme = (
         "## Installation\n\n"
