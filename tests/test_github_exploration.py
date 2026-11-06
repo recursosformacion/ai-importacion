@@ -3,7 +3,23 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 import app.github_exploration as exploration
+
+
+def exploration_test_client(*, include_catalog: bool = False) -> TestClient:
+    """Build a lightweight app without app.main's database init and workers."""
+    app = FastAPI()
+    app.include_router(exploration.router)
+    if include_catalog:
+        # Keep the same order as production: static exploration routes first,
+        # then the /github/{repository_id} routes.
+        from app.github_catalog import router as github_catalog_router
+
+        app.include_router(github_catalog_router)
+    return TestClient(app)
 
 
 def test_exploration_schema_persists_queries_and_seed_repositories(tmp_path, monkeypatch):
@@ -33,16 +49,12 @@ def test_musical_threshold_is_not_lowered():
 
 
 def test_exploration_static_route_is_not_captured_by_repository_id(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-    import app.main as main
-
     monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "routes.sqlite3"))
-    with TestClient(main.app) as client:
+    with exploration_test_client(include_catalog=True) as client:
         response = client.get("/github/exploration")
 
     assert response.status_code == 200
     assert "Exploración persistente de GitHub" in response.text
-
 
 
 def test_inspection_skips_error_repositories_instead_of_retrying_them_forever(tmp_path, monkeypatch):
@@ -93,13 +105,9 @@ def test_inspection_skips_error_repositories_instead_of_retrying_them_forever(tm
     }
 
 
-
 def test_exploration_budget_has_no_arbitrary_twenty_minute_cap(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-    import app.main as main
-
     monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "budget.sqlite3"))
-    with TestClient(main.app) as client:
+    with exploration_test_client() as client:
         response = client.get("/github/exploration")
 
     assert response.status_code == 200
@@ -107,11 +115,7 @@ def test_exploration_budget_has_no_arbitrary_twenty_minute_cap(tmp_path, monkeyp
     assert "max='20'" not in response.text
 
 
-
 def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-    import app.main as main
-
     monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "bulk-actions.sqlite3"))
     exploration.ensure_schema()
     with exploration.db() as conn:
@@ -126,10 +130,10 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
                VALUES('example/two','https://github.com/example/two','test','2026-01-02','qualified')"""
         )
 
-    with TestClient(main.app) as client:
+    with exploration_test_client() as client:
         ignored = client.post(
             "/github/exploration/repositories/action",
-            data=[("action", "ignore"), ("repositories", "example/one"), ("repositories", "example/two")],
+            data={"action": "ignore", "repositories": ["example/one", "example/two"]},
             follow_redirects=False,
         )
         assert ignored.status_code == 303
@@ -145,7 +149,7 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
 
         restored = client.post(
             "/github/exploration/repositories/action",
-            data=[("action", "restore"), ("repositories", "example/one")],
+            data={"action": "restore", "repositories": ["example/one"]},
             follow_redirects=False,
         )
         assert restored.status_code == 303
@@ -157,7 +161,7 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
 
         processed = client.post(
             "/github/exploration/repositories/action",
-            data=[("action", "process"), ("repositories", "example/two")],
+            data={"action": "process", "repositories": ["example/two"]},
             follow_redirects=False,
         )
         assert processed.status_code == 303
