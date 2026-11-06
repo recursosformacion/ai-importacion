@@ -297,11 +297,13 @@ from app.analysis_engine import analyze_local_music_file
 from app.content_extraction import extract_local_content
 app.include_router(file_catalog_router)
 
-from app.github_catalog import router as github_catalog_router
-app.include_router(github_catalog_router)
-
+# Las rutas estáticas de exploración deben registrarse antes de
+# /github/{repository_id}, que de otro modo captura "exploration".
 from app.github_exploration import router as github_exploration_router
 app.include_router(github_exploration_router)
+
+from app.github_catalog import router as github_catalog_router
+app.include_router(github_catalog_router)
 
 
 def query_for(text: str, scope: str = "all") -> str:
