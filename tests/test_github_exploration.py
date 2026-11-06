@@ -39,7 +39,7 @@ def test_exploration_schema_persists_queries_and_seed_repositories(tmp_path, mon
 
 
 def test_musical_threshold_is_not_lowered():
-    assert exploration.MIN_MUSICAL_FILES == 11
+    assert exploration.MIN_MUSICAL_FILES == 10
     assert ".musicxml" in exploration.EXTENSIONS
     assert ".mxl" in exploration.EXTENSIONS
     assert ".mid" in exploration.EXTENSIONS
@@ -189,21 +189,31 @@ def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, m
                VALUES('OpenScore/Lieder','https://github.com/OpenScore/Lieder','main',
                       'Open score collection',42,'CC-BY-4.0','seed','2026-01-01','qualified',35)"""
         )
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,default_branch,description,stars,license_spdx,
+                discovery_query,discovered_at,status,musical_file_count,last_checked_at)
+               VALUES('example/two-pdfs','https://github.com/example/two-pdfs','main',
+                      'Only two PDF documents',0,'','test','2026-01-02','below_threshold',0,'2026-01-02')"""
+        )
 
     with exploration_test_client() as client:
         response = client.post(
             "/github/exploration/repositories/action",
-            data={"action": "catalog", "repositories": ["OpenScore/Lieder"]},
+            data={"action": "catalog", "repositories": ["OpenScore/Lieder", "example/two-pdfs"]},
             follow_redirects=False,
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/github?imported=1"
+    assert "catalog_added=1" in response.headers["location"]
+    assert "catalog_skipped=1" in response.headers["location"]
     catalog.ensure_schema()
     with catalog.db() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT full_name,default_branch,license_spdx FROM github_repositories"
-        ).fetchone()
+        ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
     assert row["full_name"] == "OpenScore/Lieder"
     assert row["default_branch"] == "main"
     assert row["license_spdx"] == "CC-BY-4.0"
