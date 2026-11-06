@@ -185,9 +185,9 @@ def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, m
         conn.execute(
             """INSERT INTO github_discovered_repositories
                (full_name,html_url,default_branch,description,stars,license_spdx,
-                discovery_query,discovered_at,status,musical_file_count)
+                discovery_query,discovered_at,status,musical_file_count,last_checked_at)
                VALUES('OpenScore/Lieder','https://github.com/OpenScore/Lieder','main',
-                      'Open score collection',42,'CC-BY-4.0','seed','2026-01-01','qualified',35)"""
+                      'Open score collection',42,'CC-BY-4.0','seed','2026-01-01','qualified',35,'2026-01-01')"""
         )
         conn.execute(
             """INSERT INTO github_discovered_repositories
