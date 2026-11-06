@@ -613,6 +613,7 @@ def github_repository(repository_id: int, q: str = ""):
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
+    body += "<p><a href='/github/" + str(repository_id) + "/acquisition'>Documentación, referencias y plan de adquisición del repositorio</a></p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/extract'><button>Extraer texto, PDF y OCR de archivos descargados</button></form>"
     body += "<p class='muted'>Extracción local de PDF, imágenes y formatos de notación. Los resultados permanecen separados de Internet Archive.</p>"
