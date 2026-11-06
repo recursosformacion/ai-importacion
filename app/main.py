@@ -271,15 +271,21 @@ def init_db():
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    from app.github_exploration import resume_exploration_worker, stop_exploration_worker
+    exploration_worker = resume_exploration_worker()
     workers = [
         asyncio.create_task(capture_job_queue()),
         asyncio.create_task(content_analysis_job_queue()),
     ]
+    if exploration_worker is not None:
+        workers.append(exploration_worker)
     try:
         yield
     finally:
+        await stop_exploration_worker()
         for worker in workers:
-            worker.cancel()
+            if not worker.done():
+                worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
 
 
