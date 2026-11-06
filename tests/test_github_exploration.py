@@ -220,3 +220,39 @@ def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, m
     assert row["default_branch"] == "main"
     assert row["license_spdx"] == "CC-BY-4.0"
 
+
+
+def test_exploration_table_shows_count_and_only_lists_repositories_at_threshold(tmp_path, monkeypatch):
+    monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "visible-counts.sqlite3"))
+    exploration.ensure_schema()
+    with exploration.db() as conn:
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,description,discovery_query,discovered_at,status,
+                musical_file_count,last_checked_at)
+               VALUES('example/valid','https://github.com/example/valid','Valid repo',
+                      'test','2026-01-03','qualified',17,'2026-01-03')"""
+        )
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,discovery_query,discovered_at,status,
+                musical_file_count,last_checked_at)
+               VALUES('example/too-small','https://github.com/example/too-small',
+                      'test','2026-01-02','below_threshold',9,'2026-01-02')"""
+        )
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,discovery_query,discovered_at,status)
+               VALUES('example/not-inspected','https://github.com/example/not-inspected',
+                      'test','2026-01-01','pending')"""
+        )
+
+    with exploration_test_client() as client:
+        response = client.get("/github/exploration")
+
+    assert response.status_code == 200
+    assert "example/valid" in response.text
+    assert "<b>17</b>" in response.text
+    assert "example/too-small" not in response.text
+    assert "example/not-inspected" not in response.text
+    assert "Sin inspeccionar" not in response.text
