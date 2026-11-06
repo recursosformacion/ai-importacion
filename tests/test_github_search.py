@@ -110,7 +110,7 @@ def test_github_inventory_recognizes_multiple_score_and_audio_formats():
     }
     assert expected.issubset(github_catalog.MUSIC_EXTENSIONS)
     assert ".txt" not in github_catalog.MUSIC_EXTENSIONS
-    assert ".xml" not in github_catalog.MUSIC_EXTENSIONS
+    assert ".xml" in github_catalog.MUSIC_EXTENSIONS
     assert ".txt" not in github_catalog.MUSICAL_PIECE_EXTENSIONS
     assert ".xml" not in github_catalog.MUSICAL_PIECE_EXTENSIONS
     assert github_catalog.MIN_MUSICAL_PIECES == 11
