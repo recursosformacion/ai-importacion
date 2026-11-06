@@ -27,7 +27,7 @@ def test_github_extract_route_persists_text_and_renders_it(tmp_path, monkeypatch
                     download_status,local_path,sha256,downloaded_bytes)
                    VALUES(?,?,?,?,?,?,?,?,?,'downloaded',?,?,?)""",
                 (repository_id, "Ave-verum.abc", "Ave-verum.abc", ".abc", source.stat().st_size,
-                 "git-blob-sha", "https://github.com/test-owner/extract-repo/blob/main/README.txt",
+                 "git-blob-sha", "https://github.com/test-owner/extract-repo/blob/main/Ave-verum.abc",
                  main.now(), main.now(), str(source), "text-content-sha", source.stat().st_size),
             )
 
