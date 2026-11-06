@@ -342,7 +342,7 @@ async def github_search(q: str = "", sort: str = "updated", license: str = ""):
     if inspection_errors:
         body += "<p class='muted'>No se pudieron inspeccionar algunos repositorios: " + esc("; ".join(inspection_errors[:3])) + "</p>"
     if results:
-        body += "<table><tr><th>Repositorio</th><th>Piezas musicales</th><th>Lenguaje</th><th>Estrellas</th><th>Licencia declarada</th><th>Actualizado</th><th></th></tr>"
+        body += "<table><tr><th>Repositorio</th><th>Archivos musicales reconocidos</th><th>Lenguaje</th><th>Estrellas</th><th>Licencia declarada</th><th>Actualizado</th><th></th></tr>"
         for item in results:
             full_name = item.get("full_name") or ""
             license_data = item.get("license") or {}
