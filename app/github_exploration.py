@@ -285,8 +285,11 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     status = status if status in {"pending","qualified","below_threshold","partial","error","ignored"} else ""
     q = q.strip()[:120]
     page_size = 100
-    where = []
-    params = []
+    # La tabla solo presenta repositorios cuyo recuento ya alcanza el mínimo.
+    # Los candidatos aún no inspeccionados y los que quedan por debajo se
+    # conservan en la base de datos, pero no se ofrecen como repositorios válidos.
+    where = ["musical_file_count >= ?"]
+    params = [MIN_MUSICAL_FILES]
     if status:
         where.append("status=?")
         params.append(status)
@@ -350,9 +353,9 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
             detail=("<div class='muted'>"+esc(r["last_error"])+"</div>") if r["last_error"] else ""
             body+="<tr><td><input class='repo-select' type='checkbox' name='repositories' value='"+esc(r["full_name"])+"'></td>"
             body+="<td><a href='https://github.com/"+esc(r["full_name"])+"'>"+esc(r["full_name"])+"</a><div class='muted'>"+esc(r["description"])+"</div>"+detail+"</td>"
-            count_cell = "Sin inspeccionar" if not r["last_checked_at"] else str(r["musical_file_count"])
-            admission = ("Pendiente de inspección" if not r["last_checked_at"] else
-                         ("Sí" if r["status"] in ("qualified","partial") and r["musical_file_count"] >= MIN_MUSICAL_FILES else "No: menos de "+str(MIN_MUSICAL_FILES) if r["musical_file_count"] < MIN_MUSICAL_FILES else "No disponible"))
+            count_cell = str(r["musical_file_count"])
+            admission = ("Sí" if r["status"] in ("qualified","partial") else
+                         "Pendiente de reinspección" if r["status"] == "pending" else "No disponible")
             body+="<td>"+esc(status_label)+"</td><td><b>"+esc(count_cell)+"</b></td><td>"+esc(admission)+"</td>"
             body+="<td>"+esc((r["updated_at"] or "")[:10])+"</td><td>"+esc(r["last_checked_at"] or "—")+"</td></tr>"
         body+="</table></form>"
