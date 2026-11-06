@@ -57,7 +57,7 @@ def load_github_token():
 
 
 TOKEN = load_github_token()
-MIN_MUSICAL_FILES = 11
+MIN_MUSICAL_FILES = 10
 PER_PAGE = 100
 MAX_SEARCH_PAGES = 10
 QUERIES = [
@@ -318,7 +318,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = ""):
         body+="<p><b>Reanudación disponible a partir de:</b> "+esc(state["resume_after"])+" (UTC)</p>"
     body+="</section>"
     body+="<section class='panel'><h2>Repositorios descubiertos</h2>"
-    body+="<p>Se muestran "+str(len(repositories))+" de "+str(filtered_total)+" resultados filtrados. La paginación permite recorrer todo el catálogo.</p>"
+    body+="<p>Se muestran "+str(len(repositories))+" de "+str(filtered_total)+" resultados filtrados. La paginación permite recorrer todo el catálogo. Solo se incorporan repositorios con al menos "+str(MIN_MUSICAL_FILES)+" archivos musicales detectados; los PDF y documentos auxiliares no cuentan como archivos musicales.</p>"
     body+="<form method='get' action='/github/exploration'><label>Buscar <input name='q' value='"+esc(q)+"' placeholder='Propietario, repositorio o descripción'></label> "
     body+="<label>Estado <select name='status'><option value=''>Todos</option>"
     for value,label in (("pending","Pendiente"),("qualified","Cumple mínimo"),("below_threshold","Por debajo del mínimo"),("partial","Árbol parcial"),("error","Error"),("ignored","Ignorado")):
@@ -332,13 +332,16 @@ def exploration_home(page: int = 1, status: str = "", q: str = ""):
         body+="<button name='action' value='process'>Volver a inspeccionar</button> "
         body+="<button name='action' value='restore'>Restaurar</button> "
         body+="<button name='action' value='catalog'>Incorporar al catálogo</button></p>"
-        body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales</th><th>Actualizado</th><th>Comprobado</th></tr>"
+        body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales detectados (mín. "+str(MIN_MUSICAL_FILES)+")</th><th>Admisión al catálogo</th><th>Actualizado</th><th>Comprobado</th></tr>"
         for r in repositories:
             status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
             detail=("<div class='muted'>"+esc(r["last_error"])+"</div>") if r["last_error"] else ""
             body+="<tr><td><input class='repo-select' type='checkbox' name='repositories' value='"+esc(r["full_name"])+"'></td>"
             body+="<td><a href='https://github.com/"+esc(r["full_name"])+"'>"+esc(r["full_name"])+"</a><div class='muted'>"+esc(r["description"])+"</div>"+detail+"</td>"
-            body+="<td>"+esc(status_label)+"</td><td>"+str(r["musical_file_count"])+"</td>"
+            count_cell = "Sin inspeccionar" if not r["last_checked_at"] else str(r["musical_file_count"])
+            admission = ("Pendiente de inspección" if not r["last_checked_at"] else
+                         ("Sí" if r["status"] in ("qualified","partial") and r["musical_file_count"] >= MIN_MUSICAL_FILES else "No: menos de "+str(MIN_MUSICAL_FILES) if r["musical_file_count"] < MIN_MUSICAL_FILES else "No disponible"))
+            body+="<td>"+esc(status_label)+"</td><td><b>"+esc(count_cell)+"</b></td><td>"+esc(admission)+"</td>"
             body+="<td>"+esc((r["updated_at"] or "")[:10])+"</td><td>"+esc(r["last_checked_at"] or "—")+"</td></tr>"
         body+="</table></form>"
         pages=max(1,(filtered_total+page_size-1)//page_size)
@@ -393,9 +396,15 @@ def exploration_repository_action(
                 "SELECT * FROM github_discovered_repositories WHERE full_name IN ("+
                 ",".join("?" for _ in selected)+")", selected
             ).fetchall()
+        eligible = [
+            row for row in rows
+            if row["last_checked_at"]
+            and row["status"] in ("qualified", "partial")
+            and int(row["musical_file_count"] or 0) >= MIN_MUSICAL_FILES
+        ]
         added = 0
         with github_catalog.db() as target:
-            for row in rows:
+            for row in eligible:
                 target.execute("""
                     INSERT INTO github_repositories
                     (full_name,html_url,default_branch,description,license_spdx,license_name,stars,added_at)
@@ -407,7 +416,11 @@ def exploration_repository_action(
                 """, (row["full_name"],row["html_url"],row["default_branch"],row["description"],
                       row["license_spdx"],row["license_spdx"],row["stars"],now()))
                 added += 1
-        return RedirectResponse("/github?imported="+str(added), status_code=303)
+        skipped = len(rows) - len(eligible)
+        return RedirectResponse(
+            "/github/exploration?catalog_added="+str(added)+"&catalog_skipped="+str(skipped),
+            status_code=303,
+        )
     placeholders = ",".join("?" for _ in selected)
     with db() as c:
         if action == "ignore":
