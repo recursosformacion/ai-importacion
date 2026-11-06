@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -111,7 +109,7 @@ def test_exploration_budget_has_no_arbitrary_twenty_minute_cap(tmp_path, monkeyp
         response = client.get("/github/exploration")
 
     assert response.status_code == 200
-    assert 'name="minutes" min=\'1\' value=\'60\'' in response.text
+    assert "name='minutes' min='1' value='60'" in response.text
     assert "max='20'" not in response.text
 
 
@@ -128,6 +126,11 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
             """INSERT INTO github_discovered_repositories
                (full_name,html_url,discovery_query,discovered_at,status)
                VALUES('example/two','https://github.com/example/two','test','2026-01-02','qualified')"""
+        )
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,discovery_query,discovered_at,status)
+               VALUES('example/three','https://github.com/example/three','test','2026-01-03','qualified')"""
         )
 
     with exploration_test_client() as client:
@@ -161,12 +164,12 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
 
         processed = client.post(
             "/github/exploration/repositories/action",
-            data={"action": "process", "repositories": ["example/two"]},
+            data={"action": "process", "repositories": ["example/three"]},
             follow_redirects=False,
         )
         assert processed.status_code == 303
         with exploration.db() as conn:
             status = conn.execute(
-                "SELECT status FROM github_discovered_repositories WHERE full_name='example/two'"
+                "SELECT status FROM github_discovered_repositories WHERE full_name='example/three'"
             ).fetchone()["status"]
         assert status == "pending"
