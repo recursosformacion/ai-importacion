@@ -91,7 +91,7 @@ La sección web **Fuentes GitHub** permite descubrir repositorios públicos sin 
 - Añadir directamente una URL cuando ya se conoce el repositorio.
 - Leer el árbol completo del repositorio e inventariar los archivos por extensión; esta inspección confirma los formatos presentes y no depende de la descripción del proyecto.
 - El inventario contempla formatos de intercambio y notación (MusicXML, MIDI, ABC, LilyPond, MEI, Kern), editores de partituras (MuseScore, Sibelius, Guitar Pro, Capella, Finale y otros), audio (MP3, WAV, FLAC, OGG, M4A, etc.) y partituras escaneadas (PDF e imágenes). Los formatos que aún no tienen analizador se conservan como candidatos descargables.
-- Para evitar repositorios de pruebas o demostraciones, la búsqueda inspecciona el árbol GitHub de hasta 30 repositorios candidatos y sólo presenta los que contienen al menos 11 archivos con extensiones musicales explícitas. Los archivos genéricos `.txt` y `.xml` no se muestran ni cuentan; PDF, imágenes y ZIP tampoco incrementan el umbral sin inspección de contenido.
+- Para evitar repositorios de pruebas o demostraciones, la búsqueda inspecciona el árbol GitHub de hasta 30 repositorios candidatos y sólo presenta los que contienen al menos 11 archivos con extensiones musicales explícitas. Los `.txt` auxiliares se ocultan; los `.xml` se inventarían como candidatos, pero no cuentan para el umbral hasta validar que contienen una partitura MusicXML. PDF, imágenes y ZIP tampoco incrementan el umbral sin inspección de contenido.
 
 La búsqueda inicial descubre candidatos mediante metadatos de repositorios; no es un índice exhaustivo de todos los ficheros públicos de GitHub. La confirmación de archivos musicales se realiza al leer el árbol del repositorio, donde se detectan las extensiones reconocidas con independencia del término usado para descubrirlo. GitHub impone límites de consulta y de tamaño de árbol, por lo que no se puede prometer cobertura absoluta. Los filtros de licencia son criterios de descubrimiento, no una comprobación jurídica: la licencia declarada debe revisarse antes de reutilizar o redistribuir archivos. La búsqueda no descarga archivos ni incorpora contenido a OSAP; esas acciones siguen siendo pasos explícitos posteriores.
 
@@ -112,7 +112,7 @@ La aplicación incorpora un lector de repositorios públicos de GitHub, accesibl
 
 - Permite registrar un repositorio mediante `propietario/repositorio` o su URL de GitHub.
 - Consulta los metadatos públicos del repositorio y conserva la licencia declarada por GitHub cuando existe. La licencia del repositorio no se considera automáticamente aplicable a cada fichero.
-- Lee el árbol Git recursivo de la rama predeterminada y registra rutas, extensiones musicales, tamaños, SHA de Git y enlaces al fichero original.
+- Lee el árbol Git recursivo de la rama predeterminada y registra rutas relativas, extensiones, tamaños, SHA de Git y enlaces al fichero original. La ficha presenta un índice de carpetas y agrupa los archivos por directorio. Los XML ambiguos se conservan como candidatos y el análisis posterior distingue MusicXML real de XML genérico.
 - Reconoce inicialmente MusicXML/XML, MXL, MIDI/KAR, PDF, Humdrum/Kern, LilyPond, ABC, MEI, MuseScore, Capella, Sibelius, Finale y ZIP.
 - Las lecturas se pueden repetir para actualizar el inventario. GitHub informa cuando el árbol está truncado; en ese caso el resultado se presenta como parcial.
 - La primera versión **sólo inventaría**: no descarga archivos GitHub, no los mezcla con las tablas de Internet Archive y no exporta ni escribe en OSAP.
