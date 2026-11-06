@@ -53,6 +53,8 @@ def test_exploration_static_route_is_not_captured_by_repository_id(tmp_path, mon
 
     assert response.status_code == 200
     assert "Exploración persistente de GitHub" in response.text
+    assert "Archivos musicales detectados" in response.text
+    assert "Admisión al catálogo" in response.text
 
 
 def test_inspection_skips_error_repositories_instead_of_retrying_them_forever(tmp_path, monkeypatch):
