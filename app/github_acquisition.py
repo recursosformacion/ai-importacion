@@ -118,7 +118,7 @@ def extract_reference_candidates(markdown: str, readme_path: str) -> list[dict]:
             continue
         links = LINK_RE.findall(paragraph)
         project_match = re.search(
-            r"(?:mention|mencion\w*)\s+(?:a\s+)?([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*){1,5})",
+            r"(?:mention|mencion\w*|credit|cite|acknowledg\w*)\s+(?:a\s+)?([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ-]*){1,5})",
             paragraph,
         )
         if links:
