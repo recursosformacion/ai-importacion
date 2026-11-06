@@ -6,7 +6,7 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
@@ -172,12 +172,20 @@ def github_home():
     body = """<h1>Fuentes GitHub</h1>
     <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
     Puedes descargar candidatos para su análisis local. La procedencia GitHub se conserva y no se incorporan automáticamente a OSAP.</p>
-    <section class="panel"><h2>Añadir repositorio</h2>
+    <section class="panel"><h2>Buscar repositorios musicales</h2>
+    <form method="get" action="/github/search">
+      <input name="q" type="search" required style="min-width:min(32rem,100%)" placeholder="musicxml, sheet music, choral scores, MIDI..." />
+      <select name="sort"><option value="updated">Actualizados recientemente</option><option value="stars">Más estrellas</option></select>
+      <select name="license"><option value="">Cualquier licencia</option><option value="mit">MIT</option><option value="cc0-1.0">CC0 1.0</option><option value="cc-by-4.0">CC BY 4.0</option><option value="cc-by-sa-4.0">CC BY-SA 4.0</option><option value="gpl-3.0">GPL 3.0</option></select>
+      <button>Buscar en GitHub</button>
+    </form>
+    <p class="muted">Busca por tema, formato, compositor, colección o tipo de repertorio. GitHub devuelve repositorios cuyos nombres o descripciones coinciden; después podremos inventariar sus archivos.</p></section>
+    <section class="panel"><h2>Añadir un repositorio conocido</h2>
     <form method="post" action="/github/add">
       <input name="repository" type="text" required placeholder="OpenScore/Lieder o https://github.com/OpenScore/Lieder">
-      <button>Añadir y consultar</button>
+      <button>Añadir repositorio</button>
     </form>
-    <p class="muted">Se admiten repositorios públicos de GitHub. No pegues tokens ni credenciales en este formulario.</p></section>
+    <p class="muted">También puedes registrar directamente un repositorio público si ya conoces su dirección. No pegues tokens ni credenciales en este formulario.</p></section>
     <section class="panel"><h2>Repositorios registrados</h2>"""
     if repositories:
         body += "<table><tr><th>Repositorio</th><th>Licencia declarada</th><th>Archivos musicales</th><th>Última lectura</th><th>Acción</th></tr>"
@@ -204,6 +212,58 @@ def github_home():
         body += "<p class='muted'>Todavía no se han inventariado archivos.</p>"
     body += "</section><p><a href='/'>Volver al inicio</a> · <a href='/items'>Catálogo general</a></p>"
     return HTMLResponse(_page("Fuentes GitHub", body))
+
+
+@router.get("/github/search", response_class=HTMLResponse)
+async def github_search(q: str, sort: str = "updated", license: str = ""):
+    """Search GitHub repositories by topic/name/description before adding them."""
+    ensure_schema()
+    query = q.strip()
+    if not query:
+        return RedirectResponse("/github", status_code=303)
+    if sort not in {"updated", "stars"}:
+        sort = "updated"
+    search_terms = query
+    if license:
+        allowed_licenses = {"mit", "cc0-1.0", "cc-by-4.0", "cc-by-sa-4.0", "gpl-3.0"}
+        if license not in allowed_licenses:
+            license = ""
+        else:
+            search_terms += " license:" + license
+    params = urlencode({"q": search_terms + " fork:false", "sort": sort,
+                         "order": "desc", "per_page": 30})
+    try:
+        payload = await github_json(f"{API}/search/repositories?{params}")
+    except (ValueError, httpx.HTTPError) as exc:
+        body = "<h1>Error en la búsqueda de GitHub</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver</a></p>"
+        return HTMLResponse(_page("Búsqueda GitHub", body), status_code=502)
+
+    results = payload.get("items") or []
+    total = int(payload.get("total_count") or 0)
+    body = "<h1>Resultados de GitHub</h1>"
+    body += "<form method='get' action='/github/search'><input name='q' type='search' required value='" + esc(query) + "' />"
+    body += "<select name='sort'><option value='updated'" + (" selected" if sort == "updated" else "") + ">Actualizados recientemente</option>"
+    body += "<option value='stars'" + (" selected" if sort == "stars" else "") + ">Más estrellas</option></select>"
+    body += "<select name='license'><option value=''>Cualquier licencia</option>"
+    for value, label in (("mit","MIT"),("cc0-1.0","CC0 1.0"),("cc-by-4.0","CC BY 4.0"),("cc-by-sa-4.0","CC BY-SA 4.0"),("gpl-3.0","GPL 3.0")):
+        body += "<option value='" + value + "'" + (" selected" if license == value else "") + ">" + label + "</option>"
+    body += "</select><button>Buscar</button></form>"
+    body += "<p class='muted'>GitHub indica " + str(total) + " resultados; se muestran como máximo 30. Orden: " + ("actualización" if sort == "updated" else "estrellas") + ".</p>"
+    if results:
+        body += "<table><tr><th>Repositorio</th><th>Lenguaje</th><th>Estrellas</th><th>Licencia declarada</th><th>Actualizado</th><th></th></tr>"
+        for item in results:
+            full_name = item.get("full_name") or ""
+            license_data = item.get("license") or {}
+            license_name = license_data.get("spdx_id") or license_data.get("name") or "No declarada"
+            body += "<tr><td><a href='" + esc(item.get("html_url") or "") + "'><b>" + esc(full_name) + "</b></a><div class='muted'>" + esc(item.get("description") or "") + "</div></td>"
+            body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>"
+            body += "<td>" + esc(license_name) + "</td><td>" + esc((item.get("updated_at") or "")[:10]) + "</td>"
+            body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir</button></form></td></tr>"
+        body += "</table>"
+    else:
+        body += "<p>No se han encontrado repositorios para esta búsqueda. Prueba con otros términos o elimina el filtro de licencia.</p>"
+    body += "<p><a href='/github'>Volver a Fuentes GitHub</a></p>"
+    return HTMLResponse(_page("Búsqueda GitHub", body))
 
 
 @router.post("/github/add")
