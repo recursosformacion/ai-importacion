@@ -272,7 +272,8 @@ async def inspect_one(client):
         return True,f"{name}: error: {str(exc)[:160]}"
 
 @router.get("/github/exploration",response_class=HTMLResponse)
-def exploration_home(page: int = 1, status: str = "", q: str = ""):
+def exploration_home(page: int = 1, status: str = "", q: str = "",
+                    catalog_added: int = 0, catalog_skipped: int = 0):
     ensure_schema()
     page = max(1, int(page or 1))
     status = status if status in {"pending","qualified","below_threshold","partial","error","ignored"} else ""
@@ -301,6 +302,11 @@ def exploration_home(page: int = 1, status: str = "", q: str = ""):
             discovered_at DESC LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
+    if catalog_added or catalog_skipped:
+        body+="<section class='panel'><b>Incorporación al catálogo:</b> "+str(catalog_added)+" repositorios incorporados."
+        if catalog_skipped:
+            body+=" "+str(catalog_skipped)+" omitidos porque no alcanzan el mínimo de "+str(MIN_MUSICAL_FILES)+" archivos musicales inspeccionados."
+        body+="</section>"
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
     body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
     body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
