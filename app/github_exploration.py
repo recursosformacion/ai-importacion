@@ -228,7 +228,7 @@ async def discover_one(client):
 async def inspect_one(client):
     with db() as c:
         repo=c.execute("""SELECT * FROM github_discovered_repositories
-          WHERE status IN ('pending','error') ORDER BY
+          WHERE status='pending' ORDER BY
           CASE discovery_query WHEN 'seed' THEN 0 ELSE 1 END, discovered_at LIMIT 1""").fetchone()
     if not repo: return False,"No quedan repositorios pendientes de inspección."
     name=repo["full_name"]
@@ -331,7 +331,7 @@ async def exploration_run(minutes:int=Form(3)):
                 if not did and discoveries==0 and inspections==0: break
                 if not did and discoveries>0:
                     with db() as c:
-                        pending=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories WHERE status IN ('pending','error')").fetchone()["n"]
+                        pending=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories WHERE status='pending'").fetchone()["n"]
                         todo=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status IN ('pending','running') AND page<=?",(MAX_SEARCH_PAGES,)).fetchone()["n"]
                     if not pending and not todo: break
     except GitHubRateLimit as exc:
