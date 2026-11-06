@@ -106,6 +106,19 @@ Este repositorio es una herramienta independiente del ecosistema **OSAP — Open
 - [AI_osap-support](https://github.com/recursosformacion/AI_osap-support) — soporte, donaciones y membresías.
 - Sitio público: [openmusicrepository.com](https://openmusicrepository.com)
 
+## Exploración persistente y dosificada de GitHub
+
+La ruta web `/github/exploration`, enlazada desde **Fuentes GitHub**, mantiene un proceso de descubrimiento independiente de la búsqueda puntual:
+
+- Inicializa una lista de consultas temáticas y repositorios semilla conocidos (OpenScore, Mutopia y MuseTrainer).
+- Pagina las búsquedas de repositorios de GitHub (100 resultados por página, hasta 10 páginas por consulta) y guarda cada página completada en SQLite.
+- Conserva todos los repositorios descubiertos, incluidos los que no alcanzan el mínimo. El umbral sigue siendo **11 archivos musicales reconocidos**; los repositorios por debajo quedan registrados como no elegibles en vez de desaparecer.
+- Cada ejecución admite un presupuesto de 1 a 20 minutos. Al terminar, las consultas y repositorios ya recibidos permanecen guardados; la siguiente ejecución continúa con las páginas y repositorios pendientes.
+- Guarda metadatos, rama, SHA del último commit y SHA del árbol inspeccionado. Los árboles truncados quedan marcados como parciales y no se presentan como inventarios completos.
+- La búsqueda y la inspección de árboles son operaciones distintas. Los repositorios que cumplen el umbral se muestran en el panel persistente para poder revisarlos y añadirlos al catálogo de trabajo.
+
+**Límite de cobertura:** no existe una API pública que permita enumerar exhaustivamente todos los repositorios de GitHub ni todos sus archivos. La búsqueda de repositorios trabaja sobre consultas textuales, tiene límites de resultados y depende de los límites de API. Esta exploración amplía la cobertura por varias familias de términos, páginas y semillas, pero no debe describirse como un barrido total de GitHub. El presupuesto limita la duración aproximada de cada ejecución; una petición HTTP individual puede terminar unos segundos después del límite.
+
 ## Fuente adicional: GitHub
 
 La aplicación incorpora un lector de repositorios públicos de GitHub, accesible en `/github`.
