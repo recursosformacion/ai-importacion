@@ -24,7 +24,7 @@ USER_AGENT = "OSAP-AI-Importacion/0.1 (+https://openmusicrepository.com)"
 # remain downloadable candidates rather than being silently discarded.
 MUSIC_EXTENSIONS = {
     # Interchange and text notation
-    ".musicxml", ".mxl", ".mid", ".midi", ".kar", ".krn",
+    ".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar", ".krn",
     ".ly", ".ily", ".abc", ".mei", ".mml",
     # Score editors and notation applications
     ".mscx", ".mscz", ".capx", ".sib", ".musx", ".gp", ".gp3",
@@ -41,7 +41,7 @@ MAX_TREE_ENTRIES = 50000
 # Only explicit music/notation/audio formats count towards the repository threshold.
 # Generic documents, images and archives are not evidence of a musical piece.
 MUSICAL_PIECE_EXTENSIONS = MUSIC_EXTENSIONS - {
-    ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".zip",
+    ".xml", ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".zip",
 }
 MIN_MUSICAL_PIECES = 11
 MAX_REPOSITORIES_TO_INSPECT = 30
@@ -209,7 +209,7 @@ def github_home():
         """).fetchall()
         recent_files = conn.execute("""
             SELECT f.*,r.full_name FROM github_files f JOIN github_repositories r ON r.id=f.repository_id
-            WHERE f.extension NOT IN ('.txt','.xml')
+            WHERE f.extension <> '.txt'
             ORDER BY f.last_seen_at DESC LIMIT 40
         """).fetchall()
     body = """<h1>Fuentes GitHub</h1>
@@ -622,8 +622,25 @@ def github_repository(repository_id: int, q: str = ""):
             body += "<p class='muted'>" + esc(scan["error_text"]) + "</p>"
     body += "<h2>Archivos localizados (" + str(total) + ")</h2><form method='get'><input name='q' type='text' value='" + esc(q) + "' placeholder='Filtrar por ruta'><button>Filtrar</button></form>"
     if files:
-        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th><th>Descarga local</th><th>Análisis musical</th><th>Extracción PDF/OCR</th></tr>"
+        folder_counts = {}
         for item in files:
+            folder = str(Path(item["path"]).parent).replace("\\", "/")
+            if folder == ".":
+                folder = "(raíz del repositorio)"
+            folder_counts[folder] = folder_counts.get(folder, 0) + 1
+        body += "<section class='panel'><h3>Carpetas con archivos localizados</h3><ul class='folder-index'>"
+        for folder, count in sorted(folder_counts.items(), key=lambda pair: pair[0].casefold()):
+            body += "<li><a href='#folder-" + esc(quote(folder, safe='')) + "'><code>" + esc(folder) + "</code></a> · " + str(count) + " archivos</li>"
+        body += "</ul></section>"
+        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th><th>Descarga local</th><th>Análisis musical</th><th>Extracción PDF/OCR</th></tr>"
+        previous_folder = None
+        for item in files:
+            folder = str(Path(item["path"]).parent).replace("\\", "/")
+            if folder == ".":
+                folder = "(raíz del repositorio)"
+            if folder != previous_folder:
+                body += "<tr class='folder-heading' id='folder-" + esc(quote(folder, safe='')) + "'><th colspan='7'>Carpeta: <code>" + esc(folder) + "</code> · " + str(folder_counts[folder]) + " archivos</th></tr>"
+                previous_folder = folder
             status = item["download_status"] or "not_downloaded"
             if status == "downloaded":
                 action = "Descargado · " + str(item["downloaded_bytes"] or 0) + " bytes"
@@ -637,7 +654,20 @@ def github_repository(repository_id: int, q: str = ""):
             analysis_status = item["analysis_status"] or "pendiente"
             if item["analysis_sha256"] and item["analysis_sha256"] != item["sha256"]:
                 analysis_status = "stale"
-            analysis_label = {"ok": "Correcto", "not_musicxml": "XML no musical", "error": "Error", "stale": "Desactualizado"}.get(analysis_status, "Pendiente")
+            analysis_label = {"ok": "Partitura MusicXML/MIDI válida", "not_musicxml": "XML genérico (no es partitura)", "error": "Error", "stale": "Desactualizado"}.get(analysis_status, "Pendiente")
+            if item["analysis_status"] == "ok" and item["analysis_json"]:
+                try:
+                    metadata = __import__("json").loads(item["analysis_json"])
+                    if metadata.get("title"):
+                        analysis_label += " · " + str(metadata["title"])
+                    creators = metadata.get("creators") or []
+                    creator_names = [str(value.get("name", "")).strip() for value in creators if value.get("name")]
+                    if creator_names:
+                        analysis_label += " · " + ", ".join(creator_names[:3])
+                    if metadata.get("part_count") is not None:
+                        analysis_label += " · " + str(metadata["part_count"]) + " partes"
+                except (TypeError, ValueError):
+                    pass
             if item["analysis_error"]:
                 analysis_label += " · " + item["analysis_error"][:120]
             extraction_status = item["extraction_status"] or "pendiente"
@@ -669,7 +699,7 @@ def _page(title: str, body: str) -> str:
     input,button{font:inherit;padding:.65rem;border:1px solid #aab6c4;border-radius:6px}
     button{background:#174f89;color:white;border:0;cursor:pointer}
     table{border-collapse:collapse;width:100%;background:white}td,th{text-align:left;padding:.65rem;border-bottom:1px solid #e1e6eb;vertical-align:top}
-    th{background:#edf1f5}.muted{color:#5d6977;font-size:.9rem}a{color:#175ca8}
+    th{background:#edf1f5}.muted{color:#5d6977;font-size:.9rem}a{color:#175ca8}.folder-index{columns:2;column-gap:2rem}.folder-index li{break-inside:avoid;margin:.25rem 0}.folder-heading th{background:#dfe8f1;padding-top:1rem}
     </style>"""
     return ("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>" + esc(title) + "</title>" + style +
