@@ -14,6 +14,7 @@ def test_extracts_public_attribution_and_named_project_link():
     reference = references[0]
     assert reference["reference_type"] == "attribution"
     assert reference["label"] == "OpenScore String Quartets"
+    assert reference["display_text"] == "OpenScore String Quartets"
     assert reference["url"] == "https://musescore.com/openscore-string-quartets"
     assert "public use" in reference["instruction_text"].lower()
     assert reference["source_path"] == "README.md"
@@ -31,6 +32,7 @@ def test_extracts_spanish_attribution_entity_and_url():
 
     assert len(references) == 1
     assert references[0]["label"] == "OpenScore String Quartets"
+    assert references[0]["display_text"] == "OpenScore String Quartets"
     assert references[0]["url"] == "https://musescore.com/openscore-string-quartets"
     assert "uso público" in references[0]["instruction_text"].lower()
     assert references[0]["required"] == 1
@@ -55,6 +57,7 @@ def test_extracts_plain_url_and_project_name_from_credit_request():
 
     assert len(references) == 1
     assert references[0]["label"] == "OpenScore Lieder"
+    assert references[0]["display_text"] == "OpenScore Lieder"
     assert references[0]["url"] == "https://musescore.com/openscore-lieder-corpus"
 
 
