@@ -158,6 +158,12 @@ def ensure_schema():
               (full_name,html_url,discovery_query,discovered_at,status)
               VALUES(?,?, 'seed', ?, 'pending')""",
               (name,"https://github.com/"+name,now()))
+        # Apply the current admission threshold to repositories inspected under
+        # the previous threshold (11). Exactly 10 files now qualifies.
+        c.execute("""UPDATE github_discovered_repositories
+          SET status='qualified',below_threshold=0
+          WHERE status='below_threshold' AND musical_file_count>=?
+            AND last_checked_at IS NOT NULL""", (MIN_MUSICAL_FILES,))
 
 def headers():
     h={"Accept":"application/vnd.github+json","User-Agent":"OSAP-AI-Importacion/0.2",
