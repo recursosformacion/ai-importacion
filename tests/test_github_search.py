@@ -98,7 +98,7 @@ def test_github_search_without_query_runs_automatic_format_discovery(tmp_path, m
     assert "Búsqueda automática" in response.text
     assert "12" in response.text
     assert "al menos 11 archivos musicales" in response.text
-    assert response.text.count("OpenMusic/All-Formats") == 1
+    assert response.text.count("href='https://github.com/OpenMusic/All-Formats'") == 1
 
 
 
