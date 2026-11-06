@@ -17,7 +17,10 @@ from app.db import connect
 router = APIRouter()
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 API = "https://api.github.com"
-try:\n    from app.github_exploration import TOKEN\nexcept ImportError:\n    TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+try:
+    from app.github_exploration import TOKEN
+except ImportError:
+    TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 USER_AGENT = "OSAP-AI-Importacion/0.1 (+https://openmusicrepository.com)"
 MAX_README_CHARS = 200_000
 MAX_TREE_ENTRIES = 50_000
