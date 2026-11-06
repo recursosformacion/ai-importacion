@@ -584,32 +584,3 @@ async def exploration_run(minutes: int = Form(60)):
           last_message='Exploración en cola.' WHERE id=1""", (max(1, min(int(minutes), 1440)),))
     start_exploration_worker()
     return RedirectResponse("/github/exploration", status_code=303)
-        except ValueError:
-            pass
-    try:
-        async with httpx.AsyncClient(timeout=25,headers=headers(),follow_redirects=True) as client:
-            while time.monotonic()-started < budget:
-                did,msg=await discover_one(client)
-                if did:
-                    discoveries+=1; messages.append(msg)
-                if time.monotonic()-started >= budget: break
-                did,msg=await inspect_one(client)
-                if did:
-                    inspections+=1; messages.append(msg)
-                if not did and discoveries==0 and inspections==0: break
-                if not did and discoveries>0:
-                    with db() as c:
-                        pending=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories WHERE status='pending'").fetchone()["n"]
-                        todo=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status IN ('pending','running') AND page<=?",(MAX_SEARCH_PAGES,)).fetchone()["n"]
-                    if not pending and not todo: break
-    except GitHubRateLimit as exc:
-        rate_limit = exc
-    elapsed=round(time.monotonic()-started,1)
-    if rate_limit:
-        message=f"Exploración pausada por límite de GitHub. {discoveries} páginas y {inspections} repositorios procesados en {elapsed} s. {rate_limit}"
-    else:
-        message=f"{discoveries} páginas de descubrimiento y {inspections} repositorios inspeccionados en {elapsed} s."
-    with db() as c:
-        c.execute("UPDATE github_exploration_state SET last_run_at=?,last_run_seconds=?,last_message=?,resume_after=? WHERE id=1",
-                  (now(),elapsed,message,rate_limit.resume_after if rate_limit else None))
-    return RedirectResponse("/github/exploration",status_code=303)
