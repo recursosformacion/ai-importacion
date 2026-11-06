@@ -76,6 +76,18 @@ Las pruebas no necesitan una conexión real a Internet Archive; la búsqueda HTT
 Los identificadores de Archive.org son únicos en el catálogo local. Si una nueva búsqueda devuelve el mismo identificador, se actualizan los metadatos y se conserva el primer momento de captación.
 
 
+## Captación desde GitHub
+
+La sección web **Fuentes GitHub** permite descubrir repositorios públicos sin conocer previamente su URL:
+
+- Buscar por palabras clave relacionadas con repertorios, partituras, compositores o formatos musicales.
+- Ordenar por actividad reciente o estrellas y aplicar algunos filtros de licencia declarada.
+- Revisar descripción, lenguaje, estrellas y licencia antes de añadir un repositorio al catálogo local.
+- Añadir directamente una URL cuando ya se conoce el repositorio.
+- Leer el árbol del repositorio e inventariar los archivos musicales; después se pueden descargar y analizar desde la propia web.
+
+La búsqueda usa la API de repositorios de GitHub y muestra hasta 30 resultados por consulta. Los filtros de licencia son criterios de descubrimiento, no una comprobación jurídica: la licencia declarada debe revisarse antes de reutilizar o redistribuir archivos. La búsqueda no descarga archivos ni incorpora contenido a OSAP; esas acciones siguen siendo pasos explícitos posteriores.
+
 ## Ecosistema OSAP
 
 Este repositorio es una herramienta independiente del ecosistema **OSAP — Open Score Acquisition Platform**. Su base de datos es propia y el flujo actual de importación sirve para descubrir y revisar materiales; no escribe directamente en el catálogo de producción.
