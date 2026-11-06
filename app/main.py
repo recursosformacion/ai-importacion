@@ -300,6 +300,9 @@ app.include_router(file_catalog_router)
 from app.github_catalog import router as github_catalog_router
 app.include_router(github_catalog_router)
 
+from app.github_exploration import router as github_exploration_router
+app.include_router(github_exploration_router)
+
 
 def query_for(text: str, scope: str = "all") -> str:
     term = text.strip()
