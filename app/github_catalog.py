@@ -349,7 +349,7 @@ async def github_search(q: str = "", sort: str = "updated", license: str = ""):
             license_name = license_data.get("spdx_id") or license_data.get("name") or "No declarada"
             body += "<tr><td><a href='" + esc(item.get("html_url") or "") + "'><b>" + esc(full_name) + "</b></a><div class='muted'>" + esc(item.get("description") or "") + "</div></td>"
             body += "<td>" + str(item.get("musical_file_count", 0)) + ("+" if item.get("tree_truncated") else "") + "</td>"
-            body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>
+            body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>"
             body += "<td>" + esc(license_name) + "</td><td>" + esc((item.get("updated_at") or "")[:10]) + "</td>"
             body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir al catálogo</button></form></td></tr>"
         body += "</table>"
