@@ -213,7 +213,14 @@ def github_home():
             ORDER BY f.last_seen_at DESC LIMIT 40
         """).fetchall()
     body = """<h1>Fuentes GitHub</h1>
-    <p><a href='/github/exploration'>Exploración persistente y presupuesto de búsqueda</a></p>
+    """
+    # A successful import is reported after returning from the exploration queue.
+    # Read the count from the query string without changing catalog state.
+    body += ""
+    body += """<p><a href='/github/exploration'>Exploración persistente y presupuesto de búsqueda</a></p>
+    <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
+    Puedes descargar candidatos para su análisis local. La procedencia GitHub se conserva y no se incorporan automáticamente a OSAP.</p>
+    <section class="panel"><h2>Buscar repositorios con archivos musicales</h2>    <p><a href='/github/exploration'>Exploración persistente y presupuesto de búsqueda</a></p>
     <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
     Puedes descargar candidatos para su análisis local. La procedencia GitHub se conserva y no se incorporan automáticamente a OSAP.</p>
     <section class="panel"><h2>Buscar repositorios con archivos musicales</h2>
