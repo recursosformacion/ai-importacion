@@ -149,7 +149,7 @@ def extract_reference_candidates(markdown: str, readme_path: str) -> list[dict]:
                 found.append({
                     "reference_type": "attribution",
                     "label": entity or "Referencia indicada en README",
-                    "display_text": public_text or entity or "Referencia indicada en README",
+                    "display_text": entity or public_text or "Referencia indicada en README",
                     "url": url.rstrip(".,;"),
                     "instruction_text": re.sub(r"[*_]", "", normalized),
                     "source_path": readme_path,
@@ -252,7 +252,12 @@ def resolve_manifest_entries(manifest_path: str, payload, tree_paths: set[str]) 
         # Treat input/output as one conversion pair. Reject the whole entry
         # if either path escapes the repository root.
         if entry_invalid:
-            invalid += 1
+            # Count every supplied path in the rejected pair, not just the
+            # first path that triggered the escape check.
+            invalid += sum(
+                1 for field in ("in", "out")
+                if isinstance(entry.get(field), str) and entry.get(field).strip()
+            )
             continue
         if "in" in resolved_entry:
             inputs.append(resolved_entry["in"])
