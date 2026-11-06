@@ -279,7 +279,7 @@ def exploration_home():
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
     body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
     body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
-    body+="<label>Tiempo máximo (minutos) <input type='number' name='minutes' min='1' max='20' value='3'></label> "
+    body+="<label>Tiempo máximo (minutos) <input type='number' name='minutes' min='1' value='60'></label> "
     body+="<button>Continuar exploración</button></form>"
     body+="<p class='muted'>Se alterna descubrimiento por páginas y comprobación de repositorios. El proceso se detiene al alcanzar el presupuesto o agotar las tareas disponibles. Puedes volver a ejecutarlo cuando quieras.</p></section>"
     body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q)+"</b></p><ul>"
@@ -302,7 +302,7 @@ def exploration_home():
 @router.post("/github/exploration/run")
 async def exploration_run(minutes:int=Form(3)):
     ensure_schema()
-    budget=max(1,min(20,int(minutes)))*60
+    budget=max(1,int(minutes))*60
     started=time.monotonic(); messages=[]; discoveries=0; inspections=0
     rate_limit = None
     with db() as c:
