@@ -53,9 +53,11 @@ La atribución se debe mantener junto a los recursos adquiridos y acompañar las
 
 ## Persistencia inicial
 
+La primera implementación inspecciona el README y el árbol, lee los manifiestos JSON candidatos (con un límite de 2 MB por manifiesto) y resuelve sus rutas de entrada/salida relativas al propio manifiesto. Comprueba además si las rutas de entrada aparecen en el árbol GitHub. No ejecuta los comandos ni convierte los archivos.
+
 La primera implementación añade:
 
 - `github_repository_acquisition`: README, SHA, árbol inspeccionado, estrategia y plan preliminar.
 - `github_repository_references`: entidades, URLs, instrucciones y origen documental.
 
-No altera el catálogo de archivos existente ni descarga automáticamente el corpus. La ejecución de estrategias y la vinculación de sus resultados con el catálogo se incorporarán después de validar esta primera ficha de adquisición.
+No altera el catálogo de archivos existente ni descarga automáticamente el corpus. La ejecución de estrategias de adquisición (incluida la descarga por manifiesto y la conversión local cuando proceda) y la vinculación de sus resultados con el catálogo se incorporarán después de validar esta primera ficha de adquisición.
