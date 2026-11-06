@@ -603,12 +603,12 @@ def github_repository(repository_id: int, q: str = ""):
         files = conn.execute("""
             SELECT f.*,a.status AS analysis_status,a.sha256 AS analysis_sha256,a.analysis_json,a.error_text AS analysis_error,x.status AS extraction_status,x.sha256 AS extraction_sha256,x.extracted_characters,x.extracted_text,x.error_text AS extraction_error
             FROM github_files f LEFT JOIN github_file_analyses a ON a.github_file_id=f.id LEFT JOIN github_content_extractions x ON x.github_file_id=f.id
-            WHERE f.repository_id=? AND f.extension NOT IN ('.txt','.xml')
+            WHERE f.repository_id=? AND f.extension <> '.txt'
               AND (?='' OR f.path LIKE ?)
             ORDER BY f.path LIMIT 500
         """, (repository_id, q, "%" + q + "%")).fetchall()
         scan = conn.execute("SELECT * FROM github_scans WHERE repository_id=? ORDER BY id DESC LIMIT 1", (repository_id,)).fetchone()
-        total = conn.execute("SELECT COUNT(*) FROM github_files WHERE repository_id=?", (repository_id,)).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM github_files WHERE repository_id=? AND extension <> '.txt'", (repository_id,)).fetchone()[0]
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
