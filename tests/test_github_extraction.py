@@ -8,8 +8,8 @@ def test_github_extract_route_persists_text_and_renders_it(tmp_path, monkeypatch
     db_path = str(tmp_path / "github-extraction.sqlite3")
     monkeypatch.setattr(main, "DB_PATH", db_path)
     monkeypatch.setattr(github_catalog, "DB_PATH", db_path)
-    source = tmp_path / "README.txt"
-    source.write_text("Ave verum corpus\nText extraction test", encoding="utf-8")
+    source = tmp_path / "Ave-verum.abc"
+    source.write_text("X:1\nT:Ave verum corpus\nK:C\nCDEF", encoding="utf-8")
 
     with TestClient(main.app) as client:
         github_catalog.ensure_schema()
@@ -26,7 +26,7 @@ def test_github_extract_route_persists_text_and_renders_it(tmp_path, monkeypatch
                    (repository_id,path,name,extension,size_bytes,sha,html_url,first_seen_at,last_seen_at,
                     download_status,local_path,sha256,downloaded_bytes)
                    VALUES(?,?,?,?,?,?,?,?,?,'downloaded',?,?,?)""",
-                (repository_id, "README.txt", "README.txt", ".txt", source.stat().st_size,
+                (repository_id, "Ave-verum.abc", "Ave-verum.abc", ".abc", source.stat().st_size,
                  "git-blob-sha", "https://github.com/test-owner/extract-repo/blob/main/README.txt",
                  main.now(), main.now(), str(source), "text-content-sha", source.stat().st_size),
             )
