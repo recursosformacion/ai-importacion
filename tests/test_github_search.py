@@ -83,3 +83,13 @@ def test_github_search_without_query_runs_automatic_format_discovery(tmp_path, m
     assert "OpenMusic/All-Formats" in response.text
     assert "Búsqueda automática" in response.text
     assert response.text.count("OpenMusic/All-Formats") == 1
+
+
+
+def test_github_inventory_recognizes_multiple_score_and_audio_formats():
+    expected = {
+        ".musicxml", ".mxl", ".mid", ".kar", ".krn", ".abc", ".ly",
+        ".mei", ".mscz", ".capx", ".sib", ".gp5", ".gpx",
+        ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".pdf",
+    }
+    assert expected.issubset(github_catalog.MUSIC_EXTENSIONS)
