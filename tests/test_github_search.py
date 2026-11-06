@@ -13,6 +13,13 @@ def test_github_repository_search_renders_results_and_add_action(tmp_path, monke
     requested = {}
 
     async def fake_github_json(url):
+        if "/git/trees/" in url:
+            return {"tree": [
+                {"type": "blob", "path": f"scores/piece-{i}.musicxml"} for i in range(12)
+            ] + [
+                {"type": "blob", "path": "README.txt"},
+                {"type": "blob", "path": "metadata.xml"},
+            ]}
         requested["url"] = url
         return {
             "total_count": 1,
@@ -55,6 +62,13 @@ def test_github_search_without_query_runs_automatic_format_discovery(tmp_path, m
 
     async def fake_github_json(url):
         from urllib.parse import parse_qs, urlparse
+        if "/git/trees/" in url:
+            return {"tree": [
+                {"type": "blob", "path": f"score-{i}.musicxml"} for i in range(12)
+            ] + [
+                {"type": "blob", "path": "notes.txt"},
+                {"type": "blob", "path": "config.xml"},
+            ]}
         term = parse_qs(urlparse(url).query)["q"][0]
         requested.append(term)
         return {
@@ -82,6 +96,8 @@ def test_github_search_without_query_runs_automatic_format_discovery(tmp_path, m
     assert any("lilypond" in term for term in requested)
     assert "OpenMusic/All-Formats" in response.text
     assert "Búsqueda automática" in response.text
+    assert "12" in response.text
+    assert "al menos 11 archivos musicales" in response.text
     assert response.text.count("OpenMusic/All-Formats") == 1
 
 
@@ -93,3 +109,45 @@ def test_github_inventory_recognizes_multiple_score_and_audio_formats():
         ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".pdf",
     }
     assert expected.issubset(github_catalog.MUSIC_EXTENSIONS)
+    assert ".txt" not in github_catalog.MUSIC_EXTENSIONS
+    assert ".xml" not in github_catalog.MUSIC_EXTENSIONS
+    assert ".txt" not in github_catalog.MUSICAL_PIECE_EXTENSIONS
+    assert ".xml" not in github_catalog.MUSICAL_PIECE_EXTENSIONS
+    assert github_catalog.MIN_MUSICAL_PIECES == 11
+
+
+
+def test_github_search_excludes_repositories_with_ten_or_fewer_musical_files(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "github-threshold.sqlite3")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+    monkeypatch.setattr(github_catalog, "DB_PATH", db_path)
+
+    async def fake_github_json(url):
+        if "/git/trees/" in url:
+            return {"tree": [
+                {"type": "blob", "path": f"piece-{i}.musicxml"} for i in range(10)
+            ] + [
+                {"type": "blob", "path": f"test-{i}.txt"} for i in range(100)
+            ] + [
+                {"type": "blob", "path": f"config-{i}.xml"} for i in range(100)
+            ]}
+        return {
+            "total_count": 1,
+            "items": [{
+                "full_name": "Example/TestOnly",
+                "default_branch": "main",
+                "html_url": "https://github.com/Example/TestOnly",
+                "description": "Test fixtures",
+                "language": "Python",
+                "stargazers_count": 1,
+                "updated_at": "2026-11-05T12:00:00Z",
+                "license": None,
+            }],
+        }
+
+    monkeypatch.setattr(github_catalog, "github_json", fake_github_json)
+    with TestClient(main.app) as client:
+        response = client.get("/github/search", params={"q": "music"})
+    assert response.status_code == 200
+    assert "Example/TestOnly" not in response.text
+    assert "No se han encontrado repositorios" in response.text
