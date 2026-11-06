@@ -163,8 +163,11 @@ def parse_repository(value: str) -> tuple[str, str]:
     raw = value.strip()
     if raw.startswith(("https://", "http://")):
         parsed = urlparse(raw)
+        # Curated GitHub Pages source: its public library is backed by this repo.
+        if parsed.hostname == "musetrainer.github.io" and parsed.path.rstrip("/") == "/library":
+            return "musetrainer", "library"
         if parsed.hostname not in {"github.com", "www.github.com"}:
-            raise ValueError("La dirección debe pertenecer a github.com.")
+            raise ValueError("Indica una URL de GitHub o una página de biblioteca compatible.")
         parts = [part for part in parsed.path.strip("/").split("/") if part]
     else:
         parts = [part for part in raw.strip("/").split("/") if part]
@@ -224,12 +227,19 @@ def github_home(imported: int = 0):
       <button>Buscar automáticamente</button>
     </form>
     <p class="muted">Sin escribir nada, explora repositorios por distintas familias de formatos y repertorios musicales. Después se inspecciona el árbol de cada repositorio para localizar los archivos concretos, sea cual sea su formato reconocido. El campo opcional sirve para afinar la búsqueda.</p></section>
-    <section class="panel"><h2>Añadir un repositorio conocido</h2>
+    <section class="panel"><h2>Fuentes seleccionadas</h2>
+    <p>MuseTrainer Library publica partituras MusicXML comprimidas (.mxl). Se añade como fuente seleccionada aunque no alcance el mínimo de 100 archivos de la exploración automática.</p>
+    <form method="post" action="/github/add">
+      <input name="repository" type="hidden" value="https://musetrainer.github.io/library">
+      <button>Añadir MuseTrainer Library</button>
+    </form>
+    <p class="muted">Después pulsa «Leer repositorio» para inventariar los archivos de la carpeta scores. La lectura no descarga todavía las partituras.</p></section>
+    <section class="panel"><h2>Añadir otro repositorio conocido</h2>
     <form method="post" action="/github/add">
       <input name="repository" type="text" required placeholder="OpenScore/Lieder o https://github.com/OpenScore/Lieder">
       <button>Añadir repositorio</button>
     </form>
-    <p class="muted">También puedes registrar directamente un repositorio público si ya conoces su dirección. No pegues tokens ni credenciales en este formulario.</p></section>
+    <p class="muted">Puedes registrar directamente cualquier repositorio público de GitHub. No pegues tokens ni credenciales en este formulario.</p></section>
     <section class="panel"><h2>Repositorios registrados</h2>"""
     if imported > 0:
         body += "<p class='panel'>Se han incorporado "+str(min(imported,10000))+" repositorios al catálogo. Pulsa «Leer repositorio» para obtener el inventario de archivos; todavía no se ha descargado ningún fichero.</p>"
