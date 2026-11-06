@@ -84,13 +84,14 @@ Los identificadores de Archive.org son únicos en el catálogo local. Si una nue
 
 La sección web **Fuentes GitHub** permite descubrir repositorios públicos sin conocer previamente su URL:
 
-- Buscar por palabras clave relacionadas con repertorios, partituras, compositores o formatos musicales.
-- Ordenar por actividad reciente o estrellas y aplicar algunos filtros de licencia declarada.
+- La búsqueda automática funciona sin que el usuario escriba formatos ni nombres de repositorios: lanza consultas de descubrimiento para música, partituras, MusicXML, MIDI, LilyPond y notación ABC, entre otras familias.
+- Se puede afinar opcionalmente por compositor, colección, repertorio o tema.
+- Los resultados se deduplican y se pueden ordenar por actividad reciente o estrellas y filtrar por licencia declarada.
 - Revisar descripción, lenguaje, estrellas y licencia antes de añadir un repositorio al catálogo local.
 - Añadir directamente una URL cuando ya se conoce el repositorio.
-- Leer el árbol del repositorio e inventariar los archivos musicales; después se pueden descargar y analizar desde la propia web.
+- Leer el árbol completo del repositorio e inventariar los archivos por extensión; esta inspección confirma los formatos presentes y no depende de la descripción del proyecto.
 
-La búsqueda usa la API de repositorios de GitHub y muestra hasta 30 resultados por consulta. Los filtros de licencia son criterios de descubrimiento, no una comprobación jurídica: la licencia declarada debe revisarse antes de reutilizar o redistribuir archivos. La búsqueda no descarga archivos ni incorpora contenido a OSAP; esas acciones siguen siendo pasos explícitos posteriores.
+La búsqueda inicial descubre candidatos mediante metadatos de repositorios; no es un índice exhaustivo de todos los ficheros públicos de GitHub. La confirmación de archivos musicales se realiza al leer el árbol del repositorio, donde se detectan las extensiones reconocidas con independencia del término usado para descubrirlo. GitHub impone límites de consulta y de tamaño de árbol, por lo que no se puede prometer cobertura absoluta. Los filtros de licencia son criterios de descubrimiento, no una comprobación jurídica: la licencia declarada debe revisarse antes de reutilizar o redistribuir archivos. La búsqueda no descarga archivos ni incorpora contenido a OSAP; esas acciones siguen siendo pasos explícitos posteriores.
 
 ## Ecosistema OSAP
 
