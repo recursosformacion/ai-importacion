@@ -62,7 +62,7 @@ def ensure_schema():
           discovery_query TEXT NOT NULL DEFAULT '', discovered_at TEXT NOT NULL,
           updated_at TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
           musical_file_count INTEGER NOT NULL DEFAULT 0, tree_sha TEXT NOT NULL DEFAULT '',
-          last_checked_at TEXT, last_error TEXT, below_threshold INTEGER NOT NULL DEFAULT 0);
+          last_checked_at TEXT, last_error TEXT, below_threshold INTEGER NOT NULL DEFAULT 0, commit_sha TEXT NOT NULL DEFAULT '');
         CREATE INDEX IF NOT EXISTS idx_github_discovered_status
           ON github_discovered_repositories(status, discovered_at);
         CREATE TABLE IF NOT EXISTS github_exploration_state(
@@ -71,6 +71,9 @@ def ensure_schema():
           last_message TEXT NOT NULL DEFAULT '');
         INSERT OR IGNORE INTO github_exploration_state(id) VALUES(1);
         """)
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(github_discovered_repositories)")}
+        if "commit_sha" not in cols:
+            c.execute("ALTER TABLE github_discovered_repositories ADD COLUMN commit_sha TEXT NOT NULL DEFAULT ''")
         for q in QUERIES:
             c.execute("INSERT OR IGNORE INTO github_discovery_queries(query,updated_at) VALUES(?,?)",(q,now()))
         for name in SEEDS:
@@ -151,11 +154,11 @@ async def inspect_one(client):
             c.execute("""UPDATE github_discovered_repositories SET default_branch=?,
               html_url=?,description=?,stars=?,license_spdx=?,musical_file_count=?,
               tree_sha=?,last_checked_at=?,updated_at=?,status=?,below_threshold=?,
-              last_error=NULL WHERE full_name=?""",
+              commit_sha=?,last_error=NULL WHERE full_name=?""",
               (branch,meta.get("html_url") or repo["html_url"],meta.get("description") or "",
                int(meta.get("stargazers_count") or 0),
                ((meta.get("license") or {}).get("spdx_id") or ""),count,tree_sha,
-               now(),meta.get("updated_at") or "",status,int(count<MIN_MUSICAL_FILES),name))
+               now(),meta.get("updated_at") or "",status,int(count<MIN_MUSICAL_FILES),commit_sha,name))
         return True,f"{name}: {count} archivos musicales"+(" (árbol parcial)" if truncated else "")+"."
     except Exception as exc:
         with db() as c:
