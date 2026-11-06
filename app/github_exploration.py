@@ -271,9 +271,12 @@ def exploration_home():
           "SELECT status,COUNT(*) n FROM github_discovered_repositories GROUP BY status")}
         q=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status!='done'").fetchone()["n"]
         state=c.execute("SELECT * FROM github_exploration_state WHERE id=1").fetchone()
-        qualified=c.execute("""SELECT full_name,musical_file_count,updated_at,last_checked_at
-          FROM github_discovered_repositories WHERE status='qualified'
-          ORDER BY musical_file_count DESC LIMIT 30""").fetchall()
+        repositories=c.execute("""SELECT full_name,description,status,musical_file_count,
+          updated_at,last_checked_at,last_error FROM github_discovered_repositories
+          ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'error' THEN 1
+            WHEN 'qualified' THEN 2 WHEN 'below_threshold' THEN 3
+            WHEN 'partial' THEN 4 WHEN 'ignored' THEN 5 ELSE 6 END,
+            discovered_at DESC LIMIT 200""").fetchall()
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
@@ -283,21 +286,70 @@ def exploration_home():
     body+="<button>Continuar exploración</button></form>"
     body+="<p class='muted'>Se alterna descubrimiento por páginas y comprobación de repositorios. El proceso se detiene al alcanzar el presupuesto o agotar las tareas disponibles. Puedes volver a ejecutarlo cuando quieras.</p></section>"
     body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q)+"</b></p><ul>"
-    for label in ("pending","qualified","below_threshold","partial","error"):
+    for label in ("pending","qualified","below_threshold","partial","error","ignored"):
         body+="<li>"+label+": "+str(counts.get(label,0))+"</li>"
     body+="</ul><p>Última ejecución: "+esc(state["last_run_at"] or "ninguna")+" · "+esc(state["last_message"])+"</p>"
     if state["resume_after"]:
         body+="<p><b>Reanudación disponible a partir de:</b> "+esc(state["resume_after"])+" (UTC)</p>"
     body+="</section>"
-    body+="<section class='panel'><h2>Repositorios que cumplen el mínimo de 11 archivos</h2>"
-    if qualified:
-        body+="<table><tr><th>Repositorio</th><th>Archivos musicales</th><th>Actualización</th><th>Comprobado</th></tr>"
-        for r in qualified:
-            body+="<tr><td><a href='https://github.com/"+esc(r["full_name"])+"'>"+esc(r["full_name"])+"</a></td><td>"+str(r["musical_file_count"])+"</td><td>"+esc(r["updated_at"][:10])+"</td><td>"+esc(r["last_checked_at"])+"</td></tr>"
-        body+="</table>"
-    else: body+="<p>Aún no hay repositorios que cumplan el criterio.</p>"
+    body+="<section class='panel'><h2>Repositorios descubiertos</h2>"
+    body+="<p>Selecciona uno o varios repositorios. Puedes ignorarlos para excluirlos de futuras inspecciones o devolverlos a la cola de procesamiento. Se muestran hasta 200 resultados.</p>"
+    if repositories:
+        body+="<form method='post' action='/github/exploration/repositories/action'>"
+        body+="<p><label><input type='checkbox' onclick='document.querySelectorAll(\"input.repo-select\").forEach(x=>x.checked=this.checked)'> Seleccionar todos los visibles</label> "
+        body+="<button name='action' value='ignore'>Ignorar seleccionados</button> "
+        body+="<button name='action' value='process'>Procesar seleccionados</button> "
+        body+="<button name='action' value='restore'>Restaurar seleccionados</button></p>"
+        body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales</th><th>Actualizado</th><th>Comprobado</th></tr>"
+        for r in repositories:
+            status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
+            detail=("<div class='muted'>"+esc(r["last_error"])+"</div>") if r["last_error"] else ""
+            body+="<tr><td><input class='repo-select' type='checkbox' name='repositories' value='"+esc(r["full_name"])+"'></td>"
+            body+="<td><a href='https://github.com/"+esc(r["full_name"])+"'>"+esc(r["full_name"])+"</a><div class='muted'>"+esc(r["description"])+"</div>"+detail+"</td>"
+            body+="<td>"+esc(status_label)+"</td><td>"+str(r["musical_file_count"])+"</td>"
+            body+="<td>"+esc((r["updated_at"] or "")[:10])+"</td><td>"+esc(r["last_checked_at"] or "—")+"</td></tr>"
+        body+="</table></form>"
+    else:
+        body+="<p>Aún no hay repositorios descubiertos.</p>"
     body+="</section><p><a href='/github'>Volver a Fuentes GitHub</a></p>"
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem'>"+body+"</body></html>")
+
+@router.post("/github/exploration/repositories/action")
+def exploration_repository_action(
+    action: str = Form(...),
+    repositories: list[str] = Form(default=[]),
+):
+    ensure_schema()
+    selected = list(dict.fromkeys(
+        value.strip() for value in repositories
+        if value and "/" in value and len(value) <= 200
+    ))
+    if not selected or action not in {"ignore", "process", "restore"}:
+        return RedirectResponse("/github/exploration", status_code=303)
+    placeholders = ",".join("?" for _ in selected)
+    with db() as c:
+        if action == "ignore":
+            c.execute(
+                f"UPDATE github_discovered_repositories SET status='ignored' "
+                f"WHERE full_name IN ({placeholders})",
+                selected,
+            )
+        elif action == "process":
+            c.execute(
+                f"""UPDATE github_discovered_repositories
+                    SET status='pending',last_error=NULL,below_threshold=0
+                    WHERE full_name IN ({placeholders}) AND status!='ignored'""",
+                selected,
+            )
+        else:
+            c.execute(
+                f"""UPDATE github_discovered_repositories
+                    SET status='pending',last_error=NULL,below_threshold=0
+                    WHERE full_name IN ({placeholders}) AND status='ignored'""",
+                selected,
+            )
+    return RedirectResponse("/github/exploration", status_code=303)
+
 
 @router.post("/github/exploration/run")
 async def exploration_run(minutes:int=Form(3)):
