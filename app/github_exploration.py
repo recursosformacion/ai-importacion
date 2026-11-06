@@ -120,6 +120,14 @@ def ensure_schema():
         state_cols = {r["name"] for r in c.execute("PRAGMA table_info(github_exploration_state)")}
         if "resume_after" not in state_cols:
             c.execute("ALTER TABLE github_exploration_state ADD COLUMN resume_after TEXT")
+        if "job_status" not in state_cols:
+            c.execute("ALTER TABLE github_exploration_state ADD COLUMN job_status TEXT NOT NULL DEFAULT 'idle'")
+        if "requested_minutes" not in state_cols:
+            c.execute("ALTER TABLE github_exploration_state ADD COLUMN requested_minutes INTEGER NOT NULL DEFAULT 60")
+        if "progress_discoveries" not in state_cols:
+            c.execute("ALTER TABLE github_exploration_state ADD COLUMN progress_discoveries INTEGER NOT NULL DEFAULT 0")
+        if "progress_inspections" not in state_cols:
+            c.execute("ALTER TABLE github_exploration_state ADD COLUMN progress_inspections INTEGER NOT NULL DEFAULT 0")
 
         # One-time clean reset of the old persistent exploration state.
         # The separate GitHub catalog, downloaded files and analyses are untouched.
@@ -407,23 +415,155 @@ def exploration_repository_action(
     return RedirectResponse(destination, status_code=303)
 
 
-@router.post("/github/exploration/run")
-async def exploration_run(minutes:int=Form(3)):
+_exploration_task: asyncio.Task | None = None
+
+
+async def run_exploration_worker():
     ensure_schema()
-    budget=max(1,int(minutes))*60
-    started=time.monotonic(); messages=[]; discoveries=0; inspections=0
+    started = time.monotonic()
+    discoveries = 0
+    inspections = 0
     rate_limit = None
     with db() as c:
-        state = c.execute("SELECT resume_after FROM github_exploration_state WHERE id=1").fetchone()
-    if state and state["resume_after"]:
+        state = c.execute(
+            "SELECT requested_minutes,resume_after FROM github_exploration_state WHERE id=1"
+        ).fetchone()
+    budget = max(1, int(state["requested_minutes"] or 60)) * 60
+    if state["resume_after"]:
         try:
             resume_dt = datetime.fromisoformat(state["resume_after"])
             if datetime.now(timezone.utc) < resume_dt:
-                message = f"GitHub ha pedido esperar hasta {state['resume_after']} (UTC). No se ha iniciado otra petición."
+                message = f"GitHub ha pedido esperar hasta {state['resume_after']} (UTC)."
                 with db() as c:
-                    c.execute("UPDATE github_exploration_state SET last_run_at=?,last_run_seconds=0,last_message=? WHERE id=1",
-                              (now(),message))
-                return RedirectResponse("/github/exploration",status_code=303)
+                    c.execute("""UPDATE github_exploration_state SET enabled=0,job_status='rate_limited',
+                      last_run_at=?,last_run_seconds=0,last_message=? WHERE id=1""", (now(), message))
+                return
+        except ValueError:
+            pass
+    try:
+        with db() as c:
+            c.execute("""UPDATE github_exploration_state SET job_status='running',
+              progress_discoveries=0,progress_inspections=0,last_message='Exploración en ejecución.' WHERE id=1""")
+        async with httpx.AsyncClient(timeout=25, headers=headers(), follow_redirects=True) as client:
+            while time.monotonic() - started < budget:
+                did, msg = await discover_one(client)
+                if did:
+                    discoveries += 1
+                with db() as c:
+                    c.execute("""UPDATE github_exploration_state SET progress_discoveries=?,
+                      progress_inspections=?,last_message=? WHERE id=1""",
+                      (discoveries, inspections, msg if did else "Buscando repositorios pendientes."))
+                if time.monotonic() - started >= budget:
+                    break
+                did, msg = await inspect_one(client)
+                if did:
+                    inspections += 1
+                with db() as c:
+                    c.execute("""UPDATE github_exploration_state SET progress_discoveries=?,
+                      progress_inspections=?,last_message=? WHERE id=1""",
+                      (discoveries, inspections, msg if did else "No hay más repositorios pendientes de inspección."))
+                if not did and discoveries == 0 and inspections == 0:
+                    break
+                if not did and discoveries > 0:
+                    with db() as c:
+                        pending = c.execute("SELECT COUNT(*) n FROM github_discovered_repositories WHERE status='pending'").fetchone()["n"]
+                        todo = c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status IN ('pending','running') AND page<=?", (MAX_SEARCH_PAGES,)).fetchone()["n"]
+                    if not pending and not todo:
+                        break
+    except GitHubRateLimit as exc:
+        rate_limit = exc
+    except asyncio.CancelledError:
+        elapsed = round(time.monotonic() - started, 1)
+        with db() as c:
+            c.execute("""UPDATE github_exploration_state SET enabled=1,job_status='paused',
+              last_run_at=?,last_run_seconds=?,last_message='Exploración pausada por reinicio. Se reanudará al arrancar la aplicación.'
+              WHERE id=1""", (now(), elapsed))
+        raise
+    except Exception as exc:
+        elapsed = round(time.monotonic() - started, 1)
+        with db() as c:
+            c.execute("""UPDATE github_exploration_state SET enabled=0,job_status='error',
+              last_run_at=?,last_run_seconds=?,last_message=? WHERE id=1""",
+              (now(), elapsed, f"Error en exploración: {type(exc).__name__}: {exc}"[:1000]))
+        return
+    elapsed = round(time.monotonic() - started, 1)
+    if rate_limit:
+        message = f"Exploración pausada por límite de GitHub. {discoveries} páginas y {inspections} repositorios procesados en {elapsed} s. {rate_limit}"
+        status = "rate_limited"
+    else:
+        message = f"{discoveries} páginas de descubrimiento y {inspections} repositorios inspeccionados en {elapsed} s."
+        status = "completed"
+    with db() as c:
+        c.execute("""UPDATE github_exploration_state SET enabled=0,job_status=?,
+          last_run_at=?,last_run_seconds=?,last_message=?,resume_after=? WHERE id=1""",
+          (status, now(), elapsed, message, rate_limit.resume_after if rate_limit else None))
+
+
+def start_exploration_worker():
+    global _exploration_task
+    if _exploration_task is not None and not _exploration_task.done():
+        return _exploration_task
+    _exploration_task = asyncio.create_task(run_exploration_worker(), name="github-exploration")
+    return _exploration_task
+
+
+async def stop_exploration_worker():
+    global _exploration_task
+    if _exploration_task is not None and not _exploration_task.done():
+        _exploration_task.cancel()
+        await asyncio.gather(_exploration_task, return_exceptions=True)
+    _exploration_task = None
+
+
+def resume_exploration_worker():
+    ensure_schema()
+    with db() as c:
+        state = c.execute("SELECT enabled,job_status FROM github_exploration_state WHERE id=1").fetchone()
+    if state and state["enabled"]:
+        return start_exploration_worker()
+    return None
+
+
+@router.get("/github/exploration/status")
+def exploration_status():
+    ensure_schema()
+    with db() as c:
+        state = c.execute("""SELECT job_status,progress_discoveries,progress_inspections,
+          last_message,last_run_at,last_run_seconds,resume_after FROM github_exploration_state WHERE id=1""").fetchone()
+        counts = c.execute("""SELECT status,COUNT(*) n FROM github_discovered_repositories GROUP BY status""").fetchall()
+    return {
+        "job_status": state["job_status"],
+        "progress_discoveries": state["progress_discoveries"],
+        "progress_inspections": state["progress_inspections"],
+        "last_message": state["last_message"],
+        "last_run_at": state["last_run_at"],
+        "last_run_seconds": state["last_run_seconds"],
+        "resume_after": state["resume_after"],
+        "repositories": {r["status"]: r["n"] for r in counts},
+    }
+
+
+@router.post("/github/exploration/run")
+async def exploration_run(minutes: int = Form(60)):
+    ensure_schema()
+    global _exploration_task
+    if _exploration_task is not None and not _exploration_task.done():
+        return RedirectResponse("/github/exploration", status_code=303)
+    with db() as c:
+        state = c.execute("SELECT job_status,enabled,resume_after FROM github_exploration_state WHERE id=1").fetchone()
+        if state["job_status"] == "running" and state["enabled"]:
+            return RedirectResponse("/github/exploration", status_code=303)
+        if state["resume_after"]:
+            try:
+                if datetime.now(timezone.utc) < datetime.fromisoformat(state["resume_after"]):
+                    return RedirectResponse("/github/exploration", status_code=303)
+            except ValueError:
+                pass
+        c.execute("""UPDATE github_exploration_state SET enabled=1,job_status='queued',
+          requested_minutes=?,progress_discoveries=0,progress_inspections=0,
+          last_message='Exploración en cola.' WHERE id=1""", (max(1, min(int(minutes), 1440)),))
+    start_exploration_worker()
+    return RedirectResponse("/github/exploration", status_code=303)
         except ValueError:
             pass
     try:
