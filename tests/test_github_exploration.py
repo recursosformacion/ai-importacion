@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 import app.github_exploration as exploration
@@ -41,3 +42,52 @@ def test_exploration_static_route_is_not_captured_by_repository_id(tmp_path, mon
 
     assert response.status_code == 200
     assert "Exploración persistente de GitHub" in response.text
+
+
+
+def test_inspection_skips_error_repositories_instead_of_retrying_them_forever(tmp_path, monkeypatch):
+    monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "inspection.sqlite3"))
+    exploration.ensure_schema()
+
+    with exploration.db() as conn:
+        conn.execute("UPDATE github_discovered_repositories SET status='below_threshold'")
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,discovery_query,discovered_at,status)
+               VALUES('example/failed','https://github.com/example/failed','seed','2026-01-01','error')"""
+        )
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,discovery_query,discovered_at,status)
+               VALUES('example/pending','https://github.com/example/pending','seed','2026-01-02','pending')"""
+        )
+
+    async def fake_get_json(client, url):
+        if url.endswith("/repos/example/pending"):
+            return {"default_branch": "main", "html_url": "https://github.com/example/pending"}
+        if url.endswith("/commits/main"):
+            return {"sha": "commit-sha", "commit": {"tree": {"sha": "tree-sha"}}}
+        if "/git/trees/main?recursive=1" in url:
+            return {"tree": [
+                {"type": "blob", "path": f"score-{index}.mxl"}
+                for index in range(exploration.MIN_MUSICAL_FILES)
+            ]}
+        raise AssertionError(f"Unexpected GitHub URL: {url}")
+
+    monkeypatch.setattr(exploration, "get_json", fake_get_json)
+    did_work, message = asyncio.run(exploration.inspect_one(object()))
+
+    assert did_work is True
+    assert "example/pending" in message
+    with exploration.db() as conn:
+        statuses = {
+            row["full_name"]: row["status"]
+            for row in conn.execute(
+                "SELECT full_name,status FROM github_discovered_repositories"
+                " WHERE full_name IN ('example/failed','example/pending')"
+            )
+        }
+    assert statuses == {
+        "example/failed": "error",
+        "example/pending": "qualified",
+    }
