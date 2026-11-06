@@ -173,3 +173,38 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
                 "SELECT status FROM github_discovered_repositories WHERE full_name='example/three'"
             ).fetchone()["status"]
         assert status == "pending"
+
+def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, monkeypatch):
+    import app.github_catalog as catalog
+
+    db_path = str(tmp_path / "catalog-import.sqlite3")
+    monkeypatch.setattr(exploration, "DB_PATH", db_path)
+    monkeypatch.setattr(catalog, "DB_PATH", db_path)
+    exploration.ensure_schema()
+    with exploration.db() as conn:
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,default_branch,description,stars,license_spdx,
+                discovery_query,discovered_at,status,musical_file_count)
+               VALUES('OpenScore/Lieder','https://github.com/OpenScore/Lieder','main',
+                      'Open score collection',42,'CC-BY-4.0','seed','2026-01-01','qualified',35)"""
+        )
+
+    with exploration_test_client() as client:
+        response = client.post(
+            "/github/exploration/repositories/action",
+            data={"action": "catalog", "repositories": ["OpenScore/Lieder"]},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/github?imported=1"
+    catalog.ensure_schema()
+    with catalog.db() as conn:
+        row = conn.execute(
+            "SELECT full_name,default_branch,license_spdx FROM github_repositories"
+        ).fetchone()
+    assert row["full_name"] == "OpenScore/Lieder"
+    assert row["default_branch"] == "main"
+    assert row["license_spdx"] == "CC-BY-4.0"
+
