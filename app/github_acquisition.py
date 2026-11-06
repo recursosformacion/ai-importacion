@@ -70,6 +70,7 @@ def ensure_schema() -> None:
           repository_id INTEGER NOT NULL REFERENCES github_repositories(id) ON DELETE CASCADE,
           reference_type TEXT NOT NULL DEFAULT 'attribution',
           label TEXT NOT NULL,
+          display_text TEXT NOT NULL DEFAULT '',
           url TEXT NOT NULL DEFAULT '',
           instruction_text TEXT NOT NULL DEFAULT '',
           source_path TEXT NOT NULL DEFAULT '',
@@ -81,6 +82,18 @@ def ensure_schema() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_github_repo_refs
           ON github_repository_references(repository_id,reference_type);
+        """)
+        reference_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(github_repository_references)")
+        }
+        if "display_text" not in reference_columns:
+            conn.execute(
+                "ALTER TABLE github_repository_references ADD COLUMN display_text TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute("""
+            UPDATE github_repository_references
+            SET display_text=label
+            WHERE display_text=''
         """)
 
 
@@ -130,6 +143,7 @@ def extract_reference_candidates(markdown: str, readme_path: str) -> list[dict]:
                 found.append({
                     "reference_type": "attribution",
                     "label": project_match.group(1).strip() if project_match else (re.sub(r"[*_]", "", label).strip() or "Referencia indicada en README"),
+                    "display_text": project_match.group(1).strip() if project_match else (re.sub(r"[*_]", "", label).strip() or "Referencia indicada en README"),
                     "url": url.rstrip(".,;"),
                     "instruction_text": re.sub(r"[*_]", "", normalized),
                     "source_path": readme_path,
@@ -141,6 +155,7 @@ def extract_reference_candidates(markdown: str, readme_path: str) -> list[dict]:
             found.append({
                 "reference_type": "attribution",
                 "label": "Referencia indicada en README",
+                "display_text": "Referencia indicada en README",
                 "url": urls[0].rstrip(".,;") if urls else "",
                 "instruction_text": re.sub(r"[*_]", "", normalized),
                 "source_path": readme_path,
@@ -373,22 +388,28 @@ def acquisition_page(repository_id: int):
             body += "<details><summary>Ver README conservado</summary><pre>" + esc(acquisition["readme_content"]) + "</pre></details>"
     body += "</section>"
     body += "<section class='panel'><h2>2. Referencias y atribución</h2>"
-    body += "<p>Las referencias detectadas en la documentación se guardan junto con el texto de atribución y la ubicación donde se encontró. Puedes corregirlas o añadir otras manualmente.</p>"
+    body += "<p>Se conserva el texto que debe aparecer públicamente y su enlace. La petición original del README queda como documentación de procedencia, no como texto de atribución.</p>"
     if references:
-        body += "<table><tr><th>Tipo</th><th>Referencia</th><th>URL</th><th>Texto que debe conservarse</th><th>Origen</th></tr>"
+        body += "<table><tr><th>Tipo</th><th>Texto que debe aparecer</th><th>Entidad</th><th>Origen documental</th></tr>"
         for ref in references:
+            visible_text = ref["display_text"] or ref["label"]
+            visible = "<a href='" + esc(ref["url"]) + "'>" + esc(visible_text) + "</a>" if ref["url"] else esc(visible_text)
             body += "<tr><td>" + esc(ref["reference_type"]) + (" · requerida" if ref["required"] else "") + "</td>"
-            body += "<td>" + esc(ref["label"]) + "</td><td>" + ("<a href='" + esc(ref["url"]) + "'>" + esc(ref["url"]) + "</a>" if ref["url"] else "—") + "</td>"
-            body += "<td>" + esc(ref["instruction_text"] or ref["source_excerpt"]) + "</td><td>" + esc(ref["source_path"]) + "</td></tr>"
+            body += "<td>" + visible + "</td><td>" + esc(ref["label"]) + "</td>"
+            body += "<td>" + esc(ref["source_path"])
+            if ref["source_excerpt"]:
+                body += "<details><summary>Petición original del proyecto</summary><p>" + esc(ref["source_excerpt"]) + "</p></details>"
+            body += "</td></tr>"
         body += "</table>"
     else:
         body += "<p class='muted'>No hay referencias registradas todavía. La ausencia de una detección automática no significa que el repositorio no exija atribución.</p>"
     body += "<h3>Añadir o registrar una referencia</h3>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/acquisition/references'>"
     body += "<div class='grid'><label>Tipo<br><select name='reference_type'><option value='attribution'>Atribución</option><option value='project'>Proyecto o colección</option><option value='source'>Fuente original</option><option value='license'>Licencia</option></select></label>"
-    body += "<label>Nombre o entidad<br><input name='label' type='text' required placeholder='OpenScore String Quartets'></label>"
+    body += "<label>Entidad o proyecto (dato interno)<br><input name='label' type='text' required placeholder='OpenScore String Quartets'></label>"
+    body += "<label>Texto que debe aparecer<br><input name='display_text' type='text' required placeholder='OpenScore String Quartets'></label>"
     body += "<label>URL pública<br><input name='url' type='text' placeholder='https://...'></label></div>"
-    body += "<p>Texto de atribución o condición de uso<br><textarea name='instruction_text' placeholder='Texto solicitado por el proyecto...'></textarea></p>"
+    body += "<p>Petición original (sólo para conservar la procedencia, opcional)<br><textarea name='instruction_text' placeholder='Texto del README que explica la petición...'></textarea></p>"
     body += "<div class='grid'><label>Documento de origen<br><input name='source_path' type='text' placeholder='README.md'></label>"
     body += "<label><input type='checkbox' name='required' value='1' checked> Debe conservarse como requisito</label></div>"
     body += "<p><button>Guardar referencia</button></p></form></section>"
@@ -440,12 +461,12 @@ async def inspect_repository(repository_id: int):
             for ref in references:
                 conn.execute("""
                     INSERT INTO github_repository_references
-                    (repository_id,reference_type,label,url,instruction_text,source_path,source_excerpt,required,created_at,updated_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                    (repository_id,reference_type,label,display_text,url,instruction_text,source_path,source_excerpt,required,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(repository_id,reference_type,label,url,source_path) DO UPDATE SET
-                      instruction_text=excluded.instruction_text,source_excerpt=excluded.source_excerpt,
+                      display_text=excluded.display_text,instruction_text=excluded.instruction_text,source_excerpt=excluded.source_excerpt,
                       required=excluded.required,updated_at=excluded.updated_at
-                """, (repository_id, ref["reference_type"], ref["label"], ref["url"],
+                """, (repository_id, ref["reference_type"], ref["label"], ref["display_text"], ref["url"],
                       ref["instruction_text"], ref["source_path"], ref["source_excerpt"],
                       ref["required"], stamp, stamp))
             conn.execute("UPDATE github_repositories SET default_branch=? WHERE id=?", (branch, repository_id))
@@ -468,6 +489,7 @@ def save_reference(
     repository_id: int,
     reference_type: str = Form("attribution"),
     label: str = Form(...),
+    display_text: str = Form(...),
     url: str = Form(""),
     instruction_text: str = Form(""),
     source_path: str = Form(""),
@@ -487,10 +509,10 @@ def save_reference(
         stamp = now()
         conn.execute("""
             INSERT INTO github_repository_references
-            (repository_id,reference_type,label,url,instruction_text,source_path,source_excerpt,required,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?, ?,?,?)
+            (repository_id,reference_type,label,display_text,url,instruction_text,source_path,source_excerpt,required,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(repository_id,reference_type,label,url,source_path) DO UPDATE SET
-              instruction_text=excluded.instruction_text,required=excluded.required,updated_at=excluded.updated_at
-        """, (repository_id, reference_type, label, url, instruction_text.strip()[:4000],
+              display_text=excluded.display_text,instruction_text=excluded.instruction_text,required=excluded.required,updated_at=excluded.updated_at
+        """, (repository_id, reference_type, label, display_text.strip()[:1000], url, instruction_text.strip()[:4000],
               source_path.strip()[:500], "", 1 if required else 0, stamp, stamp))
     return RedirectResponse(f"/github/{repository_id}/acquisition", status_code=303)
