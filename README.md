@@ -80,6 +80,10 @@ Las pruebas no necesitan una conexión real a Internet Archive; la búsqueda HTT
 Los identificadores de Archive.org son únicos en el catálogo local. Si una nueva búsqueda devuelve el mismo identificador, se actualizan los metadatos y se conserva el primer momento de captación.
 
 
+## Adquisición guiada desde GitHub
+
+La siguiente etapa separa el descubrimiento de repositorios de su comprensión y adquisición. Cada repositorio tendrá un plan revisable, basado en su README, licencia, árbol y manifiestos, ejecutado por un motor común con estrategias reutilizables. La arquitectura y el caso de referencia OpenScore/Lieder están descritos en [docs/GITHUB-ADQUISICION-GUIADA.md](docs/GITHUB-ADQUISICION-GUIADA.md). Esta capacidad está especificada como siguiente bloque de implementación; no debe confundirse con una función ya disponible en la interfaz.
+
 ## Captación desde GitHub
 
 La sección web **Fuentes GitHub** permite descubrir repositorios públicos sin conocer previamente su URL:
