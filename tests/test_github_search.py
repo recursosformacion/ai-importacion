@@ -38,8 +38,8 @@ def test_github_repository_search_renders_results_and_add_action(tmp_path, monke
     assert response.status_code == 200
     assert "OpenScore/Lieder" in response.text
     assert "Open music scores and vocal parts" in response.text
-    assert 'action="/github/add"' in response.text
-    assert 'value="OpenScore/Lieder"' in response.text
+    assert "action='/github/add'" in response.text
+    assert "value='OpenScore/Lieder'" in response.text
     query = parse_qs(urlparse(requested["url"]).query)["q"][0]
     assert "choral musicxml" in query
     assert "license:cc-by-4.0" in query
