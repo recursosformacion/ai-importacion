@@ -38,8 +38,8 @@ def test_exploration_schema_persists_queries_and_seed_repositories(tmp_path, mon
         ).fetchone()[0] == 1
 
 
-def test_musical_threshold_is_not_lowered():
-    assert exploration.MIN_MUSICAL_FILES == 10
+def test_musical_repository_threshold_is_100():
+    assert exploration.MIN_MUSICAL_FILES == 100
     assert ".musicxml" in exploration.EXTENSIONS
     assert ".mxl" in exploration.EXTENSIONS
     assert ".mid" in exploration.EXTENSIONS
@@ -189,7 +189,7 @@ def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, m
                (full_name,html_url,default_branch,description,stars,license_spdx,
                 discovery_query,discovered_at,status,musical_file_count,last_checked_at)
                VALUES('OpenScore/Lieder','https://github.com/OpenScore/Lieder','main',
-                      'Open score collection',42,'CC-BY-4.0','seed','2026-01-01','qualified',35,'2026-01-01')"""
+                      'Open score collection',42,'CC-BY-4.0','seed','2026-01-01','qualified',135,'2026-01-01')"""
         )
         conn.execute(
             """INSERT INTO github_discovered_repositories
@@ -231,14 +231,14 @@ def test_exploration_table_shows_count_and_only_lists_repositories_at_threshold(
                (full_name,html_url,description,discovery_query,discovered_at,status,
                 musical_file_count,last_checked_at)
                VALUES('example/valid','https://github.com/example/valid','Valid repo',
-                      'test','2026-01-03','qualified',17,'2026-01-03')"""
+                      'test','2026-01-03','qualified',117,'2026-01-03')"""
         )
         conn.execute(
             """INSERT INTO github_discovered_repositories
                (full_name,html_url,discovery_query,discovered_at,status,
                 musical_file_count,last_checked_at)
                VALUES('example/too-small','https://github.com/example/too-small',
-                      'test','2026-01-02','below_threshold',9,'2026-01-02')"""
+                      'test','2026-01-02','below_threshold',99,'2026-01-02')"""
         )
         conn.execute(
             """INSERT INTO github_discovered_repositories
@@ -252,7 +252,28 @@ def test_exploration_table_shows_count_and_only_lists_repositories_at_threshold(
 
     assert response.status_code == 200
     assert "example/valid" in response.text
-    assert "<b>17</b>" in response.text
+    assert "<b>117</b>" in response.text
     assert "example/too-small" not in response.text
     assert "example/not-inspected" not in response.text
     assert "Sin inspeccionar" not in response.text
+
+
+def test_schema_reclassifies_old_qualified_repositories_below_new_threshold(tmp_path, monkeypatch):
+    monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "threshold-migration.sqlite3"))
+    exploration.ensure_schema()
+    with exploration.db() as conn:
+        conn.execute(
+            """INSERT INTO github_discovered_repositories
+               (full_name,html_url,discovery_query,discovered_at,status,
+                musical_file_count,last_checked_at)
+               VALUES('example/old-qualified','https://github.com/example/old-qualified',
+                      'test','2026-01-01','qualified',35,'2026-01-01')"""
+        )
+    exploration.ensure_schema()
+    with exploration.db() as conn:
+        row = conn.execute(
+            "SELECT status,below_threshold FROM github_discovered_repositories "
+            "WHERE full_name='example/old-qualified'"
+        ).fetchone()
+    assert row["status"] == "below_threshold"
+    assert row["below_threshold"] == 1
