@@ -291,7 +291,6 @@ def exploration_home(page: int = 1, status: str = "", q: str = ""):
             WHEN 'qualified' THEN 2 WHEN 'below_threshold' THEN 3
             WHEN 'partial' THEN 4 WHEN 'ignored' THEN 5 ELSE 6 END,
             discovered_at DESC LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
-        catalog_names={r["full_name"] for r in c.execute("SELECT full_name FROM github_repositories")} if False else set()
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
@@ -355,7 +354,7 @@ def exploration_repository_action(
         value.strip() for value in repositories
         if value and "/" in value and len(value) <= 200
     ))
-    if not selected or action not in {"ignore", "process", "restore"}:
+    if not selected or action not in {"ignore", "process", "restore", "catalog"}:
         return RedirectResponse("/github/exploration", status_code=303)
     if action == "catalog":
         from app import github_catalog
