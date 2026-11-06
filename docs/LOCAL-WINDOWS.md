@@ -1,6 +1,6 @@
 # Ejecución local en Windows
 
-La aplicación se ejecuta como servicio Python en el puerto **8900**. No necesita Docker ni cambios en Apache.
+La aplicación se ejecuta como servicio Python en el puerto **9500**. No necesita Docker ni cambios en Apache.
 
 ## Primer arranque y arranques posteriores
 
@@ -11,10 +11,12 @@ Desde el directorio del proyecto:
 
 El script crea \`.venv\` si no existe, instala/actualiza las dependencias de \`requirements.txt\`, crea los directorios persistentes y arranca Uvicorn.
 
-Abre:
+```powershell
+Set-Location D:\Proyectos\AI_OSAP\ai-importacion
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 9500
+```
 
-- Aplicación: http://127.0.0.1:8900
-- Comprobación: http://127.0.0.1:8900/health
+Abre la aplicación mediante la dirección Apache que ya tengas configurada, o directamente http://127.0.0.1:9500. Comprobación: http://127.0.0.1:9500/health
 
 Para detenerla, pulsa Ctrl+C o cierra la ventana de consola.
 
@@ -30,14 +32,14 @@ Estos directorios no se deben borrar al actualizar el código. La base de datos 
 
 ## Apache como proxy inverso (opcional)
 
-Uvicorn escucha únicamente en \`127.0.0.1\`, por lo que no queda expuesto directamente a otros equipos. Apache puede reenviar las peticiones al puerto local 8900.
+Uvicorn escucha únicamente en \`127.0.0.1\`, por lo que no queda expuesto directamente a otros equipos. Apache puede reenviar las peticiones al puerto local 9500.
 
 Activa los módulos \`mod_proxy\` y \`mod_proxy_http\`. En un VirtualHost dedicado, utiliza:
 
 \`\`\`apache
 ProxyPreserveHost On
-ProxyPass        / http://127.0.0.1:8900/
-ProxyPassReverse / http://127.0.0.1:8900/
+ProxyPass        / http://127.0.0.1:9500/
+ProxyPassReverse / http://127.0.0.1:9500/
 \`\`\`
 
 La aplicación debe ocupar la raíz de ese VirtualHost (por ejemplo, un subdominio propio), no una subruta como \`/ai-importacion/\`: la interfaz utiliza rutas absolutas desde \`/\`.
