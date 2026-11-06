@@ -91,3 +91,17 @@ def test_inspection_skips_error_repositories_instead_of_retrying_them_forever(tm
         "example/failed": "error",
         "example/pending": "qualified",
     }
+
+
+
+def test_exploration_budget_has_no_arbitrary_twenty_minute_cap(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    import app.main as main
+
+    monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "budget.sqlite3"))
+    with TestClient(main.app) as client:
+        response = client.get("/github/exploration")
+
+    assert response.status_code == 200
+    assert 'name="minutes" min=\'1\' value=\'60\'' in response.text
+    assert "max='20'" not in response.text
