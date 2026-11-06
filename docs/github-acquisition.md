@@ -36,8 +36,8 @@ La procedencia no es sólo la URL del repositorio. Se conservan referencias inde
 - Tipo: atribución, proyecto/colección, fuente original o licencia.
 - Nombre de la entidad o proyecto que debe citarse.
 - URL pública que debe acompañar a la referencia.
-- Texto de atribución o condición de uso.
-- Archivo y fragmento de documentación donde se encontró.
+- Texto exacto que debe aparecer en público (por ejemplo, «OpenScore String Quartets»), con su URL asociada.
+- Petición original del proyecto y fragmento documental, conservados únicamente como procedencia y justificación; nunca se muestran como texto de atribución.
 - Indicador de si la referencia debe conservarse como requisito.
 
 El extractor busca párrafos del README relacionados con citas, créditos, agradecimientos, menciones y uso público. Extrae los enlaces de esos párrafos y, cuando el texto lo permite, el nombre del proyecto mencionado. La detección automática es una ayuda, no una interpretación jurídica: debe revisarse y se pueden añadir referencias manualmente.
@@ -46,8 +46,9 @@ Ejemplo de información que se debe conservar:
 
 - Entidad: OpenScore String Quartets.
 - URL: https://musescore.com/openscore-string-quartets
-- Instrucción: mencionar OpenScore String Quartets en cualquier uso público de las partituras y proporcionar un enlace.
-- Origen: README del repositorio.
+- Texto que debe aparecer: «OpenScore String Quartets».
+- Enlace que acompaña al texto: https://musescore.com/openscore-string-quartets.
+- Petición original y origen: se conservan en los metadatos documentales, no en el texto público.
 
 La atribución se debe mantener junto a los recursos adquiridos y acompañar las futuras exportaciones o presentaciones del material. La licencia declarada por GitHub y las condiciones específicas del README se conservan como datos distintos.
 
