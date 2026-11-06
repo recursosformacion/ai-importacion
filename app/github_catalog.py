@@ -172,14 +172,14 @@ def github_home():
     body = """<h1>Fuentes GitHub</h1>
     <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
     Puedes descargar candidatos para su análisis local. La procedencia GitHub se conserva y no se incorporan automáticamente a OSAP.</p>
-    <section class="panel"><h2>Buscar repositorios musicales</h2>
+    <section class="panel"><h2>Buscar repositorios con archivos musicales</h2>
     <form method="get" action="/github/search">
-      <input name="q" type="search" required style="min-width:min(32rem,100%)" placeholder="musicxml, sheet music, choral scores, MIDI..." />
+      <input name="q" type="search" style="min-width:min(32rem,100%)" placeholder="Opcional: compositor, colección, repertorio o tema..." />
       <select name="sort"><option value="updated">Actualizados recientemente</option><option value="stars">Más estrellas</option></select>
       <select name="license"><option value="">Cualquier licencia</option><option value="mit">MIT</option><option value="cc0-1.0">CC0 1.0</option><option value="cc-by-4.0">CC BY 4.0</option><option value="cc-by-sa-4.0">CC BY-SA 4.0</option><option value="gpl-3.0">GPL 3.0</option></select>
-      <button>Buscar en GitHub</button>
+      <button>Buscar automáticamente</button>
     </form>
-    <p class="muted">Busca por tema, formato, compositor, colección o tipo de repertorio. GitHub devuelve repositorios cuyos nombres o descripciones coinciden; después podremos inventariar sus archivos.</p></section>
+    <p class="muted">Sin escribir nada, explora repositorios por distintas familias de formatos y repertorios musicales. Después se inspecciona el árbol de cada repositorio para localizar los archivos concretos, sea cual sea su formato reconocido. El campo opcional sirve para afinar la búsqueda.</p></section>
     <section class="panel"><h2>Añadir un repositorio conocido</h2>
     <form method="post" action="/github/add">
       <input name="repository" type="text" required placeholder="OpenScore/Lieder o https://github.com/OpenScore/Lieder">
@@ -215,40 +215,73 @@ def github_home():
 
 
 @router.get("/github/search", response_class=HTMLResponse)
-async def github_search(q: str, sort: str = "updated", license: str = ""):
-    """Search GitHub repositories by topic/name/description before adding them."""
+async def github_search(q: str = "", sort: str = "updated", license: str = ""):
+    """Discover repositories automatically, or narrow discovery with an optional topic."""
     ensure_schema()
     query = q.strip()
-    if not query:
-        return RedirectResponse("/github", status_code=303)
     if sort not in {"updated", "stars"}:
         sort = "updated"
-    search_terms = query
-    if license:
-        allowed_licenses = {"mit", "cc0-1.0", "cc-by-4.0", "cc-by-sa-4.0", "gpl-3.0"}
-        if license not in allowed_licenses:
-            license = ""
-        else:
-            search_terms += " license:" + license
-    params = urlencode({"q": search_terms + " fork:false", "sort": sort,
-                         "order": "desc", "per_page": 30})
-    try:
-        payload = await github_json(f"{API}/search/repositories?{params}")
-    except (ValueError, httpx.HTTPError) as exc:
-        body = "<h1>Error en la búsqueda de GitHub</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver</a></p>"
-        return HTMLResponse(_page("Búsqueda GitHub", body), status_code=502)
+    allowed_licenses = {"mit", "cc0-1.0", "cc-by-4.0", "cc-by-sa-4.0", "gpl-3.0"}
+    if license not in allowed_licenses:
+        license = ""
 
-    results = payload.get("items") or []
-    total = int(payload.get("total_count") or 0)
-    body = "<h1>Resultados de GitHub</h1>"
-    body += "<form method='get' action='/github/search'><input name='q' type='search' required value='" + esc(query) + "' />"
+    # GitHub repository search does not index every file in every repository.
+    # Run several independent discovery queries so the user need not know a
+    # repository name or a particular musical extension. The subsequent tree
+    # scan is what confirms the actual files and their extensions.
+    discovery_queries = [query] if query else [
+        "music", "sheet music", "musical scores", "musicxml",
+        "midi", "lilypond", "abc notation",
+    ]
+    if license:
+        discovery_queries = [term + " license:" + license for term in discovery_queries]
+
+    merged = {}
+    totals = []
+    errors = []
+    for term in discovery_queries:
+        params = urlencode({"q": term + " fork:false", "sort": sort,
+                            "order": "desc", "per_page": 30})
+        try:
+            payload = await github_json(f"{API}/search/repositories?{params}")
+            totals.append(int(payload.get("total_count") or 0))
+            for item in payload.get("items") or []:
+                full_name = item.get("full_name")
+                if full_name:
+                    current = merged.get(full_name)
+                    if current is None or (item.get("updated_at") or "") > (current.get("updated_at") or ""):
+                        merged[full_name] = item
+        except (ValueError, httpx.HTTPError) as exc:
+            errors.append(str(exc))
+            if not query and len(errors) == len(discovery_queries):
+                break
+
+    results = list(merged.values())
+    results.sort(
+        key=lambda item: (
+            int(item.get("stargazers_count") or 0) if sort == "stars"
+            else str(item.get("updated_at") or "")
+        ),
+        reverse=True,
+    )
+    results = results[:60]
+    total = sum(totals)
+    body = "<h1>Repositorios candidatos</h1>"
+    body += "<form method='get' action='/github/search'><input name='q' type='search' value='" + esc(query) + "' placeholder='Opcional: compositor, colección o tema...' />"
     body += "<select name='sort'><option value='updated'" + (" selected" if sort == "updated" else "") + ">Actualizados recientemente</option>"
     body += "<option value='stars'" + (" selected" if sort == "stars" else "") + ">Más estrellas</option></select>"
     body += "<select name='license'><option value=''>Cualquier licencia</option>"
     for value, label in (("mit","MIT"),("cc0-1.0","CC0 1.0"),("cc-by-4.0","CC BY 4.0"),("cc-by-sa-4.0","CC BY-SA 4.0"),("gpl-3.0","GPL 3.0")):
         body += "<option value='" + value + "'" + (" selected" if license == value else "") + ">" + label + "</option>"
     body += "</select><button>Buscar</button></form>"
-    body += "<p class='muted'>GitHub indica " + str(total) + " resultados; se muestran como máximo 30. Orden: " + ("actualización" if sort == "updated" else "estrellas") + ".</p>"
+    if query:
+        body += "<p class='muted'>Búsqueda afinada por: " + esc(query) + ". "
+    else:
+        body += "<p class='muted'>Búsqueda automática por siete familias de términos musicales. "
+    body += "GitHub ha devuelto " + str(total) + " coincidencias acumuladas; se muestran hasta 60 repositorios únicos."
+    body += " Son candidatos por metadatos, todavía no una confirmación de que contengan partituras.</p>"
+    if errors:
+        body += "<p class='muted'>Algunas consultas no pudieron completarse: " + esc("; ".join(errors)) + "</p>"
     if results:
         body += "<table><tr><th>Repositorio</th><th>Lenguaje</th><th>Estrellas</th><th>Licencia declarada</th><th>Actualizado</th><th></th></tr>"
         for item in results:
@@ -258,13 +291,13 @@ async def github_search(q: str, sort: str = "updated", license: str = ""):
             body += "<tr><td><a href='" + esc(item.get("html_url") or "") + "'><b>" + esc(full_name) + "</b></a><div class='muted'>" + esc(item.get("description") or "") + "</div></td>"
             body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>"
             body += "<td>" + esc(license_name) + "</td><td>" + esc((item.get("updated_at") or "")[:10]) + "</td>"
-            body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir</button></form></td></tr>"
+            body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir e inspeccionar</button></form></td></tr>"
         body += "</table>"
+        body += "<p class='muted'>Al añadir un repositorio, abre su ficha y pulsa «Leer repositorio»: esa inspección recorre el árbol y confirma los archivos musicales por extensión, sin limitarse a lo que diga la descripción.</p>"
     else:
-        body += "<p>No se han encontrado repositorios para esta búsqueda. Prueba con otros términos o elimina el filtro de licencia.</p>"
+        body += "<p>No se han encontrado repositorios en estas consultas. Puedes probar una búsqueda afinada o añadir una URL conocida.</p>"
     body += "<p><a href='/github'>Volver a Fuentes GitHub</a></p>"
     return HTMLResponse(_page("Búsqueda GitHub", body))
-
 
 @router.post("/github/add")
 async def github_add(repository: str = Form(...)):
