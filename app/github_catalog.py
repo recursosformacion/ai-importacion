@@ -291,7 +291,7 @@ async def github_search(q: str = "", sort: str = "updated", license: str = ""):
             body += "<tr><td><a href='" + esc(item.get("html_url") or "") + "'><b>" + esc(full_name) + "</b></a><div class='muted'>" + esc(item.get("description") or "") + "</div></td>"
             body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>"
             body += "<td>" + esc(license_name) + "</td><td>" + esc((item.get("updated_at") or "")[:10]) + "</td>"
-            body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir e inspeccionar</button></form></td></tr>"
+            body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir al catálogo</button></form></td></tr>"
         body += "</table>"
         body += "<p class='muted'>Al añadir un repositorio, abre su ficha y pulsa «Leer repositorio»: esa inspección recorre el árbol y confirma los archivos musicales por extensión, sin limitarse a lo que diga la descripción.</p>"
     else:
