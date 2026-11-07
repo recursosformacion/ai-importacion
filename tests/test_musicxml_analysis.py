@@ -112,3 +112,46 @@ def test_content_analysis_route_persists_downloaded_musicxml_results(tmp_path, m
         assert "Test Motet" in row["analysis_json"]
         page = client.get("/items/musicxml-route-test/content-analysis")
         assert "Test Motet" in page.text
+
+
+def test_work_title_has_priority_over_movement_title_and_preserves_both(tmp_path):
+    path = tmp_path / "score.musicxml"
+    path.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+    <score-partwise version="4.0">
+      <work><work-title>Symphony No. 5</work-title></work>
+      <movement-title>Allegro con brio</movement-title>
+      <identification>
+        <creator type="composer">Ludwig van Beethoven</creator>
+        <creator type="arranger">Example Arranger</creator>
+        <rights>Public domain</rights>
+        <encoding><software>Notation App</software><encoding-date>2026-01-02</encoding-date></encoding>
+      </identification>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>""", encoding="utf-8")
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Symphony No. 5"
+    assert result["work_title"] == "Symphony No. 5"
+    assert result["movement_title"] == "Allegro con brio"
+    assert result["title_source"] == "work-title"
+    assert result["creators"] == [
+        {"name": "Ludwig van Beethoven", "type": "composer"},
+        {"name": "Example Arranger", "type": "arranger"},
+    ]
+    assert result["rights"] == ["Public domain"]
+    assert result["encoding"]["software"] == "Notation App"
+    assert result["instrumentation"] == ["Piano"]
+
+
+def test_movement_title_is_used_when_work_title_is_absent(tmp_path):
+    path = tmp_path / "movement.musicxml"
+    path.write_text("""<score-partwise><movement-title>Adagio</movement-title>
+      <part-list/><part id="P1"/></score-partwise>""", encoding="utf-8")
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Adagio"
+    assert result["title_source"] == "movement-title"
+    assert result["work_title"] is None
