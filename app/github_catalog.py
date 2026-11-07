@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import os
@@ -10,11 +11,12 @@ from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.db import DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, connect
 
 router = APIRouter()
+_DOWNLOAD_TASKS: set[asyncio.Task] = set()
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 API = "https://api.github.com"
 TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
@@ -145,6 +147,16 @@ def ensure_schema() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_github_files_extension ON github_files(extension);
         CREATE INDEX IF NOT EXISTS idx_github_files_repo ON github_files(repository_id,path);
+        CREATE TABLE IF NOT EXISTS github_download_jobs (
+          repository_id INTEGER PRIMARY KEY REFERENCES github_repositories(id) ON DELETE CASCADE,
+          status TEXT NOT NULL DEFAULT 'idle',
+          total INTEGER NOT NULL DEFAULT 0,
+          completed INTEGER NOT NULL DEFAULT 0,
+          failed INTEGER NOT NULL DEFAULT 0,
+          current_path TEXT NOT NULL DEFAULT '',
+          started_at TEXT,
+          updated_at TEXT
+        );
         """)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_files)")}
         additions = {
@@ -524,6 +536,86 @@ async def github_download_file(file_id: int):
     return RedirectResponse(f"/github/{row['repository_id']}", status_code=303)
 
 
+async def _run_repository_downloads(repository_id: int, file_ids: list[int]) -> None:
+    """Download the selected repository inventory sequentially and persist progress."""
+    with db() as conn:
+        conn.execute("""UPDATE github_download_jobs SET status='running',started_at=?,updated_at=?,
+            total=?,completed=0,failed=0,current_path='' WHERE repository_id=?""",
+            (now(), now(), len(file_ids), repository_id))
+    for file_id in file_ids:
+        with db() as conn:
+            item = conn.execute("SELECT path FROM github_files WHERE id=? AND repository_id=?",
+                                (file_id, repository_id)).fetchone()
+            if not item:
+                continue
+            conn.execute("UPDATE github_download_jobs SET current_path=?,updated_at=? WHERE repository_id=?",
+                         (item["path"], now(), repository_id))
+        try:
+            await github_download_file(file_id)
+        except Exception:
+            # The single-file endpoint records ordinary download errors itself.
+            pass
+        with db() as conn:
+            status_row = conn.execute(
+                "SELECT download_status FROM github_files WHERE id=?", (file_id,)
+            ).fetchone()
+            failed = int(bool(status_row) and status_row["download_status"] != "downloaded")
+            conn.execute("""UPDATE github_download_jobs SET completed=completed+1,
+                failed=failed+?,updated_at=? WHERE repository_id=?""",
+                (failed, now(), repository_id))
+    with db() as conn:
+        conn.execute("""UPDATE github_download_jobs SET status='completed',current_path='',
+            updated_at=? WHERE repository_id=?""", (now(), repository_id))
+
+
+@router.post("/github/{repository_id}/download-all")
+def github_download_all(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        repo = conn.execute("SELECT id FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+        if not repo:
+            raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+        active = conn.execute(
+            "SELECT status FROM github_download_jobs WHERE repository_id=?", (repository_id,)
+        ).fetchone()
+        if active and active["status"] == "running":
+            return RedirectResponse(f"/github/{repository_id}", status_code=303)
+        file_ids = [row["id"] for row in conn.execute("""
+            SELECT id FROM github_files WHERE repository_id=?
+              AND COALESCE(download_status,'not_downloaded')<>'downloaded'
+              AND COALESCE(download_status,'not_downloaded')<>'too_large'
+            ORDER BY path
+        """, (repository_id,)).fetchall()]
+        conn.execute("""INSERT INTO github_download_jobs
+            (repository_id,status,total,completed,failed,current_path,started_at,updated_at)
+            VALUES(?,'queued',?,0,0,'',?,?)
+            ON CONFLICT(repository_id) DO UPDATE SET status='queued',total=excluded.total,
+              completed=0,failed=0,current_path='',started_at=excluded.started_at,
+              updated_at=excluded.updated_at""",
+            (repository_id, len(file_ids), now(), now()))
+    if file_ids:
+        task = asyncio.create_task(_run_repository_downloads(repository_id, file_ids))
+        _DOWNLOAD_TASKS.add(task)
+        task.add_done_callback(_DOWNLOAD_TASKS.discard)
+    else:
+        with db() as conn:
+            conn.execute("UPDATE github_download_jobs SET status='completed' WHERE repository_id=?",
+                         (repository_id,))
+    return RedirectResponse(f"/github/{repository_id}?download_all=started", status_code=303)
+
+
+@router.get("/github/{repository_id}/download-status")
+def github_download_status(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        row = conn.execute("SELECT * FROM github_download_jobs WHERE repository_id=?",
+                           (repository_id,)).fetchone()
+        if not row:
+            return JSONResponse({"status":"idle","total":0,"completed":0,"failed":0,"current_path":""})
+        return JSONResponse({key: row[key] for key in
+            ("status","total","completed","failed","current_path","updated_at")})
+
+
 @router.post("/github/{repository_id}/analyze")
 def github_analyze_repository(repository_id: int):
     """Analyze downloaded GitHub MusicXML/MIDI files with the shared engine."""
@@ -625,6 +717,8 @@ def github_repository(repository_id: int, q: str = ""):
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
+    body += "<form method='post' action='/github/" + str(repository_id) + "/download-all'><button>Descargar todos los archivos pendientes</button></form>"
+    body += "<section class='panel' id='download-progress' data-status-url='/github/" + str(repository_id) + "/download-status'><b>Descarga del repositorio:</b> <span id='download-state'>consultando…</span><p id='download-detail'></p><progress id='download-bar' max='100' value='0' style='width:100%'></progress></section>"
     body += "<p><a href='/github/" + str(repository_id) + "/acquisition'>Documentación, referencias y plan de adquisición del repositorio</a></p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/extract'><button>Extraer texto, PDF y OCR de archivos descargados</button></form>"
@@ -700,6 +794,26 @@ def github_repository(repository_id: int, q: str = ""):
     else:
         body += "<p>No hay archivos inventariados que coincidan. Ejecuta una lectura del repositorio.</p>"
     body += "<p><a href='/github'>Volver a fuentes GitHub</a></p>"
+    body += """<script>
+(async function(){
+ const panel=document.getElementById('download-progress'); if(!panel)return;
+ const url=panel.dataset.statusUrl;
+ async function refresh(){
+  try{
+   const response=await fetch(url,{cache:'no-store'}); if(!response.ok)return;
+   const d=await response.json();
+   const state=document.getElementById('download-state');
+   const detail=document.getElementById('download-detail');
+   const bar=document.getElementById('download-bar');
+   state.textContent=d.status==='running'?'En curso':d.status==='queued'?'En cola':d.status==='completed'?'Finalizada': 'Sin iniciar';
+   detail.textContent=d.completed+' de '+d.total+' archivos procesados · '+d.failed+' errores'+(d.current_path?' · Actual: '+d.current_path:'');
+   bar.value=d.total?Math.round(d.completed*100/d.total):0;
+   if(d.status==='running'||d.status==='queued')setTimeout(refresh,2000);
+  }catch(e){setTimeout(refresh,5000);}
+ }
+ refresh();
+})();
+</script>"""
     return HTMLResponse(_page("Repositorio " + repo["full_name"], body))
 
 
