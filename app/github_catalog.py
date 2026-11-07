@@ -284,105 +284,49 @@ def github_home(imported: int = 0):
 
 @router.get("/github/search", response_class=HTMLResponse)
 async def github_search(q: str = "", sort: str = "updated", license: str = ""):
-    """Discover repositories automatically, or narrow discovery with an optional topic."""
+    """Queue repository discovery and inspection without holding the browser request."""
     ensure_schema()
-    query = q.strip()
+    query = q.strip()[:160]
     if sort not in {"updated", "stars"}:
         sort = "updated"
     allowed_licenses = {"mit", "cc0-1.0", "cc-by-4.0", "cc-by-sa-4.0", "gpl-3.0"}
     if license not in allowed_licenses:
         license = ""
 
-    # GitHub repository search does not index every file in every repository.
-    # Run several independent discovery queries so the user need not know a
-    # repository name or a particular musical extension. The subsequent tree
-    # scan is what confirms the actual files and their extensions.
-    discovery_queries = [query] if query else [
-        "music", "sheet music", "musical scores", "musicxml",
-        "midi", "lilypond", "abc notation",
-    ]
+    from app import github_exploration as exploration
+    exploration.ensure_schema()
+
+    # Reuse the persistent exploration worker: discovery and tree inspection
+    # happen in the background, while the browser immediately receives its
+    # progress page. A custom search is stored as another resumable query.
+    terms = [query] if query else list(exploration.QUERIES)
     if license:
-        discovery_queries = [term + " license:" + license for term in discovery_queries]
+        terms = [term + " license:" + license for term in terms]
 
-    merged = {}
-    totals = []
-    errors = []
-    for term in discovery_queries:
-        params = urlencode({"q": term + " fork:false", "sort": sort,
-                            "order": "desc", "per_page": 30})
-        try:
-            payload = await github_json(f"{API}/search/repositories?{params}")
-            totals.append(int(payload.get("total_count") or 0))
-            for item in payload.get("items") or []:
-                full_name = item.get("full_name")
-                if full_name:
-                    current = merged.get(full_name)
-                    if current is None or (item.get("updated_at") or "") > (current.get("updated_at") or ""):
-                        merged[full_name] = item
-        except (ValueError, httpx.HTTPError) as exc:
-            errors.append(str(exc))
-            if not query and len(errors) == len(discovery_queries):
-                break
+    with exploration.db() as conn:
+        for term in terms:
+            conn.execute(
+                """INSERT INTO github_discovery_queries(query,page,total_count,status,last_error,updated_at)
+                   VALUES(?,1,NULL,'pending',NULL,?)
+                   ON CONFLICT(query) DO UPDATE SET page=1,total_count=NULL,
+                     status='pending',last_error=NULL,updated_at=excluded.updated_at""",
+                (term, now()),
+            )
+        state = conn.execute(
+            "SELECT job_status,enabled FROM github_exploration_state WHERE id=1"
+        ).fetchone()
+        if not state or state["job_status"] not in ("queued", "running") or not state["enabled"]:
+            conn.execute(
+                """UPDATE github_exploration_state
+                   SET enabled=1,job_status='queued',requested_minutes=60,
+                       progress_discoveries=0,progress_inspections=0,
+                       last_message=? WHERE id=1""",
+                ("Búsqueda automática en cola: " + (query or "todas las familias musicales") + ".",),
+            )
 
-    discovered = list(merged.values())
-    discovered.sort(
-        key=lambda item: (
-            int(item.get("stargazers_count") or 0) if sort == "stars"
-            else str(item.get("updated_at") or "")
-        ),
-        reverse=True,
-    )
+    exploration.start_exploration_worker()
+    return RedirectResponse("/github/exploration", status_code=303)
 
-    # Verify actual repository contents before presenting a useful candidate.
-    results = []
-    inspected = 0
-    inspection_errors = []
-    for item in discovered[:MAX_REPOSITORIES_TO_INSPECT]:
-        try:
-            musical_count, tree_truncated = await count_musical_pieces(item)
-            inspected += 1
-            if musical_count >= MIN_MUSICAL_PIECES:
-                item["musical_file_count"] = musical_count
-                item["tree_truncated"] = tree_truncated
-                results.append(item)
-        except (ValueError, httpx.HTTPError) as exc:
-            inspection_errors.append(str(exc))
-    total = sum(totals)
-    body = "<h1>Repositorios candidatos</h1>"
-    body += "<form method='get' action='/github/search'><input name='q' type='search' value='" + esc(query) + "' placeholder='Opcional: compositor, colección o tema...' />"
-    body += "<select name='sort'><option value='updated'" + (" selected" if sort == "updated" else "") + ">Actualizados recientemente</option>"
-    body += "<option value='stars'" + (" selected" if sort == "stars" else "") + ">Más estrellas</option></select>"
-    body += "<select name='license'><option value=''>Cualquier licencia</option>"
-    for value, label in (("mit","MIT"),("cc0-1.0","CC0 1.0"),("cc-by-4.0","CC BY 4.0"),("cc-by-sa-4.0","CC BY-SA 4.0"),("gpl-3.0","GPL 3.0")):
-        body += "<option value='" + value + "'" + (" selected" if license == value else "") + ">" + label + "</option>"
-    body += "</select><button>Buscar</button></form>"
-    if query:
-        body += "<p class='muted'>Búsqueda afinada por: " + esc(query) + ". "
-    else:
-        body += "<p class='muted'>Búsqueda automática por siete familias de términos musicales. "
-    body += "GitHub ha devuelto " + str(total) + " coincidencias acumuladas; se muestran hasta 60 repositorios únicos."
-    body += " Se han inspeccionado " + str(inspected) + " árboles; sólo se muestran repositorios con al menos 11 archivos musicales reconocibles.</p>"
-    if errors:
-        body += "<p class='muted'>Algunas consultas de búsqueda no pudieron completarse: " + esc("; ".join(errors)) + "</p>"
-    if inspection_errors:
-        body += "<p class='muted'>No se pudieron inspeccionar algunos repositorios: " + esc("; ".join(inspection_errors[:3])) + "</p>"
-    if results:
-        body += "<table><tr><th>Repositorio</th><th>Archivos musicales reconocidos</th><th>Lenguaje</th><th>Estrellas</th><th>Licencia declarada</th><th>Actualizado</th><th></th></tr>"
-        for item in results:
-            full_name = item.get("full_name") or ""
-            license_data = item.get("license") or {}
-            license_name = license_data.get("spdx_id") or license_data.get("name") or "No declarada"
-            body += "<tr><td><a href='" + esc(item.get("html_url") or "") + "'><b>" + esc(full_name) + "</b></a><div class='muted'>" + esc(item.get("description") or "") + "</div></td>"
-            body += "<td>" + str(item.get("musical_file_count", 0)) + ("+" if item.get("tree_truncated") else "") + "</td>"
-            body += "<td>" + esc(item.get("language") or "—") + "</td><td>" + str(int(item.get("stargazers_count") or 0)) + "</td>"
-            body += "<td>" + esc(license_name) + "</td><td>" + esc((item.get("updated_at") or "")[:10]) + "</td>"
-            body += "<td><form method='post' action='/github/add'><input type='hidden' name='repository' value='" + esc(full_name) + "'><button>Añadir al catálogo</button></form></td></tr>"
-        body += "</table>"
-        body += "<p class='muted'>El recuento se basa en extensiones musicales explícitas del árbol GitHub. Archivos genéricos .xml/.txt, PDF, imágenes y ZIP no se cuentan como piezas confirmadas.</p>"
-    else:
-        body += "<p>No se han encontrado repositorios en estas consultas. Puedes probar una búsqueda afinada o añadir una URL conocida.</p>"
-    body += "<p><a href='/github'>Volver a Fuentes GitHub</a></p>"
-    return HTMLResponse(_page("Búsqueda GitHub", body))
 
 @router.post("/github/add")
 async def github_add(repository: str = Form(...)):
