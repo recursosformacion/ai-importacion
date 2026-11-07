@@ -612,6 +612,11 @@ def github_download_status(repository_id: int):
                            (repository_id,)).fetchone()
         if not row:
             return JSONResponse({"status":"idle","total":0,"completed":0,"failed":0,"current_path":""})
+        if row["status"] in {"queued","running"} and repository_id not in _DOWNLOAD_TASKS:
+            conn.execute("UPDATE github_download_jobs SET status='interrupted',updated_at=? WHERE repository_id=?",
+                         (now(), repository_id))
+            row = conn.execute("SELECT * FROM github_download_jobs WHERE repository_id=?",
+                               (repository_id,)).fetchone()
         return JSONResponse({key: row[key] for key in
             ("status","total","completed","failed","current_path","updated_at")})
 
@@ -805,7 +810,7 @@ def github_repository(repository_id: int, q: str = ""):
    const state=document.getElementById('download-state');
    const detail=document.getElementById('download-detail');
    const bar=document.getElementById('download-bar');
-   state.textContent=d.status==='running'?'En curso':d.status==='queued'?'En cola':d.status==='completed'?'Finalizada': 'Sin iniciar';
+   state.textContent=d.status==='running'?'En curso':d.status==='queued'?'En cola':d.status==='completed'?'Finalizada':d.status==='interrupted'?'Interrumpida; pulsa de nuevo para continuar':'Sin iniciar';
    detail.textContent=d.completed+' de '+d.total+' archivos procesados · '+d.failed+' errores'+(d.current_path?' · Actual: '+d.current_path:'');
    bar.value=d.total?Math.round(d.completed*100/d.total):0;
    if(d.status==='running'||d.status==='queued')setTimeout(refresh,2000);
