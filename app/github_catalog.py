@@ -663,16 +663,40 @@ def github_repository(repository_id: int, q: str = ""):
         """, (repository_id, q, "%" + q + "%")).fetchall()
         scan = conn.execute("SELECT * FROM github_scans WHERE repository_id=? ORDER BY id DESC LIMIT 1", (repository_id,)).fetchone()
         total = conn.execute("SELECT COUNT(*) FROM github_files WHERE repository_id=? AND extension <> '.txt'", (repository_id,)).fetchone()[0]
+        download_counts = conn.execute("""
+            SELECT
+              SUM(CASE WHEN download_status='downloaded' THEN 1 ELSE 0 END) AS downloaded,
+              SUM(CASE WHEN COALESCE(download_status,'not_downloaded') NOT IN ('downloaded','too_large') THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN download_status='too_large' THEN 1 ELSE 0 END) AS too_large
+            FROM github_files WHERE repository_id=? AND extension <> '.txt'
+        """, (repository_id,)).fetchone()
+        downloaded_count = int(download_counts["downloaded"] or 0)
+        pending_count = int(download_counts["pending"] or 0)
+        too_large_count = int(download_counts["too_large"] or 0)
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
+    body += "<section class='panel' style='border:2px solid #174f89;background:#fff'>"
+    body += "<h2 style='margin-top:0'>Descarga del repositorio</h2>"
+    body += "<p><b>" + str(total) + " archivos inventariados</b> · " + str(downloaded_count) + " descargados · " + str(pending_count) + " pendientes"
+    if too_large_count:
+        body += " · " + str(too_large_count) + " superan el límite de descarga"
+    body += "</p>"
+    if pending_count:
+        body += "<form method='post' action='/github/" + str(repository_id) + "/download-all'><button style='font-size:1.1rem;padding:.9rem 1.3rem'>Descargar los " + str(pending_count) + " archivos pendientes</button></form>"
+    elif downloaded_count:
+        body += "<p><b>Todos los archivos que se pueden descargar ya están descargados.</b></p>"
+    else:
+        body += "<p>No hay archivos pendientes de descarga.</p>"
+    body += "<section id='download-progress' data-status-url='/github/" + str(repository_id) + "/download-status'><b>Progreso:</b> <span id='download-state'>consultando…</span><p id='download-detail'></p><progress id='download-bar' max='100' value='0' style='width:100%'></progress></section></section>"
+    if downloaded_count:
+        body += "<details class='panel'><summary>Herramientas posteriores a la descarga</summary>"
+        body += "<p>Estas operaciones solo tienen sentido después de descargar los archivos.</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/extract'><button>Extraer texto, PDF y OCR de archivos descargados</button></form>"
+        body += "<p class='muted'>El análisis y la extracción se guardan por separado del catálogo de Internet Archive.</p></details>"
+    body += "<details class='panel'><summary>Opciones avanzadas del repositorio</summary>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
-    body += "<form method='post' action='/github/" + str(repository_id) + "/download-all'><button>Descargar todos los archivos pendientes</button></form>"
-    body += "<section class='panel' id='download-progress' data-status-url='/github/" + str(repository_id) + "/download-status'><b>Descarga del repositorio:</b> <span id='download-state'>consultando…</span><p id='download-detail'></p><progress id='download-bar' max='100' value='0' style='width:100%'></progress></section>"
-    body += "<p><a href='/github/" + str(repository_id) + "/acquisition'>Documentación, referencias y plan de adquisición del repositorio</a></p>"
-    body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
-    body += "<form method='post' action='/github/" + str(repository_id) + "/extract'><button>Extraer texto, PDF y OCR de archivos descargados</button></form>"
-    body += "<p class='muted'>Extracción local de PDF, imágenes y formatos de notación. Los resultados permanecen separados de Internet Archive.</p>"
-    body += "<p class='muted'>El análisis utiliza el mismo motor estructural que Internet Archive para MusicXML, MXL, XML y MIDI. Los resultados GitHub se guardan por separado, sin mezclar catálogos ni procedencias.</p>"
+    body += "<p><a href='/github/" + str(repository_id) + "/acquisition'>Documentación, referencias y plan de adquisición</a></p></details>"
     if scan:
         body += "<p class='muted'>Última lectura: " + esc(scan["completed_at"] or scan["started_at"]) + " · " + str(scan["candidate_count"]) + " archivos candidatos · " + ("árbol truncado: la lectura puede ser parcial" if scan["truncated"] else "árbol completo") + "</p>"
         if scan["error_text"]:
