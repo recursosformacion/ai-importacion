@@ -14,7 +14,8 @@ La clave del recurso es determinista para la combinación de repositorio y ruta 
 
 El documento utiliza el esquema `osap-resource-import/1.0` e incluye:
 
-- `resource`: título, creadores e instrumentación cuando el análisis los haya podido extraer.
+- `resource`: título, evidencia del campo de título utilizado, candidatos derivados del nombre del fichero, creadores e instrumentación cuando el análisis los haya podido extraer.
+- En MusicXML/MXL se prioriza `work-title` para identificar la composición. `movement-title` se conserva por separado y solo se usa como título principal cuando falta `work-title`. También se conservan los creadores por tipo (composer, arranger, etc.), derechos declarados, fuente indicada y datos de codificación.
 - `source`: proveedor, repositorio, descripción, rama, licencia declarada, ruta y enlaces originales.
 - `file`: ruta dentro del paquete, nombre original, formato, tamaño y SHA-256.
 - `analysis`: tipo, estado, metadatos estructurales, error y fecha de análisis.
