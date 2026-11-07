@@ -35,13 +35,26 @@ def build_github_resource_document(
     if not isinstance(metadata, dict):
         metadata = {}
 
+    extracted_title = metadata.get("work_title") or metadata.get("title")
+    filename_stem = Path(str(source_file.get("name") or source_path)).stem
+    instrumentation = metadata.get("instrumentation")
+    if instrumentation is None:
+        instrumentation = [
+            part.get("name")
+            for part in (metadata.get("parts") or [])
+            if isinstance(part, dict) and part.get("name")
+        ]
     return {
         "schema": SCHEMA_VERSION,
         "resource_key": stable_resource_id(full_name, source_path),
         "resource": {
-            "title": metadata.get("title"),
+            "title": extracted_title,
+            "title_source": metadata.get("title_source") if extracted_title else None,
+            "title_candidates": [
+                {"value": filename_stem, "source": "source_filename"}
+            ] if filename_stem else [],
             "creators": metadata.get("creators") or [],
-            "instrumentation": metadata.get("parts") or metadata.get("instruments") or [],
+            "instrumentation": instrumentation or [],
             "metadata_status": analysis_data.get("status") or "not_analyzed",
             "metadata_source": "file_analysis" if metadata else None,
         },
