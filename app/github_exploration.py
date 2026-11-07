@@ -310,10 +310,8 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         filtered_total=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories"+clause,params).fetchone()["n"]
         repositories=c.execute("""SELECT full_name,description,status,musical_file_count,
           updated_at,last_checked_at,last_error FROM github_discovered_repositories"""+clause+"""
-          ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'error' THEN 1
-            WHEN 'qualified' THEN 2 WHEN 'below_threshold' THEN 3
-            WHEN 'partial' THEN 4 WHEN 'ignored' THEN 5 ELSE 6 END,
-            discovered_at DESC LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
+          ORDER BY musical_file_count DESC, full_name COLLATE NOCASE ASC
+          LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
     if catalog_added or catalog_skipped:
