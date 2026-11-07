@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import json
 import os
+import tempfile
+import zipfile
 import re
 from pathlib import Path
 from datetime import datetime, timezone
@@ -11,9 +14,11 @@ from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from starlette.background import BackgroundTask
 
 from app.db import DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, connect
+from app.resource_export import build_github_resource_document, encode_resource_json, stable_resource_id
 
 router = APIRouter()
 _DOWNLOAD_TASKS: dict[int, asyncio.Task] = {}
@@ -648,6 +653,112 @@ def github_extract_repository(repository_id: int):
     return RedirectResponse(f"/github/{repository_id}?extraction=done", status_code=303)
 
 
+@router.get("/github/{repository_id}/export-json")
+def github_export_resources_json(repository_id: int):
+    """Export one JSON document and its single source file per downloaded resource."""
+    ensure_schema()
+    with db() as conn:
+        repo_row = conn.execute(
+            "SELECT * FROM github_repositories WHERE id=?", (repository_id,)
+        ).fetchone()
+        if not repo_row:
+            raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+        rows = conn.execute("""
+            SELECT f.*,
+                   a.analysis_type, a.status AS analysis_status,
+                   a.analysis_json, a.error_text AS analysis_error,
+                   a.analyzed_at, a.sha256 AS analysis_sha256,
+                   x.status AS extraction_status, x.page_count,
+                   x.extracted_characters, x.extracted_text,
+                   x.error_text AS extraction_error, x.analyzed_at AS extracted_at,
+                   x.sha256 AS extraction_sha256
+            FROM github_files f
+            LEFT JOIN github_file_analyses a ON a.github_file_id=f.id
+            LEFT JOIN github_content_extractions x ON x.github_file_id=f.id
+            WHERE f.repository_id=? AND f.download_status='downloaded'
+              AND f.local_path IS NOT NULL
+            ORDER BY f.path
+        """, (repository_id,)).fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=409, detail="Este repositorio todavía no tiene ficheros descargados.")
+
+    fd, archive_path = tempfile.mkstemp(prefix="ai-importacion-resources-", suffix=".zip")
+    os.close(fd)
+    exported = 0
+    missing = []
+    try:
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for row in rows:
+                local_path = Path(row["local_path"])
+                if not local_path.is_file():
+                    missing.append(row["path"])
+                    continue
+                resource_key = stable_resource_id(repo_row["full_name"], row["path"])
+                extension = Path(row["path"]).suffix.lower()
+                package_file = "files/" + resource_key + extension
+                analysis = {
+                    "type": row["analysis_type"],
+                    "status": row["analysis_status"],
+                    "metadata": {},
+                    "error": row["analysis_error"],
+                    "analyzed_at": row["analyzed_at"],
+                }
+                if row["analysis_json"] and row["analysis_sha256"] == row["sha256"]:
+                    try:
+                        analysis["metadata"] = json.loads(row["analysis_json"])
+                    except (TypeError, ValueError):
+                        analysis["error"] = "El resultado de análisis guardado no contiene JSON válido."
+                elif row["analysis_status"]:
+                    analysis["status"] = "stale"
+                extraction = {
+                    "status": row["extraction_status"] if row["extraction_sha256"] == row["sha256"] else "stale",
+                    "page_count": row["page_count"],
+                    "character_count": row["extracted_characters"],
+                    "text": row["extracted_text"] if row["extraction_sha256"] == row["sha256"] else "",
+                    "error": row["extraction_error"],
+                    "extracted_at": row["extracted_at"],
+                }
+                document = build_github_resource_document(
+                    dict(repo_row),
+                    {
+                        "id": row["id"], "path": row["path"], "name": row["name"],
+                        "extension": row["extension"], "size_bytes": row["size_bytes"],
+                        "downloaded_bytes": row["downloaded_bytes"], "sha256": row["sha256"],
+                        "git_sha": row["sha"], "html_url": row["html_url"],
+                        "download_url": row["download_url"], "first_seen_at": row["first_seen_at"],
+                        "last_seen_at": row["last_seen_at"],
+                    },
+                    analysis,
+                    extraction,
+                    package_file=package_file,
+                )
+                archive.writestr("resources/" + resource_key + ".json", encode_resource_json(document))
+                archive.write(local_path, package_file)
+                exported += 1
+            archive.writestr("manifest.json", encode_resource_json({
+                "schema": "osap-resource-import-package/1.0",
+                "provider": "github",
+                "repository": repo_row["full_name"],
+                "resource_count": exported,
+                "omitted_missing_files": missing,
+            }))
+        if not exported:
+            os.unlink(archive_path)
+            raise HTTPException(status_code=409, detail="No se encontró ningún fichero descargado en disco.")
+        filename = str(repo_row["full_name"]).replace("/", "-") + "-resources-json.zip"
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=filename,
+            background=BackgroundTask(os.unlink, archive_path),
+        )
+    except Exception:
+        if os.path.exists(archive_path):
+            os.unlink(archive_path)
+        raise
+
+
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
 def github_repository(repository_id: int, q: str = ""):
     ensure_schema()
@@ -690,6 +801,9 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p>No hay archivos pendientes de descarga.</p>"
     body += "<section id='download-progress' data-status-url='/github/" + str(repository_id) + "/download-status'><b>Progreso:</b> <span id='download-state'>consultando…</span><p id='download-detail'></p><progress id='download-bar' max='100' value='0' style='width:100%'></progress></section></section>"
     if downloaded_count:
+        body += "<section class='panel'><h2>Preparar datos de los recursos</h2>"
+        body += "<p>Genera un paquete ZIP con un JSON por cada fichero descargado y el propio fichero. Incluye los metadatos y análisis disponibles; todavía no incorpora nada a OSAP.</p>"
+        body += "<a class='button' href='/github/" + str(repository_id) + "/export-json'>Generar paquete JSON (" + str(downloaded_count) + " recursos)</a></section>"
         body += "<details class='panel'><summary>Herramientas posteriores a la descarga</summary>"
         body += "<p>Estas operaciones solo tienen sentido después de descargar los archivos.</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
@@ -799,7 +913,7 @@ def _page(title: str, body: str) -> str:
     main{max-width:1100px;margin:1.5rem auto;padding:0 1rem}
     .panel{background:white;border:1px solid #dce2e8;border-radius:10px;padding:1rem;margin:1rem 0}
     input,button{font:inherit;padding:.65rem;border:1px solid #aab6c4;border-radius:6px}
-    button{background:#174f89;color:white;border:0;cursor:pointer}
+    button{background:#174f89;color:white;border:0;cursor:pointer}.button{display:inline-block;background:#174f89;color:white;padding:.75rem 1rem;border-radius:6px;text-decoration:none}
     table{border-collapse:collapse;width:100%;background:white}td,th{text-align:left;padding:.65rem;border-bottom:1px solid #e1e6eb;vertical-align:top}
     th{background:#edf1f5}.muted{color:#5d6977;font-size:.9rem}a{color:#175ca8}.folder-index{columns:2;column-gap:2rem}.folder-index li{break-inside:avoid;margin:.25rem 0}.folder-heading th{background:#dfe8f1;padding-top:1rem}
     </style>"""
