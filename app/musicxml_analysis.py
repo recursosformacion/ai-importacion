@@ -73,7 +73,11 @@ def analyze_musicxml(path: str | Path) -> dict:
     root_name = _local_name(root.tag)
     if root_name not in {"score-partwise", "score-timewise"}:
         raise NotMusicXMLFileError("El XML no tiene la estructura de una partitura MusicXML.")
-    title = _first_text(root, "movement-title") or _first_text(root, "work-title")
+    work_title = _first_text(root, "work-title")
+    movement_title = _first_text(root, "movement-title")
+    # work-title identifies the composition; movement-title may identify only
+    # a movement (e.g. Allegro), so it is a fallback rather than the priority.
+    title = work_title or movement_title
     creators = []
     seen_creators = set()
     for element in root.iter():
@@ -101,13 +105,36 @@ def analyze_musicxml(path: str | Path) -> dict:
     else:
         measures = sum(1 for child in root if _local_name(child.tag) == "measure")
         parts = [{"id": part_id, "name": name, "measures": measures} for part_id, name in part_names.items()]
+    rights = []
+    for element in root.iter():
+        if _local_name(element.tag) == "rights" and element.text and element.text.strip():
+            value = element.text.strip()
+            if value not in rights:
+                rights.append(value)
+    source_text = _first_text(root, "source")
+    encoding = {
+        "software": _first_text(root, "software"),
+        "encoding_date": _first_text(root, "encoding-date"),
+        "supports": [
+            element.attrib.copy()
+            for element in root.iter()
+            if _local_name(element.tag) == "supports"
+        ],
+    }
     return {
         "format": "mxl" if source.suffix.lower() == ".mxl" else "musicxml",
         "status": "ok",
         "title": title,
+        "work_title": work_title,
+        "movement_title": movement_title,
+        "title_source": "work-title" if work_title else ("movement-title" if movement_title else None),
         "creators": creators,
+        "rights": rights,
+        "declared_source": source_text,
+        "encoding": encoding,
         "part_count": len(parts),
         "parts": parts,
+        "instrumentation": [part["name"] for part in parts if part["name"]],
         "measure_count": max((part["measures"] for part in parts), default=0),
         "root_element": root_name,
         "source_size_bytes": source.stat().st_size,
