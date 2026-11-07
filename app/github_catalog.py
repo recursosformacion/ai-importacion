@@ -526,6 +526,7 @@ async def github_download_all(repository_id: int):
             return RedirectResponse(f"/github/{repository_id}", status_code=303)
         file_ids = [row["id"] for row in conn.execute("""
             SELECT id FROM github_files WHERE repository_id=?
+              AND extension <> '.txt'
               AND COALESCE(download_status,'not_downloaded')<>'downloaded'
               AND COALESCE(download_status,'not_downloaded')<>'too_large'
             ORDER BY path
