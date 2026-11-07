@@ -206,6 +206,10 @@ def init_db():
           completed_at TEXT,
           error_text TEXT
         );
+        CREATE TABLE IF NOT EXISTS app_startup_migrations(
+          migration_key TEXT PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
         """)
         analysis_job_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(content_analysis_jobs)")
@@ -222,55 +226,66 @@ def init_db():
                WHERE status='running'""",
             (now(),),
         )
-        stale_xml = conn.execute(
-            """SELECT fa.file_id FROM archive_file_analyses fa
-               JOIN archive_files f ON f.id=fa.file_id
-               WHERE fa.status='error'
-                 AND fa.error_text='El XML no tiene la estructura de una partitura MusicXML.'
-                 AND lower(f.file_name) LIKE '%.xml'
-                 AND lower(f.file_name) NOT LIKE '%.musicxml'"""
-        ).fetchall()
-        for row in stale_xml:
+        cleanup_migration = "normalize_archive_file_relevance_v1"
+        cleanup_done = conn.execute(
+            "SELECT 1 FROM app_startup_migrations WHERE migration_key=?",
+            (cleanup_migration,),
+        ).fetchone()
+        if not cleanup_done:
+            stale_xml = conn.execute(
+                """SELECT fa.file_id FROM archive_file_analyses fa
+                   JOIN archive_files f ON f.id=fa.file_id
+                   WHERE fa.status='error'
+                     AND fa.error_text='El XML no tiene la estructura de una partitura MusicXML.'
+                     AND lower(f.file_name) LIKE '%.xml'
+                     AND lower(f.file_name) NOT LIKE '%.musicxml'"""
+            ).fetchall()
+            for row in stale_xml:
+                conn.execute(
+                    """UPDATE archive_file_analyses
+                       SET status='not_musicxml',analysis_json=?,error_text=NULL
+                       WHERE file_id=?""",
+                    (
+                        json.dumps({
+                            "format": "xml",
+                            "status": "not_musicxml",
+                            "message": "XML válido, pero no es una partitura MusicXML.",
+                        }, ensure_ascii=False),
+                        row["file_id"],
+                    ),
+                )
             conn.execute(
-                """UPDATE archive_file_analyses
-                   SET status='not_musicxml',analysis_json=?,error_text=NULL
-                   WHERE file_id=?""",
-                (
-                    json.dumps({
-                        "format": "xml",
-                        "status": "not_musicxml",
-                        "message": "XML válido, pero no es una partitura MusicXML.",
-                    }, ensure_ascii=False),
-                    row["file_id"],
-                ),
+                """UPDATE archive_files SET relevant=0
+                   WHERE lower(file_name) LIKE '%.xml'
+                     AND (
+                       lower(file_name) LIKE '%_files.xml'
+                       OR lower(file_name) LIKE '%_meta.xml'
+                       OR lower(file_name) LIKE '%_metadata.xml'
+                       OR lower(file_name) LIKE '%_contents.xml'
+                       OR lower(COALESCE(archive_format,'')) IN ('metadata','marc','dublin core','contents')
+                     )"""
             )
-        conn.execute(
-            """UPDATE archive_files SET relevant=0
-               WHERE lower(file_name) LIKE '%.xml'
-                 AND (
-                   lower(file_name) LIKE '%_files.xml'
-                   OR lower(file_name) LIKE '%_meta.xml'
-                   OR lower(file_name) LIKE '%_metadata.xml'
-                   OR lower(file_name) LIKE '%_contents.xml'
-                   OR lower(COALESCE(archive_format,'')) IN ('metadata','marc','dublin core','contents')
-                 )"""
-        )
-        conn.execute(
-            """UPDATE archive_files SET relevant=0
-               WHERE lower(file_name) LIKE '%thumb%'
-                  OR lower(file_name) LIKE '%thumbnail%'
-                  OR lower(file_name) LIKE '%tile%'
-                  OR lower(file_name) LIKE '%scandata%'
-                  OR lower(COALESCE(archive_format,'')) LIKE '%single page processed jp2%'
-                  OR lower(COALESCE(archive_format,'')) LIKE '%single page original jp2%'
-                  OR lower(COALESCE(archive_format,'')) LIKE '%jp2 zip%'
-                  OR lower(COALESCE(archive_format,'')) LIKE '%jp2 tar%'"""
-        )
+            conn.execute(
+                """UPDATE archive_files SET relevant=0
+                   WHERE lower(file_name) LIKE '%thumb%'
+                      OR lower(file_name) LIKE '%thumbnail%'
+                      OR lower(file_name) LIKE '%tile%'
+                      OR lower(file_name) LIKE '%scandata%'
+                      OR lower(COALESCE(archive_format,'')) LIKE '%single page processed jp2%'
+                      OR lower(COALESCE(archive_format,'')) LIKE '%single page original jp2%'
+                      OR lower(COALESCE(archive_format,'')) LIKE '%jp2 zip%'
+                      OR lower(COALESCE(archive_format,'')) LIKE '%jp2 tar%'"""
+            )
+            conn.execute(
+                "INSERT INTO app_startup_migrations(migration_key,applied_at) VALUES(?,?)",
+                (cleanup_migration, now()),
+            )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    init_db()
+    # SQLite schema/migrations are synchronous; keep them off the event loop.
+    await run_in_threadpool(init_db)
     from app.github_exploration import resume_exploration_worker, stop_exploration_worker
     exploration_worker = resume_exploration_worker()
     workers = [
