@@ -699,12 +699,36 @@ def github_export_resources_json(repository_id: int):
                 package_file = "files/" + resource_key + extension
                 analysis = {
                     "type": row["analysis_type"],
-                    "status": row["analysis_status"],
+                    "status": row["analysis_status"] or "not_analyzed",
                     "metadata": {},
                     "error": row["analysis_error"],
                     "analyzed_at": row["analyzed_at"],
                 }
-                if row["analysis_json"] and row["analysis_sha256"] == row["sha256"]:
+                analysis_is_current = bool(row["analysis_status"]) and row["analysis_sha256"] == row["sha256"]
+                analyzable_extensions = {".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar"}
+                if Path(row["path"]).suffix.lower() in analyzable_extensions and not analysis_is_current:
+                    from app.analysis_engine import analyze_local_music_file
+                    result = analyze_local_music_file(local_path)
+                    analysis = {
+                        "type": result["analysis_type"],
+                        "status": result["status"],
+                        "metadata": result["analysis"],
+                        "error": result["error_text"],
+                        "analyzed_at": now(),
+                    }
+                    with db() as conn:
+                        conn.execute("""
+                            INSERT INTO github_file_analyses
+                              (github_file_id,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
+                            VALUES(?,?,?,?,?,?,?)
+                            ON CONFLICT(github_file_id) DO UPDATE SET
+                              analysis_type=excluded.analysis_type,status=excluded.status,
+                              analysis_json=excluded.analysis_json,error_text=excluded.error_text,
+                              analyzed_at=excluded.analyzed_at,sha256=excluded.sha256
+                        """, (row["id"], analysis["type"], analysis["status"],
+                              json.dumps(analysis["metadata"], ensure_ascii=False),
+                              analysis["error"], analysis["analyzed_at"], row["sha256"]))
+                elif analysis_is_current and row["analysis_json"]:
                     try:
                         analysis["metadata"] = json.loads(row["analysis_json"])
                     except (TypeError, ValueError):
