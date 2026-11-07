@@ -136,3 +136,35 @@ def test_resource_json_preserves_available_musicxml_metadata_and_one_file():
         "musetrainer/library", "scores/mozart/ave_verum.mxl"
     )
     assert b'"Ave Verum Corpus"' in encode_resource_json(document)
+
+
+def test_resource_json_keeps_musicxml_title_evidence_and_filename_candidate():
+    document = build_github_resource_document(
+        {"full_name": "example/scores"},
+        {
+            "path": "scores/mozart/Ave_Verum_Corpus.mxl",
+            "name": "Ave_Verum_Corpus.mxl",
+            "extension": ".mxl",
+        },
+        {
+            "status": "ok",
+            "metadata": {
+                "title": "Ave Verum Corpus",
+                "work_title": "Ave Verum Corpus",
+                "movement_title": "Adagio",
+                "title_source": "work-title",
+                "creators": [{"name": "W. A. Mozart", "type": "composer"}],
+                "instrumentation": ["Soprano", "Alto", "Tenor", "Bass"],
+            },
+        },
+        package_file="files/example.mxl",
+    )
+
+    assert document["resource"]["title"] == "Ave Verum Corpus"
+    assert document["resource"]["title_source"] == "work-title"
+    assert document["resource"]["title_candidates"] == [
+        {"value": "Ave_Verum_Corpus", "source": "source_filename"}
+    ]
+    assert document["resource"]["instrumentation"] == [
+        "Soprano", "Alto", "Tenor", "Bass"
+    ]
