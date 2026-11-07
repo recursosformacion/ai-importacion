@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from app.db import DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, connect
 
 router = APIRouter()
-_DOWNLOAD_TASKS: set[asyncio.Task] = set()
+_DOWNLOAD_TASKS: dict[int, asyncio.Task] = {}
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 API = "https://api.github.com"
 TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
@@ -578,7 +578,7 @@ def github_download_all(repository_id: int):
         active = conn.execute(
             "SELECT status FROM github_download_jobs WHERE repository_id=?", (repository_id,)
         ).fetchone()
-        if active and active["status"] == "running":
+        if active and active["status"] == "running" and repository_id in _DOWNLOAD_TASKS:
             return RedirectResponse(f"/github/{repository_id}", status_code=303)
         file_ids = [row["id"] for row in conn.execute("""
             SELECT id FROM github_files WHERE repository_id=?
@@ -595,8 +595,8 @@ def github_download_all(repository_id: int):
             (repository_id, len(file_ids), now(), now()))
     if file_ids:
         task = asyncio.create_task(_run_repository_downloads(repository_id, file_ids))
-        _DOWNLOAD_TASKS.add(task)
-        task.add_done_callback(_DOWNLOAD_TASKS.discard)
+        _DOWNLOAD_TASKS[repository_id] = task
+        task.add_done_callback(lambda finished, rid=repository_id: _DOWNLOAD_TASKS.pop(rid, None))
     else:
         with db() as conn:
             conn.execute("UPDATE github_download_jobs SET status='completed' WHERE repository_id=?",
