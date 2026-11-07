@@ -711,11 +711,13 @@ def github_export_resources_json(repository_id: int):
                         analysis["error"] = "El resultado de análisis guardado no contiene JSON válido."
                 elif row["analysis_status"]:
                     analysis["status"] = "stale"
+                extraction_current = bool(row["extraction_status"]) and row["extraction_sha256"] == row["sha256"]
                 extraction = {
-                    "status": row["extraction_status"] if row["extraction_sha256"] == row["sha256"] else "stale",
-                    "page_count": row["page_count"],
-                    "character_count": row["extracted_characters"],
-                    "text": row["extracted_text"] if row["extraction_sha256"] == row["sha256"] else "",
+                    "status": (row["extraction_status"] if extraction_current
+                               else ("stale" if row["extraction_status"] else "not_extracted")),
+                    "page_count": row["page_count"] or 0,
+                    "character_count": row["extracted_characters"] or 0,
+                    "text": row["extracted_text"] if extraction_current else "",
                     "error": row["extraction_error"],
                     "extracted_at": row["extracted_at"],
                 }
