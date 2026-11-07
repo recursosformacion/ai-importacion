@@ -1,5 +1,6 @@
 from app.github_acquisition import extract_reference_candidates, resolve_manifest_entries
 from app.github_catalog import parse_repository
+from app.resource_export import build_github_resource_document, encode_resource_json, stable_resource_id
 
 
 def test_extracts_public_attribution_and_named_project_link():
@@ -85,3 +86,53 @@ def test_manifest_paths_are_resolved_relative_to_manifest_and_checked_against_tr
 
 def test_musetrainer_library_page_resolves_to_github_repository():
     assert parse_repository("https://musetrainer.github.io/library/") == ("musetrainer", "library")
+
+
+def test_resource_json_preserves_available_musicxml_metadata_and_one_file():
+    repository = {
+        "id": 7,
+        "full_name": "musetrainer/library",
+        "html_url": "https://github.com/musetrainer/library",
+        "description": "MusicXML library",
+        "default_branch": "main",
+        "license_spdx": "CC-BY-4.0",
+        "license_name": "Creative Commons Attribution 4.0",
+    }
+    source_file = {
+        "id": 123,
+        "path": "scores/mozart/ave_verum.mxl",
+        "name": "ave_verum.mxl",
+        "extension": ".mxl",
+        "size_bytes": 1200,
+        "downloaded_bytes": 1180,
+        "sha256": "abc123",
+        "git_sha": "def456",
+        "html_url": "https://github.com/musetrainer/library/blob/main/scores/mozart/ave_verum.mxl",
+        "download_url": "https://raw.githubusercontent.com/musetrainer/library/main/scores/mozart/ave_verum.mxl",
+        "first_seen_at": "2026-11-01T10:00:00+00:00",
+        "last_seen_at": "2026-11-02T10:00:00+00:00",
+    }
+    analysis = {
+        "type": "musicxml",
+        "status": "ok",
+        "metadata": {
+            "format": "mxl",
+            "status": "ok",
+            "title": "Ave Verum Corpus",
+            "creators": [{"name": "W. A. Mozart", "type": "composer"}],
+            "parts": [{"id": "P1", "name": "Soprano", "measures": 46}],
+        },
+    }
+    document = build_github_resource_document(
+        repository, source_file, analysis, package_file="files/resource.mxl"
+    )
+
+    assert document["resource"]["title"] == "Ave Verum Corpus"
+    assert document["resource"]["creators"][0]["type"] == "composer"
+    assert document["file"]["package_path"] == "files/resource.mxl"
+    assert document["source"]["file_path"] == "scores/mozart/ave_verum.mxl"
+    assert document["source"]["license"]["verified_for_file"] is False
+    assert document["resource_key"] == stable_resource_id(
+        "musetrainer/library", "scores/mozart/ave_verum.mxl"
+    )
+    assert b'"Ave Verum Corpus"' in encode_resource_json(document)
