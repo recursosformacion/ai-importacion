@@ -569,7 +569,7 @@ async def _run_repository_downloads(repository_id: int, file_ids: list[int]) -> 
 
 
 @router.post("/github/{repository_id}/download-all")
-def github_download_all(repository_id: int):
+async def github_download_all(repository_id: int):
     ensure_schema()
     with db() as conn:
         repo = conn.execute("SELECT id FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
