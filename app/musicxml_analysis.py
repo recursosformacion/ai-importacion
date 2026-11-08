@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import zipfile
+from difflib import SequenceMatcher
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -62,6 +64,31 @@ def _xml_payload(path: Path) -> bytes:
     return payload
 
 
+def _normal_words(value: str) -> tuple[str, ...]:
+    value = value.casefold()
+    value = re.sub(r"\\b(arranged|arrangement|arr)\\.?\\s*(by)?\\b", " ", value)
+    value = re.sub(r"[^\\w]+", " ", value, flags=re.UNICODE)
+    return tuple(value.split())
+
+
+def _looks_like_filename_title(value: str, filename: str) -> bool:
+    words = _normal_words(value)
+    file_words = set(_normal_words(Path(filename).stem))
+    if len(words) < 2 or not file_words:
+        return False
+    overlap = sum(1 for word in words if word in file_words)
+    return overlap / len(words) >= 0.8
+
+
+def _same_person(left: str, right: str) -> bool:
+    a, b = set(_normal_words(left)), set(_normal_words(right))
+    if not a or not b:
+        return False
+    if a <= b or b <= a:
+        return True
+    return SequenceMatcher(None, " ".join(sorted(a)), " ".join(sorted(b))).ratio() >= 0.92
+
+
 def analyze_musicxml(path: str | Path) -> dict:
     """Extract conservative structural metadata from MusicXML/MXL without altering the source."""
     source = Path(path)
@@ -76,67 +103,91 @@ def analyze_musicxml(path: str | Path) -> dict:
     work_title = _first_text(root, "work-title")
     movement_title = _first_text(root, "movement-title")
 
-    # MuseScore and other notation programs often place the visible score
-    # title/composer in page credits instead of MusicXML work/creator fields.
     credit_values: dict[str, list[str]] = {}
+    untyped_credit_values: list[str] = []
     for credit in (element for element in root.iter() if _local_name(element.tag) == "credit"):
         credit_type = next(
             (child.text.strip().casefold() for child in credit
              if _local_name(child.tag) == "credit-type" and child.text and child.text.strip()),
             "",
         )
-        if not credit_type:
-            continue
         values = [
             child.text.strip()
             for child in credit.iter()
             if _local_name(child.tag) == "credit-words" and child.text and child.text.strip()
         ]
-        bucket = credit_values.setdefault(credit_type, [])
-        for value in values:
-            if value not in bucket:
-                bucket.append(value)
+        if credit_type:
+            bucket = credit_values.setdefault(credit_type, [])
+            for value in values:
+                if value not in bucket:
+                    bucket.append(value)
+        else:
+            for value in values:
+                if value not in untyped_credit_values:
+                    untyped_credit_values.append(value)
 
     credit_title = next(iter(credit_values.get("title", [])), None)
-    # work-title is the strongest composition-level field. A title credit is
-    # the next best source; movement-title may describe only one movement.
-    title = work_title or credit_title or movement_title
+    # Untyped page credits are not assigned roles. A title is accepted only
+    # when its words substantially match the source filename.
+    filename_title = next(
+        (value for value in untyped_credit_values
+         if _looks_like_filename_title(value, source.name)),
+        None,
+    )
+    title = work_title or credit_title or movement_title or filename_title
     title_source = (
         "work-title" if work_title else
         "credit:title" if credit_title else
-        "movement-title" if movement_title else None
+        "movement-title" if movement_title else
+        "credit:untyped_filename_match" if filename_title else None
     )
 
-    creators = []
-    seen_creators = set()
+    creators: list[dict[str, str]] = []
 
     def add_creator(name: str, creator_type: str) -> None:
-        creator = {"name": name.strip(), "type": creator_type}
-        if not creator["name"]:
+        clean = re.sub(r"\\s+", " ", name).strip()
+        if not clean:
             return
-        key = (creator["name"].casefold(), creator["type"].casefold())
-        if key not in seen_creators:
-            seen_creators.add(key)
-            creators.append(creator)
+        for existing in creators:
+            if existing["type"].casefold() == creator_type.casefold() and _same_person(existing["name"], clean):
+                # Prefer the more informative form (e.g. full name over surname).
+                if len(clean) > len(existing["name"]):
+                    existing["name"] = clean
+                return
+        creators.append({"name": clean, "type": creator_type})
 
     for element in root.iter():
         if _local_name(element.tag) == "creator" and element.text and element.text.strip():
             add_creator(element.text, element.attrib.get("type", ""))
 
-    # Credit roles are meaningful attribution evidence too. Keep their
-    # MusicXML role names, and do not duplicate an existing creator entry.
     credit_role_map = {
-        "composer": "composer",
-        "arranger": "arranger",
-        "lyricist": "lyricist",
-        "poet": "poet",
-        "translator": "translator",
-        "artist": "artist",
-        "editor": "editor",
+        "composer": "composer", "arranger": "arranger", "lyricist": "lyricist",
+        "poet": "poet", "translator": "translator", "artist": "artist", "editor": "editor",
     }
+    creator_candidates: list[dict[str, str | None]] = []
     for credit_type, creator_type in credit_role_map.items():
         for value in credit_values.get(credit_type, []):
-            add_creator(value, creator_type)
+            # MuseScore credits can combine several people/roles in one line.
+            for line in re.split(r"[\\r\\n]+", value):
+                line = line.strip()
+                if not line:
+                    continue
+                arranger = re.match(r"^(?:arr(?:anged)?\\.?|adapt(?:ed)?\\.?)\\s*(?:by\\s*)?(.+)$", line, re.I)
+                if arranger:
+                    add_creator(arranger.group(1), "arranger")
+                else:
+                    add_creator(line, creator_type)
+
+    # Preserve untyped credits as candidates, never silently call them composers.
+    for value in untyped_credit_values:
+        if value == filename_title:
+            continue
+        clean = re.sub(r"\\s+", " ", value).strip()
+        if clean and not any(_same_person(clean, item["name"]) for item in creators):
+            if not any(_same_person(clean, str(item["name"])) for item in creator_candidates):
+                creator_candidates.append({"name": clean, "type": None})
+
+    subtitles = credit_values.get("subtitle", [])
     part_names = {}
     for element in root.iter():
         if _local_name(element.tag) == "score-part":
@@ -177,8 +228,11 @@ def analyze_musicxml(path: str | Path) -> dict:
         "title": title,
         "work_title": work_title,
         "movement_title": movement_title,
+        "subtitle": subtitles[0] if subtitles else None,
         "title_source": title_source,
         "creators": creators,
+        "creator_candidates": creator_candidates,
+        "untyped_credits": untyped_credit_values,
         "rights": rights,
         "declared_source": source_text,
         "encoding": encoding,
