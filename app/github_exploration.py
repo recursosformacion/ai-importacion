@@ -354,7 +354,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     if repositories:
         body+="<form method='post' action='/github/exploration/repositories/action'>"
         body+="<input type='hidden' name='return_page' value='"+str(page)+"'><input type='hidden' name='return_status' value='"+esc(status)+"'><input type='hidden' name='return_q' value='"+esc(q)+"'>"
-        body+="<p><label><input type='checkbox' onclick='document.querySelectorAll(\"input.repo-select\").forEach(x=>x.checked=this.checked)'> Seleccionar todos los visibles</label> "
+        body+="<p><label><input type='checkbox' data-select-visible> Seleccionar todos los visibles</label> · Seleccionados: <b id='repo-selection-count'>0</b> "
         body+="<button name='action' value='ignore'>Ignorar</button> "
         body+="<button name='action' value='process'>Volver a inspeccionar</button> "
         body+="<button name='action' value='restore'>Restaurar</button> "
@@ -382,18 +382,63 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         body+="<p>No hay repositorios para estos filtros.</p>"
     body+="</section><p><a href='/github'>Volver a Fuentes GitHub</a></p>"
     live_script = """<script>
-(async function(){
+(function(){
+ const selectionKey='ai-importacion.github-exploration.selected.v1';
+ const selected=new Set();
+ try{
+  const saved=JSON.parse(localStorage.getItem(selectionKey)||'[]');
+  if(Array.isArray(saved)) saved.forEach(value=>{if(typeof value==='string')selected.add(value);});
+ }catch(e){}
+ const boxes=Array.from(document.querySelectorAll('input.repo-select'));
+ boxes.forEach(box=>{
+  box.checked=selected.has(box.value);
+  box.addEventListener('change',()=>{
+   if(box.checked)selected.add(box.value);else selected.delete(box.value);
+   persist();
+  });
+ });
+ function persist(){
+  try{localStorage.setItem(selectionKey,JSON.stringify(Array.from(selected)));}catch(e){}
+  const counter=document.getElementById('repo-selection-count');
+  if(counter)counter.textContent=String(selected.size);
+ }
+ const selectAll=document.querySelector('input[data-select-visible]');
+ if(selectAll){
+  selectAll.checked=boxes.length>0&&boxes.every(box=>box.checked);
+  selectAll.addEventListener('change',()=>{
+   boxes.forEach(box=>{box.checked=selectAll.checked;if(box.checked)selected.add(box.value);else selected.delete(box.value);});
+   persist();
+  });
+ }
+ const actionForm=document.querySelector("form[action='/github/exploration/repositories/action']");
+ if(actionForm){
+  actionForm.addEventListener('submit',()=>{
+   actionForm.querySelectorAll('input[data-persisted-selection]').forEach(node=>node.remove());
+   const visible=new Set(boxes.map(box=>box.value));
+   selected.forEach(value=>{
+    if(!visible.has(value)){
+     const hidden=document.createElement('input');
+     hidden.type='hidden';hidden.name='repositories';hidden.value=value;
+     hidden.dataset.persistedSelection='1';actionForm.appendChild(hidden);
+    }
+   });
+  });
+ }
+ persist();
  const statusUrl='/github/exploration/status';
  async function refresh(){
   try{
    const r=await fetch(statusUrl,{cache:'no-store'});
    if(!r.ok)return;
    const d=await r.json();
-   document.getElementById('job-status').textContent=d.job_status;
-   document.getElementById('job-progress').textContent='Páginas: '+d.progress_discoveries+' · Repositorios inspeccionados: '+d.progress_inspections;
-   document.getElementById('job-message').textContent=d.last_message;
+   const status=document.getElementById('job-status');
+   const progress=document.getElementById('job-progress');
+   const message=document.getElementById('job-message');
+   if(status)status.textContent=d.job_status;
+   if(progress)progress.textContent='Páginas: '+d.progress_discoveries+' · Repositorios inspeccionados: '+d.progress_inspections;
+   if(message)message.textContent=d.last_message;
    const button=document.querySelector("form[action='/github/exploration/run'] button");
-   if(button) button.disabled=['queued','running'].includes(d.job_status);
+   if(button)button.disabled=['queued','running'].includes(d.job_status);
   }catch(e){}
  }
  setInterval(refresh,3000);
