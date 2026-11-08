@@ -188,7 +188,7 @@ def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, m
             """INSERT INTO github_discovered_repositories
                (full_name,html_url,default_branch,description,stars,license_spdx,
                 discovery_query,discovered_at,status,musical_file_count,last_checked_at)
-               VALUES('OpenScore/Lieder','https://github.com/OpenScore/Lieder','main',
+               VALUES('OpenScore/Lieder-test-fixture','https://github.com/OpenScore/Lieder-test-fixture-test-fixture','main',
                       'Open score collection',42,'CC-BY-4.0','seed','2026-01-01','qualified',135,'2026-01-01')"""
         )
         conn.execute(
@@ -202,7 +202,7 @@ def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, m
     with exploration_test_client() as client:
         response = client.post(
             "/github/exploration/repositories/action",
-            data={"action": "catalog", "repositories": ["OpenScore/Lieder", "example/two-pdfs"]},
+            data={"action": "catalog", "repositories": ["OpenScore/Lieder-test-fixture", "example/two-pdfs"]},
             follow_redirects=False,
         )
 
@@ -216,7 +216,7 @@ def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, m
         ).fetchall()
     assert len(rows) == 1
     row = rows[0]
-    assert row["full_name"] == "OpenScore/Lieder"
+    assert row["full_name"] == "OpenScore/Lieder-test-fixture"
     assert row["default_branch"] == "main"
     assert row["license_spdx"] == "CC-BY-4.0"
 
@@ -262,6 +262,8 @@ def test_schema_reclassifies_old_qualified_repositories_below_new_threshold(tmp_
     monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "threshold-migration.sqlite3"))
     exploration.ensure_schema()
     with exploration.db() as conn:
+        # Simulate a database created before the threshold migration ran.
+        conn.execute("DELETE FROM github_exploration_migrations WHERE migration_key='repository_threshold_100_v1'")
         conn.execute(
             """INSERT INTO github_discovered_repositories
                (full_name,html_url,discovery_query,discovered_at,status,
