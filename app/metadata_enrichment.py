@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import itertools
+import threading
 from pathlib import Path
 from urllib.parse import quote
 
@@ -11,6 +13,8 @@ import httpx
 MODEL = os.getenv("AI_IMPORTACION_GEMINI_MODEL", "gemini-flash-lite-latest").strip()
 CONFIDENCE_THRESHOLD = 0.70
 MAX_CONTEXT_CHARS = 5000
+_KEY_COUNTER = itertools.count()
+_KEY_LOCK = threading.Lock()
 
 
 def _configured_keys() -> list[str]:
@@ -54,7 +58,7 @@ def _clean_creator_items(value) -> list[dict]:
     if not isinstance(value, list):
         return []
     creators = []
-    allowed = {"composer", "arranger", "lyricist", "poet", "translator", "editor", "artist", "performer", "unknown"}
+    allowed = {"composer", "arranger", "lyricist", "poet", "translator", "editor", "artist", "performer", "adapter", "adaptor"}
     for item in value:
         if not isinstance(item, dict):
             continue
@@ -78,7 +82,24 @@ def validate_ai_metadata(payload: dict) -> dict:
     except (TypeError, ValueError):
         title_confidence = 0
     accepted_title = title[:500] if title and title_confidence >= CONFIDENCE_THRESHOLD else None
-    creators = _clean_creator_items(payload.get("creators"))
+    raw_creators = payload.get("creators") if isinstance(payload.get("creators"), list) else []
+    creators = _clean_creator_items(raw_creators)
+    creator_candidates = []
+    for item in raw_creators:
+        if not isinstance(item, dict):
+            continue
+        name = " ".join(str(item.get("name") or "").split()).strip()
+        role = str(item.get("type") or "unknown").strip().lower()
+        try:
+            confidence = float(item.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = 0
+        if name and role == "unknown" and confidence >= 0.4:
+            creator_candidates.append({
+                "name": name[:300], "type": None,
+                "source": "ai:filename_and_metadata",
+                "confidence": round(min(confidence, 1.0), 3),
+            })
     candidates = []
     if title and not accepted_title:
         candidates.append({"value": title[:500], "source": "ai:filename_and_metadata",
@@ -87,6 +108,7 @@ def validate_ai_metadata(payload: dict) -> dict:
         "title": accepted_title,
         "title_confidence": round(min(max(title_confidence, 0), 1), 3),
         "creators": creators,
+        "creator_candidates": creator_candidates,
         "title_candidates": candidates,
         "status": "ok",
         "model": MODEL,
@@ -122,6 +144,9 @@ def enrich_music_metadata(*, filename: str, repository: dict, metadata: dict) ->
         + json.dumps(context, ensure_ascii=False)[:MAX_CONTEXT_CHARS]
     )
     last_error = None
+    with _KEY_LOCK:
+        offset = next(_KEY_COUNTER) % len(keys)
+    keys = keys[offset:] + keys[:offset]
     for key in keys:
         try:
             url = (
