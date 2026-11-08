@@ -54,6 +54,7 @@ def build_github_resource_document(
                 {"value": filename_stem, "source": "source_filename"}
             ] if filename_stem else [],
             "creators": metadata.get("creators") or [],
+            "creator_candidates": metadata.get("creator_candidates") or [],
             "instrumentation": instrumentation or [],
             "metadata_status": analysis_data.get("status") or "not_analyzed",
             "metadata_source": "file_analysis" if metadata else None,
