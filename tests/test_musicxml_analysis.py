@@ -32,7 +32,7 @@ def test_analyze_musicxml_extracts_title_creator_parts_and_measures(tmp_path):
 
 
 def test_analyze_mxl_reads_musicxml_from_container(tmp_path):
-    path = tmp_path / "score.mxl"
+    path = tmp_path / "score.musicxml"
     with ZipFile(path, "w") as archive:
         archive.writestr("META-INF/container.xml", """<container><rootfiles>
           <rootfile full-path="scores/main.musicxml" media-type="application/vnd.recordare.musicxml+xml"/>
@@ -217,7 +217,7 @@ def test_untyped_page_credits_only_supply_title_when_filename_supports_it(tmp_pa
 
 
 def test_composer_credit_splits_arranger_and_deduplicates_short_name(tmp_path):
-    path = tmp_path / "twinkle.mxl"
+    path = tmp_path / "twinkle.musicxml"
     score = """<score-partwise>
       <work><work-title>Twinkle Twinkle Little Star</work-title></work>
       <identification><creator type="composer">Mozart</creator></identification>
