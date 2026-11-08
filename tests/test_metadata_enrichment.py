@@ -76,6 +76,32 @@ def test_ai_metadata_returns_not_configured_without_api_key(monkeypatch):
     assert result["status"] == "not_configured"
 
 
+def test_repository_readme_is_decoded_from_github_base64(monkeypatch):
+    import base64
+    import app.github_catalog as catalog
+
+    encoded = base64.b64encode("# Open scores\nMusicXML collection".encode()).decode()
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"encoding": "base64", "content": encoded}
+
+    monkeypatch.setattr(catalog.httpx, "get", lambda *args, **kwargs: FakeResponse())
+    assert catalog.fetch_repository_readme("example/scores") == "# Open scores\nMusicXML collection"
+
+
+def test_repository_readme_rejects_invalid_repository_name(monkeypatch):
+    import app.github_catalog as catalog
+
+    def fail_request(*args, **kwargs):
+        raise AssertionError("No debe consultar GitHub con un nombre no válido.")
+
+    monkeypatch.setattr(catalog.httpx, "get", fail_request)
+    assert catalog.fetch_repository_readme("../invalid") == ""
+
+
 def test_ai_metadata_uses_gemini_and_parses_json(monkeypatch):
     monkeypatch.setattr(enrichment, "_configured_keys", lambda: ["test-key"])
     response_payload = {
