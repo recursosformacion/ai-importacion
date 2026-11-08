@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import html
 import json
@@ -76,6 +77,30 @@ async def count_musical_pieces(repository: dict) -> tuple[int, bool]:
     return count, bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
 
 
+
+
+def fetch_repository_readme(full_name: str) -> str:
+    """Read the repository README once as contextual evidence for metadata enrichment."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name or ""):
+        return ""
+    try:
+        response = httpx.get(
+            f"{API}/repos/{full_name}/readme",
+            headers={**headers(), "Accept": "application/vnd.github+json"},
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return ""
+        payload = response.json()
+        content = payload.get("content") or ""
+        if payload.get("encoding") == "base64":
+            raw = base64.b64decode(content)
+            text = raw.decode("utf-8-sig", errors="replace")
+        else:
+            text = str(content)
+        return text[:12000]
+    except Exception:
+        return ""
 
 
 def now() -> str:
@@ -175,6 +200,9 @@ def ensure_schema() -> None:
           updated_at TEXT
         );
         """)
+        repository_columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_repositories)")}
+        if "readme_text" not in repository_columns:
+            conn.execute("ALTER TABLE github_repositories ADD COLUMN readme_text TEXT NOT NULL DEFAULT ''")
         analysis_columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_file_analyses)")}
         if "analyzer_version" not in analysis_columns:
             conn.execute("ALTER TABLE github_file_analyses ADD COLUMN analyzer_version TEXT NOT NULL DEFAULT ''")
@@ -711,6 +739,8 @@ def github_export_resources_json(repository_id: int):
     exported = 0
     missing = []
     try:
+        repository_readme = None
+        readme_loaded = False
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             for row in rows:
                 local_path = Path(row["local_path"])
@@ -788,6 +818,17 @@ def github_export_resources_json(repository_id: int):
                         ai_context = dict(metadata)
                         if extraction["text"]:
                             ai_context["source_text_excerpt"] = extraction["text"][:3500]
+                        if not readme_loaded:
+                            repository_readme = fetch_repository_readme(repo_row["full_name"])
+                            readme_loaded = True
+                            if repository_readme:
+                                with db() as conn:
+                                    conn.execute(
+                                        "UPDATE github_repositories SET readme_text=? WHERE id=?",
+                                        (repository_readme, repository_id),
+                                    )
+                        if repository_readme:
+                            ai_context["repository_readme_excerpt"] = repository_readme[:5000]
                         cached_ai = enrich_music_metadata(
                             filename=row["name"],
                             repository=dict(repo_row),
