@@ -158,17 +158,26 @@ def ensure_schema():
               (full_name,html_url,discovery_query,discovered_at,status)
               VALUES(?,?, 'seed', ?, 'pending')""",
               (name,"https://github.com/"+name,now()))
-        # Reclassify repositories when the admission threshold changes.
-        # Only repositories with at least 100 musical files remain qualified.
-        c.execute("""UPDATE github_discovered_repositories
-          SET status='qualified',below_threshold=0
-          WHERE status='below_threshold' AND musical_file_count>=?
-            AND last_checked_at IS NOT NULL""", (MIN_MUSICAL_FILES,))
-        c.execute("""UPDATE github_discovered_repositories
-          SET status='below_threshold',below_threshold=1
-          WHERE status IN ('qualified','partial')
-            AND musical_file_count < ? AND last_checked_at IS NOT NULL""",
-          (MIN_MUSICAL_FILES,))
+        # Reclassify the catalog only once per threshold policy, not on every
+        # page view, status poll, or application restart.
+        threshold_migration = "repository_threshold_100_v1"
+        if not c.execute(
+            "SELECT 1 FROM github_exploration_migrations WHERE migration_key=?",
+            (threshold_migration,),
+        ).fetchone():
+            c.execute("""UPDATE github_discovered_repositories
+              SET status='qualified',below_threshold=0
+              WHERE status='below_threshold' AND musical_file_count>=?
+                AND last_checked_at IS NOT NULL""", (MIN_MUSICAL_FILES,))
+            c.execute("""UPDATE github_discovered_repositories
+              SET status='below_threshold',below_threshold=1
+              WHERE status IN ('qualified','partial')
+                AND musical_file_count < ? AND last_checked_at IS NOT NULL""",
+              (MIN_MUSICAL_FILES,))
+            c.execute(
+                "INSERT INTO github_exploration_migrations(migration_key,applied_at) VALUES(?,?)",
+                (threshold_migration, now()),
+            )
 
 def headers():
     h={"Accept":"application/vnd.github+json","User-Agent":"OSAP-AI-Importacion/0.2",
