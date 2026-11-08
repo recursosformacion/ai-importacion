@@ -154,6 +154,14 @@ def ensure_schema() -> None:
           analyzed_at TEXT NOT NULL,
           sha256 TEXT
         );
+        CREATE TABLE IF NOT EXISTS github_ai_metadata_enrichments (
+          github_file_id INTEGER PRIMARY KEY REFERENCES github_files(id) ON DELETE CASCADE,
+          sha256 TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT '',
+          analyzed_at TEXT NOT NULL,
+          error_text TEXT
+        );
         CREATE INDEX IF NOT EXISTS idx_github_files_extension ON github_files(extension);
         CREATE INDEX IF NOT EXISTS idx_github_files_repo ON github_files(repository_id,path);
         CREATE TABLE IF NOT EXISTS github_download_jobs (
@@ -683,10 +691,13 @@ def github_export_resources_json(repository_id: int):
                    x.status AS extraction_status, x.page_count,
                    x.extracted_characters, x.extracted_text,
                    x.error_text AS extraction_error, x.analyzed_at AS extracted_at,
-                   x.sha256 AS extraction_sha256
+                   x.sha256 AS extraction_sha256,
+                   ai.metadata_json AS ai_metadata_json, ai.sha256 AS ai_sha256,
+                   ai.model AS ai_model, ai.analyzed_at AS ai_analyzed_at
             FROM github_files f
             LEFT JOIN github_file_analyses a ON a.github_file_id=f.id
             LEFT JOIN github_content_extractions x ON x.github_file_id=f.id
+            LEFT JOIN github_ai_metadata_enrichments ai ON ai.github_file_id=f.id
             WHERE f.repository_id=? AND f.download_status='downloaded'
               AND f.local_path IS NOT NULL
             ORDER BY f.path
@@ -760,6 +771,71 @@ def github_export_resources_json(repository_id: int):
                     "error": row["extraction_error"],
                     "extracted_at": row["extracted_at"],
                 }
+                metadata = analysis.get("metadata") or {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                has_title = bool(metadata.get("work_title") or metadata.get("title"))
+                has_creators = bool(metadata.get("creators"))
+                cached_ai = None
+                if row["ai_metadata_json"] and row["ai_sha256"] == row["sha256"]:
+                    try:
+                        cached_ai = json.loads(row["ai_metadata_json"])
+                    except (TypeError, ValueError):
+                        cached_ai = None
+                if not has_title or not has_creators:
+                    if cached_ai is None:
+                        from app.metadata_enrichment import enrich_music_metadata
+                        ai_context = dict(metadata)
+                        if extraction["text"]:
+                            ai_context["source_text_excerpt"] = extraction["text"][:3500]
+                        cached_ai = enrich_music_metadata(
+                            filename=row["name"],
+                            repository=dict(repo_row),
+                            metadata=ai_context,
+                        )
+                        if cached_ai.get("status") == "ok":
+                            with db() as conn:
+                                conn.execute("""
+                                    INSERT INTO github_ai_metadata_enrichments
+                                      (github_file_id,sha256,metadata_json,model,analyzed_at,error_text)
+                                    VALUES(?,?,?,?,?,NULL)
+                                    ON CONFLICT(github_file_id) DO UPDATE SET
+                                      sha256=excluded.sha256,metadata_json=excluded.metadata_json,
+                                      model=excluded.model,analyzed_at=excluded.analyzed_at,error_text=NULL
+                                """, (row["id"], row["sha256"] or "",
+                                      json.dumps(cached_ai, ensure_ascii=False),
+                                      cached_ai.get("model") or "", now()))
+                    if cached_ai and cached_ai.get("status") == "ok":
+                        if not has_title and cached_ai.get("title"):
+                            metadata["title"] = cached_ai["title"]
+                            metadata["title_source"] = "ai:filename_and_metadata"
+                        existing_creators = list(metadata.get("creators") or [])
+                        for creator in cached_ai.get("creators") or []:
+                            if not any(
+                                str(old.get("type", "")).casefold() == str(creator.get("type", "")).casefold()
+                                and str(old.get("name", "")).casefold() == str(creator.get("name", "")).casefold()
+                                for old in existing_creators if isinstance(old, dict)
+                            ):
+                                existing_creators.append({
+                                    "name": creator["name"], "type": creator["type"],
+                                })
+                        metadata["creators"] = existing_creators
+                        if cached_ai.get("title_candidates"):
+                            metadata["title_candidates"] = (
+                                list(metadata.get("title_candidates") or [])
+                                + cached_ai["title_candidates"]
+                            )
+                        metadata["ai_enrichment"] = {
+                            "status": "ok", "model": cached_ai.get("model"),
+                            "analyzed_at": row["ai_analyzed_at"] or now(),
+                        }
+                    elif cached_ai and cached_ai.get("status") == "not_configured":
+                        metadata["ai_enrichment"] = {"status": "not_configured"}
+                    elif cached_ai and cached_ai.get("status") == "error":
+                        metadata["ai_enrichment"] = {
+                            "status": "error", "error": cached_ai.get("error"),
+                        }
+                analysis["metadata"] = metadata
                 document = build_github_resource_document(
                     dict(repo_row),
                     {
