@@ -378,6 +378,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         if page<pages: body+=" <a href='/github/exploration?page="+str(page+1)+"&status="+esc(status)+"&q="+quote(q)+"'>Siguiente →</a>"
         body+="</p>"
     else:
+        body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales detectados (mín. "+str(MIN_MUSICAL_FILES)+")</th><th>Admisión al catálogo</th><th>Actualizado</th><th>Comprobado</th></tr></table>"
         body+="<p>No hay repositorios para estos filtros.</p>"
     body+="</section><p><a href='/github'>Volver a Fuentes GitHub</a></p>"
     live_script = """<script>
