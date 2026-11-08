@@ -155,3 +155,36 @@ def test_movement_title_is_used_when_work_title_is_absent(tmp_path):
     assert result["title"] == "Adagio"
     assert result["title_source"] == "movement-title"
     assert result["work_title"] is None
+
+
+
+def test_extracts_title_and_composer_from_musescore_page_credits(tmp_path):
+    path = tmp_path / "danse-villageoise.mxl"
+    score = """<?xml version="1.0" encoding="UTF-8"?>
+    <score-partwise version="3.1">
+      <identification><encoding><software>MuseScore 3.6.2</software></encoding></identification>
+      <credit page="1">
+        <credit-type>title</credit-type>
+        <credit-words>DANSE VILLAGEOISE No.2</credit-words>
+      </credit>
+      <credit page="1">
+        <credit-type>composer</credit-type>
+        <credit-words>Ludwig Van Beethoven (1770-1827)</credit-words>
+      </credit>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>"""
+    with ZipFile(path, "w") as archive:
+        archive.writestr("META-INF/container.xml",
+                         '<container><rootfiles><rootfile full-path="score.xml"/>'
+                         '</rootfiles></container>')
+        archive.writestr("score.xml", score)
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "DANSE VILLAGEOISE No.2"
+    assert result["title_source"] == "credit:title"
+    assert result["creators"] == [
+        {"name": "Ludwig Van Beethoven (1770-1827)", "type": "composer"}
+    ]
+    assert result["instrumentation"] == ["Piano"]
