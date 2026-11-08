@@ -24,6 +24,20 @@ El documento utiliza el esquema `osap-resource-import/1.0` e incluye:
 
 Al exportar, los ficheros MusicXML, MXL, XML y MIDI/KAR descargados se analizan si todavía no tienen un análisis vigente. Para MXL/MusicXML se aprovechan los campos de título, creadores y partes que ya extrae el analizador local.
 
+### Enriquecimiento automático con IA
+
+Al generar el paquete JSON, si un recurso descargado carece de título o de creadores, ai-importacion intenta completar esos campos mediante Gemini Flash Lite. El análisis combina el nombre original del fichero, la descripción del repositorio, los metadatos estructurales ya extraídos y, cuando existe, un fragmento del texto extraído localmente.
+
+La IA separa compositor, arreglista y otros roles; no debe confundir instrumentación, tonalidad, opus, software o editorial con el título o la autoría. Solo se incorporan como datos resueltos las respuestas con confianza igual o superior a 0,70. Las respuestas de menor confianza permanecen como candidatos con su procedencia. El nombre original del fichero se conserva siempre y nunca se copia directamente al campo `resource.title`.
+
+Los resultados de IA se guardan por fichero y SHA-256 para no repetir consultas si el contenido no ha cambiado. Si el servicio no está configurado o falla, la exportación continúa y conserva los metadatos conocidos; no inventa un título ni un creador.
+
+Configuración:
+- `GEMINI_API_KEY`: una clave.
+- `GEMINI_API_KEYS`: varias claves separadas por comas, punto y coma o espacios.
+- También se admiten `GEMINI_API_KEY`, `GEMINI_API_KEYS` o `GOOGLE_API_KEY` en el fichero local ignorado por Git `secrets` o `secrets.txt`.
+- `AI_IMPORTACION_GEMINI_MODEL`: modelo opcional; por defecto `gemini-flash-lite-latest`.
+
 ## Límites y garantías
 
 - Un JSON describe un recurso y exactamente un fichero.
