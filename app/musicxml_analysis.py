@@ -180,7 +180,7 @@ def analyze_musicxml(path: str | Path) -> dict:
 
     # Preserve untyped credits as candidates, never silently call them composers.
     for value in untyped_credit_values:
-        if value == filename_title:
+        if value == filename_title or (title and _same_person(value, title)):
             continue
         clean = re.sub(r"\s+", " ", value).strip()
         if clean and not any(_same_person(clean, item["name"]) for item in creators):
