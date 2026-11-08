@@ -65,7 +65,7 @@ def _xml_payload(path: Path) -> bytes:
 
 
 def _normal_words(value: str) -> tuple[str, ...]:
-    value = value.casefold()
+    value = value.casefold().replace("_", " ")
     value = re.sub(r"\b(arranged|arrangement|arr)\.?\s*(by)?\b", " ", value)
     value = re.sub(r"[^\w]+", " ", value, flags=re.UNICODE)
     return tuple(value.split())
