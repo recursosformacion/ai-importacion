@@ -36,3 +36,14 @@ Al exportar, los ficheros MusicXML, MXL, XML y MIDI/KAR descargados se analizan 
 ## Uso desde la web
 
 En la ficha de un repositorio GitHub, después de descargar ficheros, aparece **Preparar datos de los recursos**. La acción **Generar paquete JSON** descarga el ZIP anterior. Esta función prepara los datos; todavía no los envía ni los incorpora a OSAP.
+
+
+### Créditos incompletos y atribuciones conservadoras
+
+El analizador no asigna automáticamente un rol a los créditos de página que carecen de `credit-type`. Puede utilizar uno de esos textos como título únicamente cuando sus palabras coinciden de forma suficiente con el nombre del fichero; el campo `title_source` identifica esta inferencia como `credit:untyped_filename_match`. Los demás textos se conservan en `analysis.metadata.untyped_credits` y, cuando parecen nombres, también como `resource.creator_candidates` con `type: null`. No se convierten en compositores por su posición o apariencia.
+
+Los créditos tipificados se separan por líneas. Prefijos explícitos como `arr.`, `arranged` o `adapted` se interpretan como arreglista/adaptador, incluso si aparecen dentro de un crédito de compositor. Se eliminan duplicados del mismo rol cuando una forma abreviada está contenida en otra más completa (por ejemplo, `Mozart` y `Wolfgang Amadeus Mozart`); se conserva la forma más informativa. Los subtítulos de créditos se exponen en `analysis.metadata.subtitle`.
+
+### Enlaces y fecha de descarga
+
+`source.download_url` se completa con la URL `raw.githubusercontent.com` construida a partir del repositorio, rama y ruta cuando el inventario no proporcionó un enlace directo. `file.downloaded_at` registra la fecha UTC de la descarga para las nuevas descargas realizadas tras esta mejora. Para ficheros descargados anteriormente no se inventa una fecha: el valor puede seguir siendo `null` hasta que se descarguen de nuevo.
