@@ -76,7 +76,7 @@ def build_github_resource_document(
             "creator_candidates": metadata.get("creator_candidates") or [],
             "instrumentation": instrumentation or [],
             "metadata_status": analysis_data.get("status") or "not_analyzed",
-            "metadata_source": ("ai_enrichment" if str(metadata.get("title_source") or "").startswith("ai:") else "file_analysis") if metadata else None,
+            "metadata_source": ("ai_enrichment" if (metadata.get("ai_enrichment") or {}).get("status") == "ok" else "file_analysis") if metadata else None,
         },
         "source": {
             "provider": "github",
