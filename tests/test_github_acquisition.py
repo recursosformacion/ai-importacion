@@ -217,3 +217,50 @@ def test_repository_download_worker_uses_bounded_parallelism(tmp_path, monkeypat
         ).fetchone()
     assert peak == 4
     assert tuple(job) == ("completed", 8, 8, 0)
+
+
+def test_download_status_reports_cumulative_repository_progress(tmp_path, monkeypatch):
+    import json
+    import app.github_catalog as catalog
+
+    monkeypatch.setattr(catalog, "DB_PATH", str(tmp_path / "cumulative-progress.sqlite3"))
+    catalog.ensure_schema()
+    with catalog.db() as conn:
+        conn.execute(
+            """INSERT INTO github_repositories(full_name,html_url,default_branch,added_at)
+               VALUES('example/scores','https://github.com/example/scores','main','2026-01-01')"""
+        )
+        conn.execute(
+            """INSERT INTO github_download_jobs(repository_id,status,total,completed,failed,started_at,updated_at)
+               VALUES(1,'interrupted',1000,60,0,'','')"""
+        )
+        for index in range(660):
+            status = "downloaded" if index < 660 else "not_downloaded"
+            conn.execute(
+                """INSERT INTO github_files
+                   (repository_id,path,name,extension,download_status,first_seen_at,last_seen_at)
+                   VALUES(1,?,?,'.mxl',?,'2026-01-01','2026-01-01')""",
+                (f"score-{index}.mxl", f"score-{index}.mxl", status),
+            )
+        for index in range(10):
+            conn.execute(
+                """INSERT INTO github_files
+                   (repository_id,path,name,extension,download_status,first_seen_at,last_seen_at)
+                   VALUES(1,?,?,'.mxl','not_downloaded','2026-01-01','2026-01-01')""",
+                (f"pending-{index}.mxl", f"pending-{index}.mxl"),
+            )
+        conn.execute(
+            """INSERT INTO github_files
+               (repository_id,path,name,extension,download_status,first_seen_at,last_seen_at)
+               VALUES(1,'large.mxl','large.mxl','.mxl','too_large','2026-01-01','2026-01-01')"""
+        )
+
+    response = catalog.github_download_status(1)
+    payload = json.loads(response.body)
+
+    assert payload["status"] == "interrupted"
+    assert payload["completed"] == 660
+    assert payload["total"] == 670
+    assert payload["pending"] == 10
+    assert payload["too_large"] == 1
+    assert payload["job_completed"] == 60
