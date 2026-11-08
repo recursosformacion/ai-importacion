@@ -18,6 +18,7 @@ def test_github_repository_search_queues_custom_query(tmp_path, monkeypatch):
         response = client.get(
             "/github/search",
             params={"q": "choral musicxml", "sort": "stars", "license": "cc-by-4.0"},
+            follow_redirects=False,
         )
 
     assert response.status_code == 303
@@ -43,7 +44,7 @@ def test_github_search_without_query_queues_all_automatic_discovery_families(tmp
     monkeypatch.setattr(exploration, "start_exploration_worker", lambda: None)
 
     with TestClient(main.app) as client:
-        response = client.get("/github/search")
+        response = client.get("/github/search", follow_redirects=False)
 
     assert response.status_code == 303
     assert response.headers["location"] == "/github/exploration"
