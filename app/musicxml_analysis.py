@@ -66,8 +66,8 @@ def _xml_payload(path: Path) -> bytes:
 
 def _normal_words(value: str) -> tuple[str, ...]:
     value = value.casefold()
-    value = re.sub(r"\\b(arranged|arrangement|arr)\\.?\\s*(by)?\\b", " ", value)
-    value = re.sub(r"[^\\w]+", " ", value, flags=re.UNICODE)
+    value = re.sub(r"\b(arranged|arrangement|arr)\.?\s*(by)?\b", " ", value)
+    value = re.sub(r"[^\w]+", " ", value, flags=re.UNICODE)
     return tuple(value.split())
 
 
@@ -145,7 +145,7 @@ def analyze_musicxml(path: str | Path) -> dict:
     creators: list[dict[str, str]] = []
 
     def add_creator(name: str, creator_type: str) -> None:
-        clean = re.sub(r"\\s+", " ", name).strip()
+        clean = re.sub(r"\s+", " ", name).strip()
         if not clean:
             return
         for existing in creators:
@@ -168,11 +168,11 @@ def analyze_musicxml(path: str | Path) -> dict:
     for credit_type, creator_type in credit_role_map.items():
         for value in credit_values.get(credit_type, []):
             # MuseScore credits can combine several people/roles in one line.
-            for line in re.split(r"[\\r\\n]+", value):
+            for line in re.split(r"[\r\n]+", value):
                 line = line.strip()
                 if not line:
                     continue
-                arranger = re.match(r"^(?:arr(?:anged)?\\.?|adapt(?:ed)?\\.?)\\s*(?:by\\s*)?(.+)$", line, re.I)
+                arranger = re.match(r"^(?:arr(?:anged)?\.?|adapt(?:ed)?\.?)\s*(?:by\s*)?(.+)$", line, re.I)
                 if arranger:
                     add_creator(arranger.group(1), "arranger")
                 else:
@@ -182,7 +182,7 @@ def analyze_musicxml(path: str | Path) -> dict:
     for value in untyped_credit_values:
         if value == filename_title:
             continue
-        clean = re.sub(r"\\s+", " ", value).strip()
+        clean = re.sub(r"\s+", " ", value).strip()
         if clean and not any(_same_person(clean, item["name"]) for item in creators):
             if not any(_same_person(clean, str(item["name"])) for item in creator_candidates):
                 creator_candidates.append({"name": clean, "type": None})
