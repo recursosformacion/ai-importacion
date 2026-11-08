@@ -305,10 +305,18 @@ async def lifespan(_: FastAPI):
         "Inicialización SQLite completada en %.2f s", time.perf_counter() - startup_started
     )
     # This cleanup scans/updates archive tables; it must not delay Uvicorn readiness.
-    asyncio.create_task(asyncio.to_thread(run_startup_maintenance), name="startup-maintenance")
+    maintenance_worker = asyncio.create_task(
+        asyncio.to_thread(run_startup_maintenance), name="startup-maintenance"
+    )
     from app.github_exploration import resume_exploration_worker, stop_exploration_worker
+    exploration_started = time.perf_counter()
     exploration_worker = resume_exploration_worker()
+    logging.getLogger(__name__).info(
+        "Preparación del catálogo GitHub completada en %.2f s",
+        time.perf_counter() - exploration_started,
+    )
     workers = [
+        maintenance_worker,
         asyncio.create_task(capture_job_queue()),
         asyncio.create_task(content_analysis_job_queue()),
     ]
