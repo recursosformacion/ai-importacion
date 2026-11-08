@@ -57,6 +57,28 @@ def test_exploration_static_route_is_not_captured_by_repository_id(tmp_path, mon
     assert "Admisión al catálogo" in response.text
 
 
+def test_repository_selection_is_restored_and_submitted_across_pages(tmp_path, monkeypatch):
+    monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "selection.sqlite3"))
+    exploration.ensure_schema()
+    with exploration.db() as conn:
+        for name, count in (("example/one", 150), ("example/two", 140)):
+            conn.execute(
+                """INSERT INTO github_discovered_repositories
+                   (full_name,html_url,discovery_query,discovered_at,status,musical_file_count)
+                   VALUES(?,?, 'test','2026-01-01','qualified',?)""",
+                (name, "https://github.com/" + name, count),
+            )
+
+    with exploration_test_client() as client:
+        response = client.get("/github/exploration")
+    assert response.status_code == 200
+    assert "data-select-visible" in response.text
+    assert "ai-importacion.github-exploration.selected.v1" in response.text
+    assert "data-persisted-selection" in response.text
+    assert "repo-selection-count" in response.text
+    assert "Seleccionar todos los visibles" in response.text
+
+
 def test_inspection_skips_error_repositories_instead_of_retrying_them_forever(tmp_path, monkeypatch):
     monkeypatch.setattr(exploration, "DB_PATH", str(tmp_path / "inspection.sqlite3"))
     exploration.ensure_schema()
