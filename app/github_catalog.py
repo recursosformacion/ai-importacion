@@ -820,6 +820,11 @@ def github_export_resources_json(repository_id: int):
                                     "name": creator["name"], "type": creator["type"],
                                 })
                         metadata["creators"] = existing_creators
+                        if cached_ai.get("creator_candidates"):
+                            metadata["creator_candidates"] = (
+                                list(metadata.get("creator_candidates") or [])
+                                + cached_ai["creator_candidates"]
+                            )
                         if cached_ai.get("title_candidates"):
                             metadata["title_candidates"] = (
                                 list(metadata.get("title_candidates") or [])
