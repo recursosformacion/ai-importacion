@@ -45,7 +45,7 @@ MUSIC_EXTENSIONS = {
 }
 MAX_TREE_ENTRIES = 50000
 # Increment when extraction rules change so cached metadata is recalculated.
-ANALYZER_VERSION = "musicxml-credits-2"
+ANALYZER_VERSION = "musicxml-credits-3"
 
 # Only explicit music/notation/audio formats count towards the repository threshold.
 # Generic documents, images and archives are not evidence of a musical piece.
@@ -129,6 +129,7 @@ def ensure_schema() -> None:
           blob_url TEXT NOT NULL DEFAULT '',
           html_url TEXT NOT NULL DEFAULT '',
           download_url TEXT NOT NULL DEFAULT '',
+          downloaded_at TEXT,
           first_seen_at TEXT NOT NULL,
           last_seen_at TEXT NOT NULL,
           UNIQUE(repository_id,path)
@@ -176,6 +177,7 @@ def ensure_schema() -> None:
             "sha256": "TEXT",
             "downloaded_bytes": "INTEGER",
             "download_error": "TEXT",
+            "downloaded_at": "TEXT",
         }
         for name, definition in additions.items():
             if name not in columns:
@@ -480,9 +482,10 @@ async def github_download_file(file_id: int):
                         output.write(chunk)
         os.replace(temporary, destination)
         with db() as conn:
+            downloaded_at = now()
             conn.execute("""UPDATE github_files SET download_status='downloaded',local_path=?,
-                sha256=?,downloaded_bytes=?,download_error=NULL WHERE id=?""",
-                (str(destination), digest.hexdigest(), total, file_id))
+                sha256=?,downloaded_bytes=?,downloaded_at=?,download_error=NULL WHERE id=?""",
+                (str(destination), digest.hexdigest(), total, downloaded_at, file_id))
     except Exception as exc:
         temporary.unlink(missing_ok=True)
         with db() as conn:
@@ -764,7 +767,14 @@ def github_export_resources_json(repository_id: int):
                         "extension": row["extension"], "size_bytes": row["size_bytes"],
                         "downloaded_bytes": row["downloaded_bytes"], "sha256": row["sha256"],
                         "git_sha": row["sha"], "html_url": row["html_url"],
-                        "download_url": row["download_url"], "first_seen_at": row["first_seen_at"],
+                        "download_url": row["download_url"] or (
+                            "https://raw.githubusercontent.com/" + quote(repo_row["full_name"].split("/", 1)[0], safe="") + "/"
+                            + quote(repo_row["full_name"].split("/", 1)[1], safe="") + "/"
+                            + quote(repo_row["default_branch"], safe="") + "/"
+                            + quote(row["path"], safe="/")
+                        ),
+                        "downloaded_at": row["downloaded_at"],
+                        "first_seen_at": row["first_seen_at"],
                         "last_seen_at": row["last_seen_at"],
                     },
                     analysis,
