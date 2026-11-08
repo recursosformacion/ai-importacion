@@ -32,7 +32,7 @@ def test_analyze_musicxml_extracts_title_creator_parts_and_measures(tmp_path):
 
 
 def test_analyze_mxl_reads_musicxml_from_container(tmp_path):
-    path = tmp_path / "score.musicxml"
+    path = tmp_path / "score.mxl"
     with ZipFile(path, "w") as archive:
         archive.writestr("META-INF/container.xml", """<container><rootfiles>
           <rootfile full-path="scores/main.musicxml" media-type="application/vnd.recordare.musicxml+xml"/>
@@ -241,7 +241,7 @@ def test_composer_credit_splits_arranger_and_deduplicates_short_name(tmp_path):
 
 
 def test_untyped_credits_are_not_promoted_to_creator_roles(tmp_path):
-    path = tmp_path / "score.mxl"
+    path = tmp_path / "score.musicxml"
     score = """<score-partwise>
       <credit><credit-words>Symphony in C</credit-words></credit>
       <credit><credit-words>Unknown Contributor</credit-words></credit>
