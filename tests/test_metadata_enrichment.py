@@ -25,6 +25,34 @@ def test_ai_metadata_accepts_only_high_confidence_typed_values():
     }]
 
 
+def test_unknown_credit_is_kept_as_candidate_not_creator():
+    result = enrichment.validate_ai_metadata({
+        "title": None,
+        "title_confidence": 0,
+        "creators": [{
+            "name": "Possible name",
+            "type": "unknown",
+            "confidence": 0.82,
+        }],
+    })
+    assert result["creators"] == []
+    assert result["creator_candidates"][0]["name"] == "Possible name"
+    assert result["creator_candidates"][0]["type"] is None
+
+
+def test_ai_enrichment_cache_schema_is_created(tmp_path, monkeypatch):
+    import app.github_catalog as catalog
+
+    monkeypatch.setattr(catalog, "DB_PATH", str(tmp_path / "ai-cache.sqlite3"))
+    catalog.ensure_schema()
+    with catalog.db() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(github_ai_metadata_enrichments)")
+        }
+    assert {"github_file_id", "sha256", "metadata_json", "model", "analyzed_at"} <= columns
+
+
 def test_ai_metadata_does_not_promote_low_confidence_title():
     result = enrichment.validate_ai_metadata({
         "title": "Beethoven Sonata piano",
