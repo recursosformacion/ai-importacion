@@ -75,18 +75,68 @@ def analyze_musicxml(path: str | Path) -> dict:
         raise NotMusicXMLFileError("El XML no tiene la estructura de una partitura MusicXML.")
     work_title = _first_text(root, "work-title")
     movement_title = _first_text(root, "movement-title")
-    # work-title identifies the composition; movement-title may identify only
-    # a movement (e.g. Allegro), so it is a fallback rather than the priority.
-    title = work_title or movement_title
+
+    # MuseScore and other notation programs often place the visible score
+    # title/composer in page credits instead of MusicXML work/creator fields.
+    credit_values: dict[str, list[str]] = {}
+    for credit in (element for element in root.iter() if _local_name(element.tag) == "credit"):
+        credit_type = next(
+            (child.text.strip().casefold() for child in credit
+             if _local_name(child.tag) == "credit-type" and child.text and child.text.strip()),
+            "",
+        )
+        if not credit_type:
+            continue
+        values = [
+            child.text.strip()
+            for child in credit.iter()
+            if _local_name(child.tag) == "credit-words" and child.text and child.text.strip()
+        ]
+        bucket = credit_values.setdefault(credit_type, [])
+        for value in values:
+            if value not in bucket:
+                bucket.append(value)
+
+    credit_title = next(iter(credit_values.get("title", [])), None)
+    # work-title is the strongest composition-level field. A title credit is
+    # the next best source; movement-title may describe only one movement.
+    title = work_title or credit_title or movement_title
+    title_source = (
+        "work-title" if work_title else
+        "credit:title" if credit_title else
+        "movement-title" if movement_title else None
+    )
+
     creators = []
     seen_creators = set()
+
+    def add_creator(name: str, creator_type: str) -> None:
+        creator = {"name": name.strip(), "type": creator_type}
+        if not creator["name"]:
+            return
+        key = (creator["name"].casefold(), creator["type"].casefold())
+        if key not in seen_creators:
+            seen_creators.add(key)
+            creators.append(creator)
+
     for element in root.iter():
         if _local_name(element.tag) == "creator" and element.text and element.text.strip():
-            creator = {"name": element.text.strip(), "type": element.attrib.get("type", "")}
-            key = (creator["name"].casefold(), creator["type"].casefold())
-            if key not in seen_creators:
-                seen_creators.add(key)
-                creators.append(creator)
+            add_creator(element.text, element.attrib.get("type", ""))
+
+    # Credit roles are meaningful attribution evidence too. Keep their
+    # MusicXML role names, and do not duplicate an existing creator entry.
+    credit_role_map = {
+        "composer": "composer",
+        "arranger": "arranger",
+        "lyricist": "lyricist",
+        "poet": "poet",
+        "translator": "translator",
+        "artist": "artist",
+        "editor": "editor",
+    }
+    for credit_type, creator_type in credit_role_map.items():
+        for value in credit_values.get(credit_type, []):
+            add_creator(value, creator_type)
     part_names = {}
     for element in root.iter():
         if _local_name(element.tag) == "score-part":
@@ -127,7 +177,7 @@ def analyze_musicxml(path: str | Path) -> dict:
         "title": title,
         "work_title": work_title,
         "movement_title": movement_title,
-        "title_source": "work-title" if work_title else ("movement-title" if movement_title else None),
+        "title_source": title_source,
         "creators": creators,
         "rights": rights,
         "declared_source": source_text,
