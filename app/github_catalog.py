@@ -484,8 +484,8 @@ async def github_download_file(file_id: int):
         with db() as conn:
             downloaded_at = now()
             conn.execute("""UPDATE github_files SET download_status='downloaded',local_path=?,
-                sha256=?,downloaded_bytes=?,downloaded_at=?,download_error=NULL WHERE id=?""",
-                (str(destination), digest.hexdigest(), total, downloaded_at, file_id))
+                download_url=?,sha256=?,downloaded_bytes=?,downloaded_at=?,download_error=NULL WHERE id=?""",
+                (str(destination), raw_url, digest.hexdigest(), total, downloaded_at, file_id))
     except Exception as exc:
         temporary.unlink(missing_ok=True)
         with db() as conn:
