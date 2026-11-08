@@ -530,33 +530,67 @@ async def github_download_file(file_id: int):
     return RedirectResponse(f"/github/{row['repository_id']}", status_code=303)
 
 
+DOWNLOAD_CONCURRENCY = max(1, min(16, int(os.getenv("AI_IMPORTACION_DOWNLOAD_CONCURRENCY", "12"))))
+
+
 async def _run_repository_downloads(repository_id: int, file_ids: list[int]) -> None:
-    """Download the selected repository inventory sequentially and persist progress."""
+    """Download with bounded concurrency; each file remains independently resumable."""
     with db() as conn:
         conn.execute("""UPDATE github_download_jobs SET status='running',started_at=?,updated_at=?,
             total=?,completed=0,failed=0,current_path='' WHERE repository_id=?""",
             (now(), now(), len(file_ids), repository_id))
-    for file_id in file_ids:
+
+    next_index = 0
+    index_lock = asyncio.Lock()
+
+    async def worker() -> None:
+        nonlocal next_index
+        while True:
+            async with index_lock:
+                if next_index >= len(file_ids):
+                    return
+                file_id = file_ids[next_index]
+                next_index += 1
+
+            with db() as conn:
+                item = conn.execute(
+                    "SELECT path FROM github_files WHERE id=? AND repository_id=?",
+                    (file_id, repository_id),
+                ).fetchone()
+                if not item:
+                    continue
+                conn.execute(
+                    "UPDATE github_download_jobs SET current_path=?,updated_at=? WHERE repository_id=?",
+                    (item["path"], now(), repository_id),
+                )
+
+            try:
+                await github_download_file(file_id)
+            except Exception as exc:
+                with db() as conn:
+                    conn.execute(
+                        "UPDATE github_files SET download_status='error',download_error=? WHERE id=?",
+                        (str(exc)[:1000], file_id),
+                    )
+
+            with db() as conn:
+                status_row = conn.execute(
+                    "SELECT download_status FROM github_files WHERE id=?", (file_id,)
+                ).fetchone()
+                failed = int(bool(status_row) and status_row["download_status"] != "downloaded")
+                conn.execute("""UPDATE github_download_jobs SET completed=completed+1,
+                    failed=failed+?,updated_at=? WHERE repository_id=?""",
+                    (failed, now(), repository_id))
+
+    try:
+        await asyncio.gather(*(worker() for _ in range(min(DOWNLOAD_CONCURRENCY, len(file_ids)))))
+    except Exception:
         with db() as conn:
-            item = conn.execute("SELECT path FROM github_files WHERE id=? AND repository_id=?",
-                                (file_id, repository_id)).fetchone()
-            if not item:
-                continue
-            conn.execute("UPDATE github_download_jobs SET current_path=?,updated_at=? WHERE repository_id=?",
-                         (item["path"], now(), repository_id))
-        try:
-            await github_download_file(file_id)
-        except Exception:
-            # The single-file endpoint records ordinary download errors itself.
-            pass
-        with db() as conn:
-            status_row = conn.execute(
-                "SELECT download_status FROM github_files WHERE id=?", (file_id,)
-            ).fetchone()
-            failed = int(bool(status_row) and status_row["download_status"] != "downloaded")
-            conn.execute("""UPDATE github_download_jobs SET completed=completed+1,
-                failed=failed+?,updated_at=? WHERE repository_id=?""",
-                (failed, now(), repository_id))
+            conn.execute(
+                "UPDATE github_download_jobs SET status='interrupted',updated_at=? WHERE repository_id=?",
+                (now(), repository_id),
+            )
+        raise
     with db() as conn:
         conn.execute("""UPDATE github_download_jobs SET status='completed',current_path='',
             updated_at=? WHERE repository_id=?""", (now(), repository_id))
