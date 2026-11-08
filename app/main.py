@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -226,12 +227,20 @@ def init_db():
                WHERE status='running'""",
             (now(),),
         )
-        cleanup_migration = "normalize_archive_file_relevance_v1"
-        cleanup_done = conn.execute(
-            "SELECT 1 FROM app_startup_migrations WHERE migration_key=?",
-            (cleanup_migration,),
-        ).fetchone()
-        if not cleanup_done:
+
+
+
+def run_startup_maintenance():
+    """Run non-essential, potentially table-wide data cleanup outside server startup."""
+    started = time.perf_counter()
+    cleanup_migration = "normalize_archive_file_relevance_v1"
+    try:
+        with db() as conn:
+            if conn.execute(
+                "SELECT 1 FROM app_startup_migrations WHERE migration_key=?",
+                (cleanup_migration,),
+            ).fetchone():
+                return
             stale_xml = conn.execute(
                 """SELECT fa.file_id FROM archive_file_analyses fa
                    JOIN archive_files f ON f.id=fa.file_id
@@ -245,14 +254,11 @@ def init_db():
                     """UPDATE archive_file_analyses
                        SET status='not_musicxml',analysis_json=?,error_text=NULL
                        WHERE file_id=?""",
-                    (
-                        json.dumps({
-                            "format": "xml",
-                            "status": "not_musicxml",
-                            "message": "XML válido, pero no es una partitura MusicXML.",
-                        }, ensure_ascii=False),
-                        row["file_id"],
-                    ),
+                    (json.dumps({
+                        "format": "xml",
+                        "status": "not_musicxml",
+                        "message": "XML válido, pero no es una partitura MusicXML.",
+                    }, ensure_ascii=False), row["file_id"]),
                 )
             conn.execute(
                 """UPDATE archive_files SET relevant=0
@@ -280,12 +286,26 @@ def init_db():
                 "INSERT INTO app_startup_migrations(migration_key,applied_at) VALUES(?,?)",
                 (cleanup_migration, now()),
             )
+        import logging
+        logging.getLogger(__name__).info(
+            "Mantenimiento de inicio completado en %.2f s", time.perf_counter() - started
+        )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Falló el mantenimiento de inicio diferido")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # SQLite schema/migrations are synchronous; keep them off the event loop.
+    # Keep startup limited to schema creation and essential queue recovery.
+    startup_started = time.perf_counter()
     await run_in_threadpool(init_db)
+    import logging
+    logging.getLogger(__name__).info(
+        "Inicialización SQLite completada en %.2f s", time.perf_counter() - startup_started
+    )
+    # This cleanup scans/updates archive tables; it must not delay Uvicorn readiness.
+    asyncio.create_task(asyncio.to_thread(run_startup_maintenance), name="startup-maintenance")
     from app.github_exploration import resume_exploration_worker, stop_exploration_worker
     exploration_worker = resume_exploration_worker()
     workers = [
