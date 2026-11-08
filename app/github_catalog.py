@@ -45,7 +45,7 @@ MUSIC_EXTENSIONS = {
 }
 MAX_TREE_ENTRIES = 50000
 # Increment when extraction rules change so cached metadata is recalculated.
-ANALYZER_VERSION = "musicxml-credits-3"
+ANALYZER_VERSION = "musicxml-credits-4"
 
 # Only explicit music/notation/audio formats count towards the repository threshold.
 # Generic documents, images and archives are not evidence of a musical piece.
