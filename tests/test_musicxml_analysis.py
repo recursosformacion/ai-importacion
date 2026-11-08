@@ -188,3 +188,69 @@ def test_extracts_title_and_composer_from_musescore_page_credits(tmp_path):
         {"name": "Ludwig Van Beethoven (1770-1827)", "type": "composer"}
     ]
     assert result["instrumentation"] == ["Piano"]
+
+
+def test_untyped_page_credits_only_supply_title_when_filename_supports_it(tmp_path):
+    path = tmp_path / "Lacrimosa_-_Requiem.mxl"
+    score = """<score-partwise>
+      <credit><credit-words>Amade Wolfgang Mozart</credit-words></credit>
+      <credit><credit-words>Lacrimosa - Requiem</credit-words></credit>
+      <credit><credit-words>TheoA</credit-words></credit>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>"""
+    with ZipFile(path, "w") as archive:
+        archive.writestr("META-INF/container.xml",
+                         '<container><rootfiles><rootfile full-path="score.xml"/>'
+                         '</rootfiles></container>')
+        archive.writestr("score.xml", score)
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Lacrimosa - Requiem"
+    assert result["title_source"] == "credit:untyped_filename_match"
+    assert result["creators"] == []
+    assert result["creator_candidates"] == [
+        {"name": "Amade Wolfgang Mozart", "type": None},
+        {"name": "TheoA", "type": None},
+    ]
+
+
+def test_composer_credit_splits_arranger_and_deduplicates_short_name(tmp_path):
+    path = tmp_path / "twinkle.mxl"
+    score = """<score-partwise>
+      <work><work-title>Twinkle Twinkle Little Star</work-title></work>
+      <identification><creator type="composer">Mozart</creator></identification>
+      <credit><credit-type>title</credit-type><credit-words>Twinkle Twinkle Little Star</credit-words></credit>
+      <credit><credit-type>subtitle</credit-type><credit-words>12 Variations</credit-words></credit>
+      <credit><credit-type>composer</credit-type>
+        <credit-words>Wolfgang Amadeus Mozart&#10;arr. Solángel</credit-words></credit>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>"""
+    path.write_text(score, encoding="utf-8")
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Twinkle Twinkle Little Star"
+    assert result["subtitle"] == "12 Variations"
+    assert result["creators"] == [
+        {"name": "Wolfgang Amadeus Mozart", "type": "composer"},
+        {"name": "Solángel", "type": "arranger"},
+    ]
+
+
+def test_untyped_credits_are_not_promoted_to_creator_roles(tmp_path):
+    path = tmp_path / "score.mxl"
+    score = """<score-partwise>
+      <credit><credit-words>Symphony in C</credit-words></credit>
+      <credit><credit-words>Unknown Contributor</credit-words></credit>
+      <part-list/><part id="P1"/>
+    </score-partwise>"""
+    path.write_text(score, encoding="utf-8")
+    result = analyze_musicxml(path)
+    assert result["creators"] == []
+    assert result["creator_candidates"] == [
+        {"name": "Symphony in C", "type": None},
+        {"name": "Unknown Contributor", "type": None},
+    ]
