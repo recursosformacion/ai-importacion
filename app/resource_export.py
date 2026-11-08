@@ -15,6 +15,27 @@ def stable_resource_id(repository: str, source_path: str) -> str:
     return "github-" + hashlib.sha256(value).hexdigest()[:24]
 
 
+def _title_candidates(candidates: Any, filename_stem: str) -> list[dict[str, Any]]:
+    """Preserve distinct candidate evidence without promoting a filename to a title."""
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in candidates if isinstance(candidates, list) else []:
+        if not isinstance(item, dict):
+            continue
+        value = " ".join(str(item.get("value") or "").split()).strip()
+        if not value or value.casefold() in seen:
+            continue
+        seen.add(value.casefold())
+        result.append({
+            "value": value[:500],
+            "source": str(item.get("source") or "metadata_candidate"),
+            **({"confidence": item["confidence"]} if isinstance(item.get("confidence"), (int, float)) else {}),
+        })
+    if filename_stem and filename_stem.casefold() not in seen:
+        result.append({"value": filename_stem, "source": "source_filename"})
+    return result
+
+
 def build_github_resource_document(
     repository: dict[str, Any],
     source_file: dict[str, Any],
@@ -50,9 +71,7 @@ def build_github_resource_document(
         "resource": {
             "title": extracted_title,
             "title_source": metadata.get("title_source") if extracted_title else None,
-            "title_candidates": [
-                {"value": filename_stem, "source": "source_filename"}
-            ] if filename_stem else [],
+            "title_candidates": _title_candidates(metadata.get("title_candidates"), filename_stem),
             "creators": metadata.get("creators") or [],
             "creator_candidates": metadata.get("creator_candidates") or [],
             "instrumentation": instrumentation or [],
