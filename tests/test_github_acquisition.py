@@ -168,3 +168,52 @@ def test_resource_json_keeps_musicxml_title_evidence_and_filename_candidate():
     assert document["resource"]["instrumentation"] == [
         "Soprano", "Alto", "Tenor", "Bass"
     ]
+
+
+def test_repository_download_worker_uses_bounded_parallelism(tmp_path, monkeypatch):
+    import asyncio
+    import app.github_catalog as catalog
+
+    monkeypatch.setattr(catalog, "DB_PATH", str(tmp_path / "parallel-download.sqlite3"))
+    monkeypatch.setattr(catalog, "DOWNLOAD_CONCURRENCY", 4)
+    catalog.ensure_schema()
+    with catalog.db() as conn:
+        conn.execute(
+            """INSERT INTO github_repositories(full_name,html_url,default_branch,added_at)
+               VALUES('example/scores','https://github.com/example/scores','main','2026-01-01')"""
+        )
+        conn.execute(
+            """INSERT INTO github_download_jobs(repository_id,status,total,started_at,updated_at)
+               VALUES(1,'queued',8,'','')"""
+        )
+        for index in range(8):
+            conn.execute(
+                """INSERT INTO github_files(repository_id,path,name,extension,first_seen_at,last_seen_at)
+                   VALUES(1,?,?,'.mxl','2026-01-01','2026-01-01')""",
+                (f"score-{index}.mxl", f"score-{index}.mxl"),
+            )
+
+    active = 0
+    peak = 0
+
+    async def fake_download(file_id):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        with catalog.db() as conn:
+            conn.execute(
+                "UPDATE github_files SET download_status='downloaded' WHERE id=?",
+                (file_id,),
+            )
+        active -= 1
+
+    monkeypatch.setattr(catalog, "github_download_file", fake_download)
+    asyncio.run(catalog._run_repository_downloads(1, list(range(1, 9))))
+
+    with catalog.db() as conn:
+        job = conn.execute(
+            "SELECT status,total,completed,failed FROM github_download_jobs WHERE repository_id=1"
+        ).fetchone()
+    assert peak == 4
+    assert tuple(job) == ("completed", 8, 8, 0)
