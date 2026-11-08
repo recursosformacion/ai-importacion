@@ -646,8 +646,30 @@ def github_download_status(repository_id: int):
                          (now(), repository_id))
             row = conn.execute("SELECT * FROM github_download_jobs WHERE repository_id=?",
                                (repository_id,)).fetchone()
-        return JSONResponse({key: row[key] for key in
-            ("status","total","completed","failed","current_path","updated_at")})
+        counts = conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN download_status='downloaded' THEN 1 ELSE 0 END) AS downloaded,
+                   SUM(CASE WHEN download_status='too_large' THEN 1 ELSE 0 END) AS too_large,
+                   SUM(CASE WHEN download_status='error' THEN 1 ELSE 0 END) AS failed
+            FROM github_files
+            WHERE repository_id=? AND extension <> '.txt'
+        """, (repository_id,)).fetchone()
+        downloaded = int(counts["downloaded"] or 0)
+        too_large = int(counts["too_large"] or 0)
+        eligible_total = max(0, int(counts["total"] or 0) - too_large)
+        return JSONResponse({
+            "status": row["status"],
+            # Global repository progress, not just the most recent resumed job.
+            "total": eligible_total,
+            "completed": downloaded,
+            "failed": int(counts["failed"] or 0),
+            "pending": max(0, eligible_total - downloaded),
+            "too_large": too_large,
+            "job_completed": int(row["completed"] or 0),
+            "job_total": int(row["total"] or 0),
+            "current_path": row["current_path"],
+            "updated_at": row["updated_at"],
+        })
 
 
 @router.post("/github/{repository_id}/analyze")
@@ -1098,7 +1120,7 @@ def github_repository(repository_id: int, q: str = ""):
    const detail=document.getElementById('download-detail');
    const bar=document.getElementById('download-bar');
    state.textContent=d.status==='running'?'En curso':d.status==='queued'?'En cola':d.status==='completed'?'Finalizada':d.status==='interrupted'?'Interrumpida; pulsa de nuevo para continuar':'Sin iniciar';
-   detail.textContent=d.completed+' de '+d.total+' archivos procesados · '+d.failed+' errores'+(d.current_path?' · Actual: '+d.current_path:'');
+   detail.textContent=d.completed+' de '+d.total+' archivos descargados · '+d.failed+' errores · '+d.pending+' pendientes'+(d.current_path?' · Actual: '+d.current_path:'');
    bar.value=d.total?Math.round(d.completed*100/d.total):0;
    if(d.status==='running'||d.status==='queued')setTimeout(refresh,2000);
   }catch(e){setTimeout(refresh,5000);}
