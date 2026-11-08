@@ -44,6 +44,8 @@ MUSIC_EXTENSIONS = {
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".zip",
 }
 MAX_TREE_ENTRIES = 50000
+# Increment when extraction rules change so cached metadata is recalculated.
+ANALYZER_VERSION = "musicxml-credits-2"
 
 # Only explicit music/notation/audio formats count towards the repository threshold.
 # Generic documents, images and archives are not evidence of a musical piece.
@@ -138,7 +140,8 @@ def ensure_schema() -> None:
           analysis_json TEXT NOT NULL,
           error_text TEXT,
           analyzed_at TEXT NOT NULL,
-          sha256 TEXT
+          sha256 TEXT,
+          analyzer_version TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS github_content_extractions (
           github_file_id INTEGER PRIMARY KEY REFERENCES github_files(id) ON DELETE CASCADE,
@@ -163,6 +166,9 @@ def ensure_schema() -> None:
           updated_at TEXT
         );
         """)
+        analysis_columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_file_analyses)")}
+        if "analyzer_version" not in analysis_columns:
+            conn.execute("ALTER TABLE github_file_analyses ADD COLUMN analyzer_version TEXT NOT NULL DEFAULT ''")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_files)")}
         additions = {
             "download_status": "TEXT NOT NULL DEFAULT 'not_downloaded'",
@@ -590,25 +596,28 @@ def github_analyze_repository(repository_id: int):
         previous = None
         with db() as conn:
             previous = conn.execute(
-                "SELECT status,sha256 FROM github_file_analyses WHERE github_file_id=?",
+                "SELECT status,sha256,analyzer_version FROM github_file_analyses WHERE github_file_id=?",
                 (item["id"],),
             ).fetchone()
-        if previous and previous["sha256"] and previous["sha256"] == item["sha256"] and previous["status"] in {"ok","not_musicxml"}:
+        if (previous and previous["sha256"] and previous["sha256"] == item["sha256"]
+                and previous["analyzer_version"] == ANALYZER_VERSION
+                and previous["status"] in {"ok","not_musicxml"}):
             continue
         result = analyze_local_music_file(item["local_path"])
         with db() as conn:
             conn.execute("""
                 INSERT INTO github_file_analyses
-                  (github_file_id,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
-                VALUES(?,?,?,?,?,?,?)
+                  (github_file_id,analysis_type,status,analysis_json,error_text,analyzed_at,sha256,analyzer_version)
+                VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(github_file_id) DO UPDATE SET
                   analysis_type=excluded.analysis_type,status=excluded.status,
                   analysis_json=excluded.analysis_json,error_text=excluded.error_text,
-                  analyzed_at=excluded.analyzed_at,sha256=excluded.sha256
+                  analyzed_at=excluded.analyzed_at,sha256=excluded.sha256,
+                  analyzer_version=excluded.analyzer_version
             """, (
                 item["id"], result["analysis_type"], result["status"],
                 __import__("json").dumps(result["analysis"], ensure_ascii=False),
-                result["error_text"], now(), item["sha256"],
+                result["error_text"], now(), item["sha256"], ANALYZER_VERSION,
             ))
     return RedirectResponse(f"/github/{repository_id}?analysis=done", status_code=303)
 
@@ -667,7 +676,7 @@ def github_export_resources_json(repository_id: int):
             SELECT f.*,
                    a.analysis_type, a.status AS analysis_status,
                    a.analysis_json, a.error_text AS analysis_error,
-                   a.analyzed_at, a.sha256 AS analysis_sha256,
+                   a.analyzed_at, a.sha256 AS analysis_sha256, a.analyzer_version,
                    x.status AS extraction_status, x.page_count,
                    x.extracted_characters, x.extracted_text,
                    x.error_text AS extraction_error, x.analyzed_at AS extracted_at,
@@ -704,7 +713,9 @@ def github_export_resources_json(repository_id: int):
                     "error": row["analysis_error"],
                     "analyzed_at": row["analyzed_at"],
                 }
-                analysis_is_current = bool(row["analysis_status"]) and row["analysis_sha256"] == row["sha256"]
+                analysis_is_current = (bool(row["analysis_status"])
+                    and row["analysis_sha256"] == row["sha256"]
+                    and row["analyzer_version"] == ANALYZER_VERSION)
                 analyzable_extensions = {".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar"}
                 if Path(row["path"]).suffix.lower() in analyzable_extensions and not analysis_is_current:
                     from app.analysis_engine import analyze_local_music_file
@@ -719,15 +730,16 @@ def github_export_resources_json(repository_id: int):
                     with db() as conn:
                         conn.execute("""
                             INSERT INTO github_file_analyses
-                              (github_file_id,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
-                            VALUES(?,?,?,?,?,?,?)
+                              (github_file_id,analysis_type,status,analysis_json,error_text,analyzed_at,sha256,analyzer_version)
+                            VALUES(?,?,?,?,?,?,?,?)
                             ON CONFLICT(github_file_id) DO UPDATE SET
                               analysis_type=excluded.analysis_type,status=excluded.status,
                               analysis_json=excluded.analysis_json,error_text=excluded.error_text,
-                              analyzed_at=excluded.analyzed_at,sha256=excluded.sha256
+                              analyzed_at=excluded.analyzed_at,sha256=excluded.sha256,
+                              analyzer_version=excluded.analyzer_version
                         """, (row["id"], analysis["type"], analysis["status"],
                               json.dumps(analysis["metadata"], ensure_ascii=False),
-                              analysis["error"], analysis["analyzed_at"], row["sha256"]))
+                              analysis["error"], analysis["analyzed_at"], row["sha256"], ANALYZER_VERSION))
                 elif analysis_is_current and row["analysis_json"]:
                     try:
                         analysis["metadata"] = json.loads(row["analysis_json"])
