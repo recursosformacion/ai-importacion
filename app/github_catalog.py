@@ -277,6 +277,7 @@ def github_home(imported: int = 0):
             ORDER BY f.last_seen_at DESC LIMIT 40
         """).fetchall()
     body = """<h1>Fuentes GitHub</h1>
+<<<<<<< HEAD
     <p><a href='/github/exploration'>Exploración persistente y presupuesto de búsqueda</a></p>
     <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
     Puedes descargar candidatos para su análisis local. La procedencia GitHub se conserva y no se incorporan automáticamente a OSAP.</p>
@@ -296,6 +297,10 @@ def github_home(imported: int = 0):
     </form>
     <p class="muted">Después pulsa «Leer repositorio» para inventariar los archivos de la carpeta scores. La lectura no descarga todavía las partituras.</p></section>
     <section class="panel"><h2>Añadir otro repositorio conocido</h2>
+=======
+    <p>Selecciona un repositorio candidato. El procesamiento se realiza localmente y genera un manifiesto JSON descargable; no modifica OSAP.</p>
+    <section class="panel"><h2>Añadir repositorio</h2>
+>>>>>>> 92965835bc57c259499e81c2cb61cd2cb046ffea
     <form method="post" action="/github/add">
       <input name="repository" type="text" required placeholder="OpenScore/Lieder o https://github.com/OpenScore/Lieder">
       <button>Añadir repositorio</button>
@@ -313,20 +318,12 @@ def github_home(imported: int = 0):
                 "<div class='muted'>" + esc(repo["description"]) + "</div></td>"
                 "<td>" + esc(license_text) + "</td><td>" + str(repo["files"]) + "</td>"
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
-                "<td><form method='post' action='/github/" + str(repo["id"]) + "/scan'><button>Leer repositorio</button></form>"
-                "<a href='/github/" + str(repo["id"]) + "'>Ver archivos</a></td></tr>"
+                "<td><form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
+                "<a href='/github/" + str(repo["id"]) + "'>Resultado JSON</a></td></tr>"
             )
         body += "</table>"
     else:
         body += "<p>Aún no hay repositorios. Añade uno para empezar.</p>"
-    body += "</section><section class='panel'><h2>Últimos archivos localizados</h2>"
-    if recent_files:
-        body += "<table><tr><th>Repositorio</th><th>Ruta</th><th>Formato</th><th>Tamaño</th></tr>"
-        for item in recent_files:
-            body += "<tr><td>" + esc(item["full_name"]) + "</td><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td></tr>"
-        body += "</table>"
-    else:
-        body += "<p class='muted'>Todavía no se han inventariado archivos.</p>"
     body += "</section><p><a href='/'>Volver al inicio</a> · <a href='/items'>Catálogo general</a></p>"
     return HTMLResponse(_page("Fuentes GitHub", body))
 
@@ -469,6 +466,7 @@ async def github_scan(repository_id: int):
         return HTMLResponse(_page("Error al leer GitHub", "<h1>No se pudo leer el repositorio</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver a GitHub</a></p>"), status_code=502)
 
 
+<<<<<<< HEAD
 @router.post("/github/files/{file_id}/download")
 async def github_download_file(file_id: int):
     ensure_schema()
@@ -983,6 +981,36 @@ def github_export_resources_json(repository_id: int):
         if os.path.exists(archive_path):
             os.unlink(archive_path)
         raise
+=======
+@router.post("/github/{repository_id}/process")
+def github_process(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    from app.github_processing import enqueue_repository
+    enqueue_repository(repository_id)
+    return RedirectResponse(f"/github/{repository_id}", status_code=303)
+
+
+@router.get("/github/{repository_id}/resources.json")
+def github_resources_json(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+        job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    if not job or job["status"] != "completed":
+        raise HTTPException(status_code=409, detail="El JSON todavía no está disponible")
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    path = Path(job["output_dir"]) / "resources.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No se encuentra el JSON generado")
+    return FileResponse(path, media_type="application/json", filename=f"github-{repository_id}-resources.json")
+>>>>>>> 92965835bc57c259499e81c2cb61cd2cb046ffea
 
 
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
@@ -1013,6 +1041,7 @@ def github_repository(repository_id: int, q: str = ""):
         too_large_count = int(download_counts["too_large"] or 0)
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
+<<<<<<< HEAD
     body += "<section class='panel' style='border:2px solid #174f89;background:#fff'>"
     body += "<h2 style='margin-top:0'>Descarga del repositorio</h2>"
     body += "<p><b>" + str(total) + " archivos inventariados</b> · " + str(downloaded_count) + " descargados · " + str(pending_count) + " pendientes"
@@ -1128,6 +1157,25 @@ def github_repository(repository_id: int, q: str = ""):
  refresh();
 })();
 </script>"""
+=======
+    from app.github_processing import ensure_processing_schema
+    ensure_processing_schema()
+    with db() as conn:
+        job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
+    if job and job["status"] == "completed":
+        body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
+    elif job and job["status"] == "running":
+        body += "<p>Procesamiento en curso. Si se interrumpió el servidor, puedes reanudarlo; los resultados previos se conservan.</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reanudar procesamiento</button></form>"
+    elif job and job["status"] == "error":
+        body += "<p>No se pudo completar el procesamiento: " + esc(job["error_text"]) + "</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar</button></form>"
+    else:
+        body += "<p>El repositorio está seleccionado y preparado para procesarse localmente.</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
+    body += "<p><a href='/github'>Volver a candidatos</a></p>"
+>>>>>>> 92965835bc57c259499e81c2cb61cd2cb046ffea
     return HTMLResponse(_page("Repositorio " + repo["full_name"], body))
 
 
@@ -1146,4 +1194,8 @@ def _page(title: str, body: str) -> str:
     return ("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>" + esc(title) + "</title>" + style +
             "<header><b><a href='/'>AI Importación</a></b><a href='/items'>Catálogo local</a><a href='/intake'>Captación integrada</a><a href='/github'>Fuentes GitHub</a></header>"
+<<<<<<< HEAD
             "<main>" + body + "<p class='muted'>La presencia de un fichero público no acredita derechos de redistribución. Los archivos descargados se conservan localmente y no se escriben en OSAP.</p></main></html>")
+=======
+            "<main>" + body + "<p class='muted'>La presencia de un fichero público no acredita derechos de redistribución. El procesamiento local no escribe en OSAP.</p></main></html>")
+>>>>>>> 92965835bc57c259499e81c2cb61cd2cb046ffea
