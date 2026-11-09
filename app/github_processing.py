@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-"""Local, resumable processing of a user-selected GitHub music repository.
+"""Download a complete shallow snapshot of a public GitHub repository and process it locally.
 
-Third-party repositories are treated as data: no scripts, hooks, submodules,
-filters or Git LFS payloads are executed/fetched.
+Repository content is treated as untrusted data: no project scripts are executed,
+submodules are not initialized, hooks are disabled and Git LFS smudging is skipped.
 """
+
 import json
 import os
 import re
 import shutil
 import subprocess
 import threading
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.etree import ElementTree as ET
+
+import httpx
 
 from app.db import connect
 
@@ -25,6 +30,9 @@ MUSIC = {
     ".gpx", ".gp7", ".pdf",
 }
 MAX_FILES = int(os.getenv("AI_IMPORTACION_GITHUB_MAX_FILES", "3000"))
+MAX_GEMINI_FILES = int(os.getenv("AI_IMPORTACION_GEMINI_MAX_FILES", "100"))
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 _LOCKS: dict[int, threading.Lock] = {}
 
 
@@ -57,9 +65,11 @@ def _run(args, cwd=None, timeout=1800):
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
     })
-    return subprocess.run(args, cwd=cwd, env=env, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          timeout=timeout, check=True)
+    return subprocess.run(
+        args, cwd=cwd, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=timeout, check=True,
+    )
 
 
 def _safe_repo_dir(repository_id: int) -> Path:
@@ -70,19 +80,159 @@ def _safe_repo_dir(repository_id: int) -> Path:
     return target
 
 
-def _blob_bytes(repo_dir: Path, path: str) -> bytes:
-    env = os.environ.copy()
-    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1",
-                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
-    result = subprocess.run(["git", "show", "HEAD:" + path], cwd=repo_dir, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=True)
-    return result.stdout
+def _clone_complete_snapshot(url: str, repo_dir: Path):
+    """Materialize all ordinary files from the selected default-branch snapshot."""
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir)
+    repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    _run([
+        "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
+        "clone", "--depth=1", "--single-branch", "--no-tags",
+        "--no-recurse-submodules", url, str(repo_dir),
+    ], timeout=3600)
+
+
+def _update_complete_snapshot(url: str, repo_dir: Path):
+    # Older app versions created blob-filtered, no-checkout clones. Replace those
+    # snapshots so the working tree really contains the repository's ordinary files.
+    config = repo_dir / ".git" / "config"
+    config_text = config.read_text("utf-8", errors="replace") if config.is_file() else ""
+    if not config.is_file() or "partialclone" in config_text.lower() or not (repo_dir / ".git").is_dir():
+        _clone_complete_snapshot(url, repo_dir)
+        return
+    _run([
+        "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
+        "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "origin",
+    ], cwd=repo_dir, timeout=3600)
+    _run([
+        "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
+        "reset", "--hard", "FETCH_HEAD",
+    ], cwd=repo_dir, timeout=1800)
+    _run(["git", "clean", "-ffd"], cwd=repo_dir, timeout=600)
+
+
+def _read_secrets_file() -> list[str]:
+    """Read local secrets.txt without ever logging or returning its contents in errors."""
+    candidates = [
+        Path(os.getenv("AI_IMPORTACION_SECRETS", "")).expanduser()
+        if os.getenv("AI_IMPORTACION_SECRETS") else None,
+        Path(__file__).resolve().parents[1] / "secrets.txt",
+        Path.cwd() / "secrets.txt",
+    ]
+    keys: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        if path is None or not path.is_file():
+            continue
+        try:
+            for raw in path.read_text("utf-8-sig").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    name, value = line.split("=", 1)
+                    if name.strip().upper() not in {"GEMINI_API_KEY", "GEMINI_API_KEYS"}:
+                        continue
+                    line = value.strip().strip('"').strip("'")
+                for key in re.split(r"[,;\s]+", line):
+                    key = key.strip().strip('"').strip("'")
+                    if key and key not in seen and not key.lower().startswith(("your_", "fake_", "replace_")):
+                        keys.append(key)
+                        seen.add(key)
+        except OSError:
+            continue
+    env_value = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY") or ""
+    for key in re.split(r"[,;\s]+", env_value.strip()):
+        key = key.strip()
+        if key and key not in seen:
+            keys.insert(0, key)
+            seen.add(key)
+    return keys
+
+
+def _json_from_model(text: str) -> dict:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    value = json.loads(cleaned)
+    if not isinstance(value, dict):
+        raise ValueError("La respuesta de Gemini no es un objeto JSON")
+    return value
+
+
+def _gemini_identify(context: str, path: str, keys: list[str]) -> dict | None:
+    if not context.strip() or not keys:
+        return None
+    prompt = (
+        "Identifica los datos bibliográficos de esta partitura o fichero musical. "
+        "No inventes información. El nombre del fichero es una pista, no debe "
+        "convertirse automáticamente en título. Distingue título de obra, compositor, "
+        "arreglista y plantilla instrumental. Si un dato no consta, devuelve null. "
+        "Responde exclusivamente con JSON y estas claves: title, composer, arranger, "
+        "instrumentation, confidence (0 a 1), notes.\n"
+        f"Ruta del fichero: {path}\nContenido o texto extraído:\n{context[:24000]}"
+    )
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.1,
+            "responseMimeType": "application/json",
+        },
+    }
+    for key in keys:
+        try:
+            response = httpx.post(
+                GEMINI_ENDPOINT.format(model=GEMINI_MODEL),
+                params={"key": key},
+                json=payload,
+                timeout=90,
+            )
+            response.raise_for_status()
+            body = response.json()
+            parts = body.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            answer = next((part.get("text", "") for part in parts if part.get("text")), "")
+            if answer:
+                return _json_from_model(answer)
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+            # Rotate to the next configured key; never expose credentials in diagnostics.
+            continue
+    return None
+
+
+def _extract_context(path: Path, limit: int = 24000) -> str:
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            chunks = []
+            for page in reader.pages[:5]:
+                chunks.append(page.extract_text() or "")
+            return "\n".join(chunks)[:limit]
+        if suffix in {".mxl", ".mscz", ".capx"} or zipfile.is_zipfile(path):
+            chunks = []
+            with zipfile.ZipFile(path) as archive:
+                for info in archive.infolist():
+                    if info.is_dir() or not info.filename.lower().endswith((".xml", ".musicxml", ".mei", ".txt")):
+                        continue
+                    if info.file_size > 8 * 1024 * 1024:
+                        continue
+                    try:
+                        chunks.append(archive.read(info).decode("utf-8", errors="replace"))
+                    except (OSError, RuntimeError, zipfile.BadZipFile):
+                        continue
+                    if sum(map(len, chunks)) >= limit:
+                        break
+            return "\n".join(chunks)[:limit]
+        if suffix in {".musicxml", ".xml", ".mei", ".krn", ".ly", ".abc", ".nwctxt", ".txt"}:
+            return path.read_text("utf-8", errors="replace")[:limit]
+    except Exception:
+        return ""
+    return ""
 
 
 def _musicxml_title(data: bytes) -> str | None:
-    # Metadata-only parse: never trust filenames as work titles.
     try:
-        import xml.etree.ElementTree as ET
         root = ET.fromstring(data[:8 * 1024 * 1024])
         for node in root.iter():
             if node.tag.rsplit("}", 1)[-1] in {"work-title", "movement-title"}:
@@ -94,9 +244,31 @@ def _musicxml_title(data: bytes) -> str | None:
     return None
 
 
-def _is_music_xml(data: bytes) -> bool:
-    head = data[:65536].lower()
-    return b"<score-partwise" in head or b"<score-timewise" in head
+def _explicit_title(path: Path, suffix: str) -> str | None:
+    try:
+        if suffix in {".musicxml", ".xml"}:
+            data = path.read_bytes()
+            if b"<score-partwise" in data[:65536].lower() or b"<score-timewise" in data[:65536].lower():
+                return _musicxml_title(data)
+        elif suffix in {".mxl", ".mscz", ".capx"}:
+            context = _extract_context(path, 12000)
+            match = re.search(r"<(?:[A-Za-z0-9_-]+:)?(?:work-title|movement-title)\b[^>]*>(.*?)</", context, re.I | re.S)
+            if match:
+                return re.sub(r"<[^>]+>", "", match.group(1)).strip()[:500] or None
+    except OSError:
+        return None
+    return None
+
+
+def _relative_file(repo_dir: Path, raw_path: str) -> Path | None:
+    candidate = repo_dir / raw_path
+    try:
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_relative_to(repo_dir) or not resolved.is_file() or resolved.is_symlink():
+            return None
+        return resolved
+    except (OSError, RuntimeError):
+        return None
 
 
 def process_repository(repository_id: int):
@@ -111,90 +283,155 @@ def process_repository(repository_id: int):
             repo = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
             if not repo:
                 raise ValueError("Repositorio inexistente")
-            previous = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?",
-                                    (repository_id,)).fetchone()
-            if previous and previous["status"] == "completed" and previous["commit_sha"]:
-                # Skip identical snapshots; a new commit triggers a fresh incremental pass.
-                pass
-            conn.execute("""INSERT INTO github_processing_jobs
-                (repository_id,status,started_at,updated_at,error_text)
-                VALUES(?,'running',?,?,NULL)
-                ON CONFLICT(repository_id) DO UPDATE SET status='running',
-                started_at=excluded.started_at,updated_at=excluded.updated_at,error_text=NULL""",
-                (repository_id, started, started))
+            conn.execute(
+                """INSERT INTO github_processing_jobs
+                   (repository_id,status,started_at,updated_at,error_text)
+                   VALUES(?,'running',?,?,NULL)
+                   ON CONFLICT(repository_id) DO UPDATE SET status='running',
+                   started_at=excluded.started_at,updated_at=excluded.updated_at,error_text=NULL""",
+                (repository_id, started, started),
+            )
         url = "https://github.com/" + repo["full_name"] + ".git"
-        if not (repo_dir / ".git").is_dir():
-            if repo_dir.exists():
-                shutil.rmtree(repo_dir)
-            _run(["git", "-c", "core.hooksPath=/dev/null", "clone",
-                  "--filter=blob:none", "--no-checkout", "--depth=1",
-                  "--no-tags", "--no-recurse-submodules", url, str(repo_dir)])
-        else:
-            _run(["git", "-c", "core.hooksPath=/dev/null", "fetch",
-                  "--depth=1", "--no-tags", "--no-recurse-submodules", "origin"], cwd=repo_dir)
-            _run(["git", "reset", "--hard", "FETCH_HEAD"], cwd=repo_dir)
+        _update_complete_snapshot(url, repo_dir)
         commit = _run(["git", "rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
-        listing = _run(["git", "ls-tree", "-r", "-l", "-z", "HEAD"], cwd=repo_dir).stdout
-        entries = []
-        for raw in listing.split("\0"):
-            if not raw:
+
+        # Read the checked-out snapshot locally. The JSON contains musical resources,
+        # while the local clone retains the complete repository for subsequent analysis.
+        paths = []
+        for path in repo_dir.rglob("*"):
+            if ".git" in path.parts or ".osap-import" in path.parts or not path.is_file() or path.is_symlink():
                 continue
-            try:
-                meta, path = raw.split("\t", 1)
-                mode, kind, sha, size = meta.split()
-                suffix = Path(path).suffix.lower()
-                if kind == "blob" and suffix in MUSIC and not path.startswith("/") and ".." not in Path(path).parts:
-                    entries.append((path, sha, int(size) if size.isdigit() else None, suffix))
-            except ValueError:
-                continue
-        entries = entries[:MAX_FILES]
+            if path.suffix.lower() in MUSIC:
+                paths.append(path)
+        paths.sort(key=lambda item: str(item.relative_to(repo_dir)).casefold())
+        paths = paths[:MAX_FILES]
+
         out = repo_dir / ".osap-import"
         out.mkdir(exist_ok=True)
         manifest_path = out / "resources.json"
         existing = {}
         if manifest_path.exists():
             try:
-                existing = {x["source"]["path"]: x for x in json.loads(manifest_path.read_text("utf-8")).get("resources", [])}
-            except Exception:
+                existing = {
+                    item["source"]["path"]: item
+                    for item in json.loads(manifest_path.read_text("utf-8")).get("resources", [])
+                }
+            except (OSError, ValueError, KeyError, TypeError):
                 existing = {}
+
+        api_keys = _read_secrets_file()
+        ai_calls = 0
         records = []
-        for path, sha, size, suffix in entries:
-            old = existing.get(path)
-            if old and old.get("source", {}).get("git_blob_sha") == sha:
-                records.append(old)
+        for path in paths:
+            relative = path.relative_to(repo_dir).as_posix()
+            try:
+                raw_size = path.stat().st_size
+                if raw_size > 100 * 1024 * 1024:
+                    continue
+                raw = path.read_bytes()
+            except OSError:
                 continue
-            # Fetch only selected music blobs. Do not checkout repository files.
-            raw = _blob_bytes(repo_dir, path)
-            is_musicxml = suffix in {".xml", ".musicxml"} and _is_music_xml(raw)
-            if suffix == ".xml" and not is_musicxml:
+            suffix = path.suffix.lower()
+            if suffix == ".xml" and not (
+                b"<score-partwise" in raw[:65536].lower()
+                or b"<score-timewise" in raw[:65536].lower()
+            ):
                 continue
-            title = _musicxml_title(raw) if is_musicxml else None
+
+            previous = existing.get(relative)
+            sha = subprocess.run(
+                ["git", "hash-object", "--", relative], cwd=repo_dir,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+            ).stdout.strip()
+            title = _explicit_title(path, suffix)
+            title_source = "musicxml" if title else None
+            ai_data = None
+            context = ""
+            if not title and ai_calls < MAX_GEMINI_FILES and api_keys:
+                context = _extract_context(path)
+                if context.strip():
+                    ai_data = _gemini_identify(context, relative, api_keys)
+                    ai_calls += 1
+                    if ai_data and isinstance(ai_data.get("title"), str) and ai_data["title"].strip():
+                        title = ai_data["title"].strip()[:500]
+                        title_source = "gemini"
+
+            if previous and previous.get("source", {}).get("git_blob_sha") == sha:
+                # Keep a previously identified title when the source file is unchanged.
+                old_resource = previous.get("resource", {})
+                if not title and old_resource.get("title"):
+                    title = old_resource["title"]
+                    title_source = old_resource.get("title_source")
+                if not ai_data:
+                    ai_data = previous.get("identification")
+
+            resource = {
+                "title": title,
+                "title_source": title_source,
+                "title_candidates": [path.stem] if not title else [],
+                "format": suffix.lstrip("."),
+            }
+            if ai_data:
+                for source_key, target_key in (
+                    ("composer", "composer"),
+                    ("arranger", "arranger"),
+                    ("instrumentation", "instrumentation"),
+                ):
+                    value = ai_data.get(source_key)
+                    if isinstance(value, (str, list)) and value:
+                        resource[target_key] = value
             records.append({
                 "resource_key": "github:" + repo["full_name"] + ":" + sha,
-                "resource": {
-                    "title": title,
-                    "title_source": "musicxml" if title else None,
-                    "title_candidates": [Path(path).stem],
-                    "format": suffix.lstrip("."),
-                },
+                "resource": resource,
                 "source": {
                     "provider": "github",
                     "repository": repo["full_name"],
                     "repository_url": repo["html_url"],
-                    "path": path,
+                    "path": relative,
                     "commit_sha": commit,
                     "git_blob_sha": sha,
                     "license_spdx": repo["license_spdx"] or None,
                     "license_name": repo["license_name"] or None,
                     "rights_status": "unverified",
                 },
-                "processing": {"status": "candidate", "content_size": len(raw)},
+                "identification": {
+                    "provider": "gemini" if title_source == "gemini" or ai_data else None,
+                    "model": GEMINI_MODEL if ai_data else None,
+                    "confidence": ai_data.get("confidence") if ai_data else None,
+                    "notes": ai_data.get("notes") if ai_data else None,
+                } if ai_data else None,
+                "processing": {
+                    "status": "identified" if title else "candidate",
+                    "content_size": len(raw),
+                },
             })
+
         payload = {
-            "schema": "osap-resource-import/1.0",
+            "schema": "osap-resource-import/1.1",
             "generated_at": _now(),
-            "source": {"provider": "github", "repository": repo["full_name"], "commit_sha": commit},
-            "rights_notice": "La licencia declarada por GitHub no ha sido verificada. La presencia pública no acredita permiso de redistribución.",
+            "source": {
+                "provider": "github",
+                "repository": repo["full_name"],
+                "commit_sha": commit,
+                "snapshot": "complete_shallow_clone",
+                "local_repository_path": str(repo_dir),
+            },
+            "rights_notice": (
+                "La licencia declarada por GitHub no ha sido verificada. "
+                "La presencia pública no acredita permiso de redistribución."
+            ),
+            "processing": {
+                "files_in_snapshot": sum(1 for item in repo_dir.rglob("*")
+                                         if item.is_file() and ".git" not in item.parts
+                                         and ".osap-import" not in item.parts),
+                "music_files_considered": len(paths),
+                "gemini_calls": ai_calls,
+                "gemini_model": GEMINI_MODEL if api_keys else None,
+                "gemini_configured": bool(api_keys),
+                "max_music_files": MAX_FILES,
+                "max_gemini_files": MAX_GEMINI_FILES,
+                "git_lfs_payloads_downloaded": False,
+            },
             "resources": records,
         }
         temp = manifest_path.with_suffix(".json.tmp")
@@ -202,18 +439,26 @@ def process_repository(repository_id: int):
         temp.replace(manifest_path)
         stamp = _now()
         with connect(DB_PATH) as conn:
-            conn.execute("""UPDATE github_processing_jobs SET status='completed',commit_sha=?,
-                processed_count=?,output_dir=?,updated_at=?,error_text=NULL WHERE repository_id=?""",
-                (commit, len(records), str(out), stamp, repository_id))
+            conn.execute(
+                """UPDATE github_processing_jobs SET status='completed',commit_sha=?,
+                   processed_count=?,output_dir=?,updated_at=?,error_text=NULL
+                   WHERE repository_id=?""",
+                (commit, len(records), str(out), stamp, repository_id),
+            )
     except Exception as exc:
         with connect(DB_PATH) as conn:
-            conn.execute("""UPDATE github_processing_jobs SET status='error',updated_at=?,
-                error_text=? WHERE repository_id=?""", (_now(), str(exc)[:2000], repository_id))
+            conn.execute(
+                """UPDATE github_processing_jobs SET status='error',updated_at=?,
+                   error_text=? WHERE repository_id=?""",
+                (_now(), str(exc)[:2000], repository_id),
+            )
     finally:
         lock.release()
 
 
 def enqueue_repository(repository_id: int):
     ensure_processing_schema()
-    threading.Thread(target=process_repository, args=(repository_id,), daemon=True,
-                     name=f"github-resource-{repository_id}").start()
+    threading.Thread(
+        target=process_repository, args=(repository_id,), daemon=True,
+        name=f"github-resource-{repository_id}",
+    ).start()
