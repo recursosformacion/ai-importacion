@@ -165,9 +165,10 @@ def process_repository(repository_id: int):
                 continue
             # Fetch only selected music blobs. Do not checkout repository files.
             raw = _blob_bytes(repo_dir, path)
-            title = _musicxml_title(raw) if suffix in {".xml", ".musicxml"} and _is_music_xml(raw) else None
-            if suffix == ".xml" and title is None:
+            is_musicxml = suffix in {".xml", ".musicxml"} and _is_music_xml(raw)
+            if suffix == ".xml" and not is_musicxml:
                 continue
+            title = _musicxml_title(raw) if is_musicxml else None
             records.append({
                 "resource_key": "github:" + repo["full_name"] + ":" + sha,
                 "resource": {
