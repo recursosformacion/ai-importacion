@@ -70,6 +70,15 @@ def _safe_repo_dir(repository_id: int) -> Path:
     return target
 
 
+def _blob_bytes(repo_dir: Path, path: str) -> bytes:
+    env = os.environ.copy()
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1",
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
+    result = subprocess.run(["git", "show", "HEAD:" + path], cwd=repo_dir, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=True)
+    return result.stdout
+
+
 def _musicxml_title(data: bytes) -> str | None:
     # Metadata-only parse: never trust filenames as work titles.
     try:
@@ -155,7 +164,7 @@ def process_repository(repository_id: int):
                 records.append(old)
                 continue
             # Fetch only selected music blobs. Do not checkout repository files.
-            raw = _run(["git", "show", "HEAD:" + path], cwd=repo_dir, timeout=180).stdout.encode("utf-8", "replace")
+            raw = _blob_bytes(repo_dir, path)
             title = _musicxml_title(raw) if suffix in {".xml", ".musicxml"} and _is_music_xml(raw) else None
             if suffix == ".xml" and title is None:
                 continue
