@@ -138,8 +138,7 @@ def github_home():
             ORDER BY f.last_seen_at DESC LIMIT 40
         """).fetchall()
     body = """<h1>Fuentes GitHub</h1>
-    <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
-    Esta primera versión inventaría los ficheros: no descarga contenidos ni los incorpora a OSAP.</p>
+    <p>Selecciona un repositorio candidato. El procesamiento se realiza localmente y genera un manifiesto JSON descargable; no modifica OSAP.</p>
     <section class="panel"><h2>Añadir repositorio</h2>
     <form method="post" action="/github/add">
       <input name="repository" type="text" required placeholder="OpenScore/Lieder o https://github.com/OpenScore/Lieder">
@@ -156,20 +155,12 @@ def github_home():
                 "<div class='muted'>" + esc(repo["description"]) + "</div></td>"
                 "<td>" + esc(license_text) + "</td><td>" + str(repo["files"]) + "</td>"
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
-                "<td><form method='post' action='/github/" + str(repo["id"]) + "/scan'><button>Leer repositorio</button></form>"
-                "<a href='/github/" + str(repo["id"]) + "'>Ver archivos</a></td></tr>"
+                "<td><form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
+                "<a href='/github/" + str(repo["id"]) + "'>Resultado JSON</a></td></tr>"
             )
         body += "</table>"
     else:
         body += "<p>Aún no hay repositorios. Añade uno para empezar.</p>"
-    body += "</section><section class='panel'><h2>Últimos archivos localizados</h2>"
-    if recent_files:
-        body += "<table><tr><th>Repositorio</th><th>Ruta</th><th>Formato</th><th>Tamaño</th></tr>"
-        for item in recent_files:
-            body += "<tr><td>" + esc(item["full_name"]) + "</td><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td></tr>"
-        body += "</table>"
-    else:
-        body += "<p class='muted'>Todavía no se han inventariado archivos.</p>"
     body += "</section><p><a href='/'>Volver al inicio</a> · <a href='/items'>Catálogo general</a></p>"
     return HTMLResponse(_page("Fuentes GitHub", body))
 
@@ -261,6 +252,36 @@ async def github_scan(repository_id: int):
         return HTMLResponse(_page("Error al leer GitHub", "<h1>No se pudo leer el repositorio</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver a GitHub</a></p>"), status_code=502)
 
 
+@router.post("/github/{repository_id}/process")
+def github_process(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    from app.github_processing import enqueue_repository
+    enqueue_repository(repository_id)
+    return RedirectResponse(f"/github/{repository_id}", status_code=303)
+
+
+@router.get("/github/{repository_id}/resources.json")
+def github_resources_json(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+        job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    if not job or job["status"] != "completed":
+        raise HTTPException(status_code=409, detail="El JSON todavía no está disponible")
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    path = Path(job["output_dir"]) / "resources.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No se encuentra el JSON generado")
+    return FileResponse(path, media_type="application/json", filename=f"github-{repository_id}-resources.json")
+
+
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
 def github_repository(repository_id: int, q: str = ""):
     ensure_schema()
@@ -276,20 +297,22 @@ def github_repository(repository_id: int, q: str = ""):
         total = conn.execute("SELECT COUNT(*) FROM github_files WHERE repository_id=?", (repository_id,)).fetchone()[0]
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
-    body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
-    if scan:
-        body += "<p class='muted'>Última lectura: " + esc(scan["completed_at"] or scan["started_at"]) + " · " + str(scan["candidate_count"]) + " archivos candidatos · " + ("árbol truncado: la lectura puede ser parcial" if scan["truncated"] else "árbol completo") + "</p>"
-        if scan["error_text"]:
-            body += "<p class='muted'>" + esc(scan["error_text"]) + "</p>"
-    body += "<h2>Archivos localizados (" + str(total) + ")</h2><form method='get'><input name='q' type='text' value='" + esc(q) + "' placeholder='Filtrar por ruta'><button>Filtrar</button></form>"
-    if files:
-        body += "<table><tr><th>Archivo</th><th>Formato</th><th>Tamaño</th><th>SHA Git</th></tr>"
-        for item in files:
-            body += "<tr><td><a href='" + esc(item["html_url"]) + "'>" + esc(item["path"]) + "</a></td><td>" + esc(item["extension"]) + "</td><td>" + esc(item["size_bytes"] or "—") + "</td><td><code>" + esc(item["sha"][:12]) + "</code></td></tr>"
-        body += "</table>"
+    from app.github_processing import ensure_processing_schema
+    ensure_processing_schema()
+    with db() as conn:
+        job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
+    if job and job["status"] == "completed":
+        body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
+    elif job and job["status"] == "running":
+        body += "<p>Procesamiento en curso. Actualiza esta página para consultar el resultado.</p>"
+    elif job and job["status"] == "error":
+        body += "<p>No se pudo completar el procesamiento: " + esc(job["error_text"]) + "</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar</button></form>"
     else:
-        body += "<p>No hay archivos inventariados que coincidan. Ejecuta una lectura del repositorio.</p>"
-    body += "<p><a href='/github'>Volver a fuentes GitHub</a></p>"
+        body += "<p>El repositorio está seleccionado y preparado para procesarse localmente.</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
+    body += "<p><a href='/github'>Volver a candidatos</a></p>"
     return HTMLResponse(_page("Repositorio " + repo["full_name"], body))
 
 
