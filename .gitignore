@@ -7,4 +7,3 @@ data/
 *.py[cod]
 downloads/
 secrets.txt
-.env
