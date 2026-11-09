@@ -305,7 +305,8 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
     elif job and job["status"] == "running":
-        body += "<p>Procesamiento en curso. Actualiza esta página para consultar el resultado.</p>"
+        body += "<p>Procesamiento en curso. Si se interrumpió el servidor, puedes reanudarlo; los resultados previos se conservan.</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reanudar procesamiento</button></form>"
     elif job and job["status"] == "error":
         body += "<p>No se pudo completar el procesamiento: " + esc(job["error_text"]) + "</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar</button></form>"
@@ -331,4 +332,4 @@ def _page(title: str, body: str) -> str:
     return ("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>" + esc(title) + "</title>" + style +
             "<header><b><a href='/'>AI Importación</a></b><a href='/items'>Catálogo local</a><a href='/intake'>Captación integrada</a><a href='/github'>Fuentes GitHub</a></header>"
-            "<main>" + body + "<p class='muted'>La presencia de un fichero público no acredita derechos de redistribución. No se han descargado archivos ni escrito en OSAP.</p></main></html>")
+            "<main>" + body + "<p class='muted'>La presencia de un fichero público no acredita derechos de redistribución. El procesamiento local no escribe en OSAP.</p></main></html>")
