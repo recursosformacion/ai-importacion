@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-"""Download a complete shallow snapshot of a public GitHub repository and process it locally.
+"""Inventorize GitHub repositories and batch-fetch only selected music files.
 
-Repository content is treated as untrusted data: no project scripts are executed,
-submodules are not initialized, hooks are disabled and Git LFS smudging is skipped.
+Repository content is untrusted data: scripts and hooks are never executed,
+submodules are not initialized and Git LFS payloads are not fetched.
 """
 
 import json
@@ -57,7 +57,7 @@ def ensure_processing_schema():
         """)
 
 
-def _run(args, cwd=None, timeout=1800):
+def _run(args, cwd=None, timeout=1800, input_text=None):
     env = os.environ.copy()
     env.update({
         "GIT_TERMINAL_PROMPT": "0",
@@ -67,7 +67,7 @@ def _run(args, cwd=None, timeout=1800):
     })
     return subprocess.run(
         args, cwd=cwd, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, input=input_text,
         timeout=timeout, check=True,
     )
 
@@ -80,46 +80,46 @@ def _safe_repo_dir(repository_id: int) -> Path:
     return target
 
 
-def _clone_complete_snapshot(url: str, repo_dir: Path):
-    """Materialize all ordinary files from the selected default-branch snapshot."""
-    preserved = repo_dir / ".osap-import"
-    backup = repo_dir.parent / (repo_dir.name + "-osap-import-backup")
-    if backup.exists():
-        shutil.rmtree(backup)
-    if preserved.is_dir():
-        shutil.move(str(preserved), str(backup))
-    if repo_dir.exists():
+def _prepare_music_snapshot(url: str, repo_dir: Path) -> tuple[str, list[str]]:
+    """Fetch the tree first, then materialize all selected music blobs in one Git pack."""
+    if repo_dir.exists() and not (repo_dir / ".git").is_dir():
         shutil.rmtree(repo_dir)
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
-    _run([
-        "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
-        "clone", "--depth=1", "--single-branch", "--no-tags",
-        "--no-recurse-submodules", url, str(repo_dir),
-    ], timeout=3600)
-    if backup.is_dir():
-        restored = repo_dir / ".osap-import"
-        if restored.exists():
-            shutil.rmtree(restored)
-        shutil.move(str(backup), str(restored))
-
-
-def _update_complete_snapshot(url: str, repo_dir: Path):
-    # Older app versions created blob-filtered, no-checkout clones. Replace those
-    # snapshots so the working tree really contains the repository's ordinary files.
     config = repo_dir / ".git" / "config"
-    config_text = config.read_text("utf-8", errors="replace") if config.is_file() else ""
-    if not config.is_file() or "partialclone" in config_text.lower() or not (repo_dir / ".git").is_dir():
-        _clone_complete_snapshot(url, repo_dir)
-        return
-    _run([
-        "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
-        "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "origin",
-    ], cwd=repo_dir, timeout=3600)
-    _run([
-        "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
-        "reset", "--hard", "FETCH_HEAD",
-    ], cwd=repo_dir, timeout=1800)
+    if not config.is_file():
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir)
+        _run([
+            "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
+            "clone", "--filter=blob:none", "--no-checkout", "--depth=1",
+            "--single-branch", "--no-tags", "--no-recurse-submodules", url, str(repo_dir),
+        ], timeout=3600)
+    else:
+        _run([
+            "git", "-c", "core.hooksPath=/dev/null", "fetch", "--filter=blob:none",
+            "--depth=1", "--no-tags", "--no-recurse-submodules", "origin",
+        ], cwd=repo_dir, timeout=3600)
+    _run(["git", "reset", "--hard", "--quiet", "FETCH_HEAD"], cwd=repo_dir, timeout=1800) if _run(
+        ["git", "rev-parse", "--verify", "HEAD"], cwd=repo_dir
+    ).returncode == 0 else None
+    commit = _run(["git", "rev-parse", "FETCH_HEAD"], cwd=repo_dir).stdout.strip()
+    listing = _run(["git", "ls-tree", "-r", "-z", "--name-only", commit], cwd=repo_dir).stdout
+    selected = []
+    for raw in listing.split("\\0"):
+        if not raw or raw.startswith("/") or ".." in Path(raw).parts:
+            continue
+        if Path(raw).suffix.lower() in MUSIC:
+            selected.append(raw)
+    selected = sorted(set(selected), key=str.casefold)[:MAX_FILES]
+    # One sparse-checkout operation requests all selected blobs together.
+    _run(["git", "sparse-checkout", "init", "--no-cone"], cwd=repo_dir)
+    _run(
+        ["git", "sparse-checkout", "set", "--no-cone", "--stdin"],
+        cwd=repo_dir, timeout=1800, input_text="".join(path + "\\n" for path in selected),
+    )
+    _run(["git", "checkout", "--force", commit], cwd=repo_dir, timeout=1800)
     _run(["git", "clean", "-ffd", "-e", ".osap-import/"], cwd=repo_dir, timeout=600)
+    return commit, selected
 
 
 def _read_secrets_file() -> list[str]:
@@ -303,19 +303,12 @@ def process_repository(repository_id: int):
                 (repository_id, started, started),
             )
         url = "https://github.com/" + repo["full_name"] + ".git"
-        _update_complete_snapshot(url, repo_dir)
-        commit = _run(["git", "rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
-
-        # Read the checked-out snapshot locally. The JSON contains musical resources,
-        # while the local clone retains the complete repository for subsequent analysis.
+        commit, selected_paths = _prepare_music_snapshot(url, repo_dir)
         paths = []
-        for path in repo_dir.rglob("*"):
-            if ".git" in path.parts or ".osap-import" in path.parts or not path.is_file() or path.is_symlink():
-                continue
-            if path.suffix.lower() in MUSIC:
+        for relative in selected_paths:
+            path = _relative_file(repo_dir, relative)
+            if path is not None:
                 paths.append(path)
-        paths.sort(key=lambda item: str(item.relative_to(repo_dir)).casefold())
-        paths = paths[:MAX_FILES]
 
         out = repo_dir / ".osap-import"
         out.mkdir(exist_ok=True)
@@ -424,7 +417,8 @@ def process_repository(repository_id: int):
                 "provider": "github",
                 "repository": repo["full_name"],
                 "commit_sha": commit,
-                "snapshot": "complete_shallow_clone",
+                "snapshot": "filtered_shallow_clone",
+                "download_strategy": "single_sparse_checkout_batch",
                 "local_repository_path": str(repo_dir),
             },
             "rights_notice": (
@@ -432,9 +426,7 @@ def process_repository(repository_id: int):
                 "La presencia pública no acredita permiso de redistribución."
             ),
             "processing": {
-                "files_in_snapshot": sum(1 for item in repo_dir.rglob("*")
-                                         if item.is_file() and ".git" not in item.parts
-                                         and ".osap-import" not in item.parts),
+                "files_in_snapshot": None,
                 "music_files_considered": len(paths),
                 "gemini_calls": ai_calls,
                 "gemini_model": GEMINI_MODEL if api_keys else None,
@@ -442,6 +434,7 @@ def process_repository(repository_id: int):
                 "max_music_files": MAX_FILES,
                 "max_gemini_files": MAX_GEMINI_FILES,
                 "git_lfs_payloads_downloaded": False,
+                "repository_files_downloaded_individually": False,
             },
             "resources": records,
         }
