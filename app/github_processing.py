@@ -102,7 +102,7 @@ def _prepare_music_snapshot(url: str, repo_dir: Path) -> tuple[str, list[str]]:
     commit = _run(["git", "rev-parse", "FETCH_HEAD"], cwd=repo_dir).stdout.strip()
     listing = _run(["git", "ls-tree", "-r", "-z", "--name-only", commit], cwd=repo_dir).stdout
     selected = []
-    for raw in listing.split("\\0"):
+    for raw in listing.split(chr(0)):
         if not raw or raw.startswith("/") or ".." in Path(raw).parts:
             continue
         if Path(raw).suffix.lower() in MUSIC:
@@ -112,7 +112,7 @@ def _prepare_music_snapshot(url: str, repo_dir: Path) -> tuple[str, list[str]]:
     _run(["git", "sparse-checkout", "init", "--no-cone"], cwd=repo_dir)
     _run(
         ["git", "sparse-checkout", "set", "--no-cone", "--stdin"],
-        cwd=repo_dir, timeout=1800, input_text="".join(path + "\\n" for path in selected),
+        cwd=repo_dir, timeout=1800, input_text=chr(10).join(selected) + (chr(10) if selected else ''),
     )
     _run(["git", "checkout", "--force", commit], cwd=repo_dir, timeout=1800)
     _run(["git", "clean", "-ffd", "-e", ".osap-import/"], cwd=repo_dir, timeout=600)
