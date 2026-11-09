@@ -82,6 +82,12 @@ def _safe_repo_dir(repository_id: int) -> Path:
 
 def _clone_complete_snapshot(url: str, repo_dir: Path):
     """Materialize all ordinary files from the selected default-branch snapshot."""
+    preserved = repo_dir / ".osap-import"
+    backup = repo_dir.parent / (repo_dir.name + "-osap-import-backup")
+    if backup.exists():
+        shutil.rmtree(backup)
+    if preserved.is_dir():
+        shutil.move(str(preserved), str(backup))
     if repo_dir.exists():
         shutil.rmtree(repo_dir)
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -90,6 +96,11 @@ def _clone_complete_snapshot(url: str, repo_dir: Path):
         "clone", "--depth=1", "--single-branch", "--no-tags",
         "--no-recurse-submodules", url, str(repo_dir),
     ], timeout=3600)
+    if backup.is_dir():
+        restored = repo_dir / ".osap-import"
+        if restored.exists():
+            shutil.rmtree(restored)
+        shutil.move(str(backup), str(restored))
 
 
 def _update_complete_snapshot(url: str, repo_dir: Path):
@@ -108,7 +119,7 @@ def _update_complete_snapshot(url: str, repo_dir: Path):
         "git", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
         "reset", "--hard", "FETCH_HEAD",
     ], cwd=repo_dir, timeout=1800)
-    _run(["git", "clean", "-ffd"], cwd=repo_dir, timeout=600)
+    _run(["git", "clean", "-ffd", "-e", ".osap-import/"], cwd=repo_dir, timeout=600)
 
 
 def _read_secrets_file() -> list[str]:
