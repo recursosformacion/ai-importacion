@@ -93,10 +93,12 @@ La aplicación incorpora un lector de repositorios públicos de GitHub, accesibl
 
 - Permite registrar un repositorio mediante `propietario/repositorio` o su URL de GitHub.
 - Consulta los metadatos públicos del repositorio y conserva la licencia declarada por GitHub cuando existe. La licencia del repositorio no se considera automáticamente aplicable a cada fichero.
-- Lee el árbol Git recursivo de la rama predeterminada y registra rutas, extensiones musicales, tamaños, SHA de Git y enlaces al fichero original.
+- Descarga en local una copia completa y superficial (último commit de la rama predeterminada) del repositorio, incluidos sus ficheros ordinarios; no ejecuta scripts del proyecto, no inicializa submódulos y omite la descarga de objetos Git LFS.
+- Procesa localmente los ficheros musicales del clon y genera `resources.json` con ruta, formato, SHA, título identificado y datos de autoría cuando están disponibles. La carpeta completa queda en `data/github-repositories/<id>/`.
+- Si falta un título explícito en MusicXML/MXL, utiliza Gemini `gemini-flash-lite-latest` para proponer título, compositor, arreglista e instrumentación a partir del contenido legible. Las propuestas se identifican en el JSON como procedentes de IA y no se presentan como datos verificados.
 - Reconoce inicialmente MusicXML/XML, MXL, MIDI/KAR, PDF, Humdrum/Kern, LilyPond, ABC, MEI, MuseScore, Capella, Sibelius, Finale y ZIP.
 - Las lecturas se pueden repetir para actualizar el inventario. GitHub informa cuando el árbol está truncado; en ese caso el resultado se presenta como parcial.
-- La primera versión **sólo inventaría**: no descarga archivos GitHub, no los mezcla con las tablas de Internet Archive y no exporta ni escribe en OSAP.
+- El clon local y el JSON no se mezclan con las tablas de Internet Archive ni se exportan a OSAP automáticamente.
 - La API pública de GitHub tiene límites de consulta. Se puede configurar opcionalmente `GITHUB_TOKEN` en el entorno del servicio para aumentar el límite; no se introduce el token en la interfaz.
 
 ### Primer uso de GitHub
@@ -107,4 +109,8 @@ La aplicación incorpora un lector de repositorios públicos de GitHub, accesibl
 4. Revisa los ficheros encontrados y su licencia declarada.
 5. Los ficheros quedan inventariados como candidatos; la descarga selectiva y su conexión con la cola de análisis son una fase posterior.
 
-La disponibilidad pública de un fichero no acredita permiso para redistribuirlo. Antes de descargar o incorporar contenidos hay que revisar la licencia aplicable y las condiciones del proyecto de origen.
+La disponibilidad pública de un fichero no acredita permiso para redistribuirlo. Antes de incorporar contenidos hay que revisar la licencia aplicable y las condiciones del proyecto de origen.
+
+### Configuración de Gemini
+
+Crea `secrets.txt` en la raíz del proyecto a partir de `secrets_example.txt` y pega la clave obtenida en Google AI Studio. `secrets.txt` está excluido de Git. También se admite `GEMINI_API_KEY` o `GEMINI_API_KEYS` como variable de entorno, y varias claves separadas por comas. El modelo predeterminado es `gemini-flash-lite-latest`; el límite inicial es de 100 ficheros por ejecución para controlar el consumo. Si no hay clave o falla la identificación, el procesamiento local continúa y deja el título como candidato sin inventarlo.
