@@ -6,3 +6,5 @@ data/
 *.sqlite3
 *.py[cod]
 downloads/
+secrets.txt
+.env
