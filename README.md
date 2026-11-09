@@ -105,9 +105,9 @@ La aplicación incorpora un lector de repositorios públicos de GitHub, accesibl
 
 1. Abre `/github`.
 2. Añade, por ejemplo, `OpenScore/Lieder` o `OpenScore/StringQuartets`.
-3. Pulsa **Leer repositorio**.
-4. Revisa los ficheros encontrados y su licencia declarada.
-5. Los ficheros quedan inventariados como candidatos; la descarga selectiva y su conexión con la cola de análisis son una fase posterior.
+3. En la ficha, pulsa **Procesar repositorio**.
+4. La aplicación descarga el snapshot completo de la rama predeterminada y procesa localmente los ficheros musicales.
+5. Consulta y descarga el manifiesto `resources.json`. El repositorio completo permanece en `data/github-repositories/<id>/`.
 
 La disponibilidad pública de un fichero no acredita permiso para redistribuirlo. Antes de incorporar contenidos hay que revisar la licencia aplicable y las condiciones del proyecto de origen.
 
