@@ -99,7 +99,6 @@ def _prepare_music_snapshot(url: str, repo_dir: Path) -> tuple[str, list[str]]:
             "git", "-c", "core.hooksPath=/dev/null", "fetch", "--filter=blob:none",
             "--depth=1", "--no-tags", "--no-recurse-submodules", "origin",
         ], cwd=repo_dir, timeout=3600)
-    _run(["git", "reset", "--hard", "--quiet", "FETCH_HEAD"], cwd=repo_dir, timeout=1800)
     commit = _run(["git", "rev-parse", "FETCH_HEAD"], cwd=repo_dir).stdout.strip()
     listing = _run(["git", "ls-tree", "-r", "-z", "--name-only", commit], cwd=repo_dir).stdout
     selected = []
