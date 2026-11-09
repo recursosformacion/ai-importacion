@@ -106,8 +106,9 @@ La aplicación incorpora un lector de repositorios públicos de GitHub, accesibl
 1. Abre `/github`.
 2. Añade, por ejemplo, `OpenScore/Lieder` o `OpenScore/StringQuartets`.
 3. En la ficha, pulsa **Procesar repositorio**.
-4. La aplicación descarga el snapshot completo de la rama predeterminada y procesa localmente los ficheros musicales.
-5. Consulta y descarga el manifiesto `resources.json`. El repositorio completo permanece en `data/github-repositories/<id>/`.
+4. La aplicación consulta primero el árbol completo del repositorio y localiza los ficheros musicales.
+5. Descarga en una única operación agrupada los blobs seleccionados mediante `git sparse-checkout` (no hace peticiones individuales por fichero ni descarga el resto del repositorio).
+6. Procesa localmente esos ficheros y genera el manifiesto `resources.json` en `data/github-repositories/<id>/.osap-import/`.
 
 La disponibilidad pública de un fichero no acredita permiso para redistribuirlo. Antes de incorporar contenidos hay que revisar la licencia aplicable y las condiciones del proyecto de origen.
 
