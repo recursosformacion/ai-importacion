@@ -617,6 +617,23 @@ def recover_processing_jobs() -> int:
     """Resume jobs interrupted by a server restart or a lost daemon thread."""
     ensure_processing_schema()
     with connect(DB_PATH) as conn:
+        # A catalog repository is an explicit user selection. Older bulk
+        # incorporation paths could create the catalog row without creating
+        # its processing job; repair those rows instead of leaving them idle.
+        missing = conn.execute("""
+            SELECT r.id FROM github_repositories r
+            LEFT JOIN github_processing_jobs p ON p.repository_id=r.id
+            WHERE p.repository_id IS NULL
+            ORDER BY r.id
+        """).fetchall()
+        stamp = _now()
+        for row in missing:
+            conn.execute("""
+                INSERT OR IGNORE INTO github_processing_jobs
+                  (repository_id,status,stage,progress_count,total_count,current_path,
+                   started_at,updated_at,error_text)
+                VALUES(?,'queued','queued',0,0,'',?,?,NULL)
+            """, (int(row["id"]), stamp, stamp))
         rows = conn.execute(
             "SELECT repository_id FROM github_processing_jobs WHERE status IN ('queued','running','pending') ORDER BY updated_at"
         ).fetchall()
