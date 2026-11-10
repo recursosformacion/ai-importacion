@@ -457,9 +457,22 @@ def process_repository(repository_id: int):
         lock.release()
 
 
-def enqueue_repository(repository_id: int):
+def _process_repository_batch(repository_ids: list[int]):
+    """Process selected repositories sequentially to avoid spawning many Git clones."""
+    for repository_id in dict.fromkeys(int(value) for value in repository_ids):
+        process_repository(repository_id)
+
+
+def enqueue_repositories(repository_ids: list[int]):
     ensure_processing_schema()
+    selected = list(dict.fromkeys(int(value) for value in repository_ids))
+    if not selected:
+        return
     threading.Thread(
-        target=process_repository, args=(repository_id,), daemon=True,
-        name=f"github-resource-{repository_id}",
+        target=_process_repository_batch, args=(selected,), daemon=True,
+        name="github-resource-batch",
     ).start()
+
+
+def enqueue_repository(repository_id: int):
+    enqueue_repositories([repository_id])
