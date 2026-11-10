@@ -324,7 +324,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
     if catalog_added or catalog_skipped:
-        body+="<section class='panel'><b>Incorporación y procesamiento:</b> "+str(catalog_added)+" repositorios incorporados; "+str(processing_started)+" procesamientos iniciados. El JSON se genera automáticamente al terminar."
+        body+="<section class='panel'><b>Incorporación y procesamiento:</b> "+str(catalog_added)+" repositorios incorporados; "+str(processing_started)+" repositorios en cola de procesamiento. Se procesan de uno en uno y el JSON se genera automáticamente al terminar."
         if catalog_skipped:
             body+=" "+str(catalog_skipped)+" omitidos porque no alcanzan el mínimo de "+str(MIN_MUSICAL_FILES)+" archivos musicales inspeccionados."
         body+="</section>"
