@@ -1049,9 +1049,9 @@ def github_repository(repository_id: int, q: str = ""):
     if processing_job and processing_job["status"] == "completed":
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(processing_job["processed_count"]) + ".</p>"
         body += "<p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
-        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
+        body += "<p>El procesamiento agrupado ya incluye inventario, descarga selectiva en bloque y generación del JSON. No hay otro paso de preparación.</p>"
     elif processing_job and processing_job["status"] == "running":
-        body += "<p>Procesamiento en curso. Puedes volver a esta página para consultar el resultado.</p>"
+        body += "<p id='processing-state'>Procesamiento en curso: inventario, descarga agrupada y generación del JSON. Esta página se actualizará automáticamente.</p>"
     elif processing_job and processing_job["status"] == "error":
         body += "<p>No se pudo completar el procesamiento: " + esc(processing_job["error_text"]) + "</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar procesamiento</button></form>"
@@ -1059,31 +1059,9 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p>Inventaría el repositorio y descargará en bloque los ficheros musicales seleccionados; después generará el JSON enriquecido.</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
     body += "</section>"
-    body += "<section class='panel' style='border:2px solid #174f89;background:#fff'>"
-    body += "<h2 style='margin-top:0'>Descarga del repositorio</h2>"
-    body += "<p><b>" + str(total) + " archivos inventariados</b> · " + str(downloaded_count) + " descargados · " + str(pending_count) + " pendientes"
-    if too_large_count:
-        body += " · " + str(too_large_count) + " superan el límite de descarga"
-    body += "</p>"
-    if pending_count:
-        body += "<form method='post' action='/github/" + str(repository_id) + "/download-all'><button style='font-size:1.1rem;padding:.9rem 1.3rem'>Descargar los " + str(pending_count) + " archivos pendientes</button></form>"
-    elif downloaded_count:
-        body += "<p><b>Todos los archivos que se pueden descargar ya están descargados.</b></p>"
-    else:
-        body += "<p>No hay archivos pendientes de descarga.</p>"
-    body += "<section id='download-progress' data-status-url='/github/" + str(repository_id) + "/download-status'><b>Progreso:</b> <span id='download-state'>consultando…</span><p id='download-detail'></p><progress id='download-bar' max='100' value='0' style='width:100%'></progress></section></section>"
-    if downloaded_count:
-        body += "<section class='panel'><h2>Preparar datos de los recursos</h2>"
-        body += "<p>Genera un paquete ZIP con un JSON por cada fichero descargado y el propio fichero. Incluye los metadatos y análisis disponibles; todavía no incorpora nada a OSAP.</p>"
-        body += "<a class='button' href='/github/" + str(repository_id) + "/export-json'>Generar paquete JSON (" + str(downloaded_count) + " recursos)</a></section>"
-        body += "<details class='panel'><summary>Herramientas posteriores a la descarga</summary>"
-        body += "<p>Estas operaciones solo tienen sentido después de descargar los archivos.</p>"
-        body += "<form method='post' action='/github/" + str(repository_id) + "/analyze'><button>Analizar archivos musicales descargados</button></form>"
-        body += "<form method='post' action='/github/" + str(repository_id) + "/extract'><button>Extraer texto, PDF y OCR de archivos descargados</button></form>"
-        body += "<p class='muted'>El análisis y la extracción se guardan por separado del catálogo de Internet Archive.</p></details>"
-    body += "<details class='panel'><summary>Opciones avanzadas del repositorio</summary>"
-    body += "<form method='post' action='/github/" + str(repository_id) + "/scan'><button>Volver a leer el repositorio</button></form>"
-    body += "<p><a href='/github/" + str(repository_id) + "/acquisition'>Documentación, referencias y plan de adquisición</a></p></details>"
+    body += "<details class='panel'><summary>Inventario técnico de archivos (" + str(total) + ")</summary>"
+    body += "<p>Este inventario es informativo. No tienes que descargar los archivos uno a uno ni generar otro paquete: el procesamiento agrupado anterior ya prepara el JSON de importación.</p>"
+    body += "<p><a href='/github/" + str(repository_id) + "/acquisition'>Documentación técnica de adquisición</a></p></details>"
     if scan:
         body += "<p class='muted'>Última lectura: " + esc(scan["completed_at"] or scan["started_at"]) + " · " + str(scan["candidate_count"]) + " archivos candidatos · " + ("árbol truncado: la lectura puede ser parcial" if scan["truncated"] else "árbol completo") + "</p>"
         if scan["error_text"]:
