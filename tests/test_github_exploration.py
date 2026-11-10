@@ -38,8 +38,8 @@ def test_exploration_schema_persists_queries_and_seed_repositories(tmp_path, mon
         ).fetchone()[0] == 1
 
 
-def test_musical_repository_threshold_is_100():
-    assert exploration.MIN_MUSICAL_FILES == 100
+def test_musical_repository_threshold_is_more_than_ten():
+    assert exploration.MIN_MUSICAL_FILES == 11
     assert ".musicxml" in exploration.EXTENSIONS
     assert ".mxl" in exploration.EXTENSIONS
     assert ".mid" in exploration.EXTENSIONS
@@ -52,9 +52,10 @@ def test_exploration_static_route_is_not_captured_by_repository_id(tmp_path, mon
         response = client.get("/github/exploration")
 
     assert response.status_code == 200
-    assert "Exploración persistente de GitHub" in response.text
-    assert "Archivos musicales detectados" in response.text
-    assert "Admisión al catálogo" in response.text
+    assert "Fuentes GitHub" in response.text
+    assert "1. Buscar repositorios" in response.text
+    assert "2. Seleccionar repositorios" in response.text
+    assert "Seleccionar" in response.text
 
 
 def test_repository_selection_is_restored_and_submitted_across_pages(tmp_path, monkeypatch):
@@ -285,13 +286,13 @@ def test_schema_reclassifies_old_qualified_repositories_below_new_threshold(tmp_
     exploration.ensure_schema()
     with exploration.db() as conn:
         # Simulate a database created before the threshold migration ran.
-        conn.execute("DELETE FROM github_exploration_migrations WHERE migration_key='repository_threshold_100_v1'")
+        conn.execute("DELETE FROM github_exploration_migrations WHERE migration_key='repository_threshold_11_v2'")
         conn.execute(
             """INSERT INTO github_discovered_repositories
                (full_name,html_url,discovery_query,discovered_at,status,
                 musical_file_count,last_checked_at)
                VALUES('example/old-qualified','https://github.com/example/old-qualified',
-                      'test','2026-01-01','qualified',35,'2026-01-01')"""
+                      'test','2026-01-01','qualified',10,'2026-01-01')"""
         )
     exploration.ensure_schema()
     with exploration.db() as conn:
