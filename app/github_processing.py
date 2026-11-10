@@ -235,8 +235,14 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
             path = str(row["path"]).replace("\\", "/")
             escaped = "".join("\\" + char if char in "*?[" else char for char in path)
             patterns.append("/" + escaped)
-        sparse_file = checkout / ".git" / "info" / "sparse-checkout"
-        sparse_file.write_text("\n".join(patterns) + "\n", encoding="utf-8")
+        sparse = subprocess.run(
+            ["git", "-C", str(checkout), "sparse-checkout", "set", "--no-cone", "--stdin"],
+            input="\n".join(patterns) + "\n",
+            capture_output=True, text=True, env=environment,
+        )
+        if sparse.returncode:
+            raise RuntimeError("No se pudieron seleccionar los ficheros del repositorio: " +
+                               (sparse.stderr or "")[-3000:])
 
         checkout_result = subprocess.run(
             ["git", "-C", str(checkout), "checkout", "--force", "HEAD"],
