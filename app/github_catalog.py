@@ -288,7 +288,7 @@ def github_home(imported: int = 0):
     </form>
     <p class="muted">Sin escribir nada, explora repositorios por distintas familias de formatos y repertorios musicales. Después se inspecciona el árbol de cada repositorio para localizar los archivos concretos, sea cual sea su formato reconocido. El campo opcional sirve para afinar la búsqueda.</p></section>
     <section class="panel"><h2>Fuentes seleccionadas</h2>
-    <p>MuseTrainer Library publica partituras MusicXML comprimidas (.mxl). Se añade como fuente seleccionada aunque no alcance el mínimo de 100 archivos de la exploración automática.</p>
+    <p>MuseTrainer Library publica partituras MusicXML comprimidas (.mxl). Al añadirla se inicia automáticamente su inventario, descarga agrupada y generación del JSON.</p>
     <form method="post" action="/github/add">
       <input name="repository" type="hidden" value="https://musetrainer.github.io/library">
       <button>Añadir MuseTrainer Library</button>
