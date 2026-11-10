@@ -86,6 +86,7 @@ def test_recover_processing_jobs_requeues_interrupted_work(tmp_path, monkeypatch
     with processing.connect(db_path) as conn:
         conn.execute("CREATE TABLE github_repositories(id INTEGER PRIMARY KEY)")
         conn.execute("INSERT INTO github_repositories(id) VALUES(7)")
+        conn.execute("INSERT INTO github_repositories(id) VALUES(8)")
         conn.execute("""
             INSERT INTO github_processing_jobs
               (repository_id,status,stage,progress_count,total_count,started_at,updated_at)
@@ -97,8 +98,8 @@ def test_recover_processing_jobs_requeues_interrupted_work(tmp_path, monkeypatch
 
     recovered = processing.recover_processing_jobs()
 
-    assert recovered == 1
-    assert queued == [7]
+    assert recovered == 2
+    assert queued == [7, 8]
     with processing.connect(db_path) as conn:
         job = conn.execute(
             "SELECT status,stage,progress_count,current_path FROM github_processing_jobs WHERE repository_id=7"
@@ -107,3 +108,9 @@ def test_recover_processing_jobs_requeues_interrupted_work(tmp_path, monkeypatch
     assert job["stage"] == "queued"
     assert job["progress_count"] == 12
     assert job["current_path"] == ""
+    with processing.connect(db_path) as conn:
+        missing_job = conn.execute(
+            "SELECT status,stage FROM github_processing_jobs WHERE repository_id=8"
+        ).fetchone()
+    assert missing_job["status"] == "queued"
+    assert missing_job["stage"] == "queued"
