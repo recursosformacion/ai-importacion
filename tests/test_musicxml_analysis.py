@@ -112,3 +112,145 @@ def test_content_analysis_route_persists_downloaded_musicxml_results(tmp_path, m
         assert "Test Motet" in row["analysis_json"]
         page = client.get("/items/musicxml-route-test/content-analysis")
         assert "Test Motet" in page.text
+
+
+def test_work_title_has_priority_over_movement_title_and_preserves_both(tmp_path):
+    path = tmp_path / "score.musicxml"
+    path.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+    <score-partwise version="4.0">
+      <work><work-title>Symphony No. 5</work-title></work>
+      <movement-title>Allegro con brio</movement-title>
+      <identification>
+        <creator type="composer">Ludwig van Beethoven</creator>
+        <creator type="arranger">Example Arranger</creator>
+        <rights>Public domain</rights>
+        <encoding><software>Notation App</software><encoding-date>2026-01-02</encoding-date></encoding>
+      </identification>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>""", encoding="utf-8")
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Symphony No. 5"
+    assert result["work_title"] == "Symphony No. 5"
+    assert result["movement_title"] == "Allegro con brio"
+    assert result["title_source"] == "work-title"
+    assert result["creators"] == [
+        {"name": "Ludwig van Beethoven", "type": "composer"},
+        {"name": "Example Arranger", "type": "arranger"},
+    ]
+    assert result["rights"] == ["Public domain"]
+    assert result["encoding"]["software"] == "Notation App"
+    assert result["instrumentation"] == ["Piano"]
+
+
+def test_movement_title_is_used_when_work_title_is_absent(tmp_path):
+    path = tmp_path / "movement.musicxml"
+    path.write_text("""<score-partwise><movement-title>Adagio</movement-title>
+      <part-list/><part id="P1"/></score-partwise>""", encoding="utf-8")
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Adagio"
+    assert result["title_source"] == "movement-title"
+    assert result["work_title"] is None
+
+
+
+def test_extracts_title_and_composer_from_musescore_page_credits(tmp_path):
+    path = tmp_path / "danse-villageoise.mxl"
+    score = """<?xml version="1.0" encoding="UTF-8"?>
+    <score-partwise version="3.1">
+      <identification><encoding><software>MuseScore 3.6.2</software></encoding></identification>
+      <credit page="1">
+        <credit-type>title</credit-type>
+        <credit-words>DANSE VILLAGEOISE No.2</credit-words>
+      </credit>
+      <credit page="1">
+        <credit-type>composer</credit-type>
+        <credit-words>Ludwig Van Beethoven (1770-1827)</credit-words>
+      </credit>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>"""
+    with ZipFile(path, "w") as archive:
+        archive.writestr("META-INF/container.xml",
+                         '<container><rootfiles><rootfile full-path="score.xml"/>'
+                         '</rootfiles></container>')
+        archive.writestr("score.xml", score)
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "DANSE VILLAGEOISE No.2"
+    assert result["title_source"] == "credit:title"
+    assert result["creators"] == [
+        {"name": "Ludwig Van Beethoven (1770-1827)", "type": "composer"}
+    ]
+    assert result["instrumentation"] == ["Piano"]
+
+
+def test_untyped_page_credits_only_supply_title_when_filename_supports_it(tmp_path):
+    path = tmp_path / "Lacrimosa_-_Requiem.mxl"
+    score = """<score-partwise>
+      <credit><credit-words>Amade Wolfgang Mozart</credit-words></credit>
+      <credit><credit-words>Lacrimosa - Requiem</credit-words></credit>
+      <credit><credit-words>TheoA</credit-words></credit>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>"""
+    with ZipFile(path, "w") as archive:
+        archive.writestr("META-INF/container.xml",
+                         '<container><rootfiles><rootfile full-path="score.xml"/>'
+                         '</rootfiles></container>')
+        archive.writestr("score.xml", score)
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Lacrimosa - Requiem"
+    assert result["title_source"] == "credit:untyped_filename_match"
+    assert result["creators"] == []
+    assert result["creator_candidates"] == [
+        {"name": "Amade Wolfgang Mozart", "type": None},
+        {"name": "TheoA", "type": None},
+    ]
+
+
+def test_composer_credit_splits_arranger_and_deduplicates_short_name(tmp_path):
+    path = tmp_path / "twinkle.musicxml"
+    score = """<score-partwise>
+      <work><work-title>Twinkle Twinkle Little Star</work-title></work>
+      <identification><creator type="composer">Mozart</creator></identification>
+      <credit><credit-type>title</credit-type><credit-words>Twinkle Twinkle Little Star</credit-words></credit>
+      <credit><credit-type>subtitle</credit-type><credit-words>12 Variations</credit-words></credit>
+      <credit><credit-type>composer</credit-type>
+        <credit-words>Wolfgang Amadeus Mozart&#10;arr. Solángel</credit-words></credit>
+      <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>"""
+    path.write_text(score, encoding="utf-8")
+
+    result = analyze_musicxml(path)
+
+    assert result["title"] == "Twinkle Twinkle Little Star"
+    assert result["subtitle"] == "12 Variations"
+    assert result["creators"] == [
+        {"name": "Wolfgang Amadeus Mozart", "type": "composer"},
+        {"name": "Solángel", "type": "arranger"},
+    ]
+
+
+def test_untyped_credits_are_not_promoted_to_creator_roles(tmp_path):
+    path = tmp_path / "score.musicxml"
+    score = """<score-partwise>
+      <credit><credit-words>Symphony in C</credit-words></credit>
+      <credit><credit-words>Unknown Contributor</credit-words></credit>
+      <part-list/><part id="P1"/>
+    </score-partwise>"""
+    path.write_text(score, encoding="utf-8")
+    result = analyze_musicxml(path)
+    assert result["creators"] == []
+    assert result["creator_candidates"] == [
+        {"name": "Symphony in C", "type": None},
+        {"name": "Unknown Contributor", "type": None},
+    ]

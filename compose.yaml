@@ -1,0 +1,16 @@
+services:
+  ai-importacion:
+    build: .
+    container_name: ai-importacion
+    restart: unless-stopped
+    ports:
+      - "${AI_IMPORTACION_PORT:-9500}:9500"
+    environment:
+      AI_IMPORTACION_DB: /app/data/ai-importacion.sqlite3
+      AI_IMPORTACION_DOWNLOAD_DIR: /app/downloads
+      AI_IMPORTACION_OCR_LANG: ${AI_IMPORTACION_OCR_LANG:-eng+spa}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      AI_IMPORTACION_MAX_DOWNLOAD_BYTES: ${AI_IMPORTACION_MAX_DOWNLOAD_BYTES:-104857600}
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads

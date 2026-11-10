@@ -162,6 +162,9 @@ def test_startup_reclassifies_known_generic_xml_analysis_errors(tmp_path, monkey
             )
 
     main.init_db()
+    # Startup cleanup was moved out of the readiness path; invoke the
+    # background maintenance explicitly when testing its data migration.
+    main.run_startup_maintenance()
 
     with main.db() as conn:
         metadata = conn.execute(

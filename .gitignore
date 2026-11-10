@@ -7,3 +7,5 @@ data/
 *.py[cod]
 downloads/
 secrets.txt
+secrets
+
