@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -34,7 +35,8 @@ def esc(value: object | None) -> str:
 
 
 def db():
-    return connect(DB_PATH)
+    # The GitHub catalogue page must fail fast if another worker holds SQLite.
+    return connect(DB_PATH, timeout=3)
 
 
 def ensure_schema() -> None:
@@ -126,17 +128,18 @@ async def github_json(url: str) -> dict:
 
 @router.get("/github", response_class=HTMLResponse)
 def github_home():
-    ensure_schema()
-    with db() as conn:
-        repositories = conn.execute("""
-            SELECT r.*, COALESCE((SELECT COUNT(*) FROM github_files f WHERE f.repository_id=r.id),0) AS files,
-                   (SELECT COUNT(*) FROM github_scans s WHERE s.repository_id=r.id) AS scans
-            FROM github_repositories r ORDER BY COALESCE(r.last_scanned_at,r.added_at) DESC
-        """).fetchall()
-        recent_files = conn.execute("""
-            SELECT f.*,r.full_name FROM github_files f JOIN github_repositories r ON r.id=f.repository_id
-            ORDER BY f.last_seen_at DESC LIMIT 40
-        """).fetchall()
+    try:
+        ensure_schema()
+        with db() as conn:
+            repositories = conn.execute("""
+                SELECT r.*, COALESCE((SELECT COUNT(*) FROM github_files f WHERE f.repository_id=r.id),0) AS files,
+                       (SELECT COUNT(*) FROM github_scans s WHERE s.repository_id=r.id) AS scans
+                FROM github_repositories r ORDER BY COALESCE(r.last_scanned_at,r.added_at) DESC
+            """).fetchall()
+    except sqlite3.OperationalError as exc:
+        # Never leave the browser waiting several minutes on a local DB lock.
+        message = "La base de datos local está ocupada o no se puede abrir. La página no ha iniciado ninguna consulta a GitHub. Detalle: " + str(exc)
+        return HTMLResponse(_page("Fuentes GitHub no disponible", "<h1>Fuentes GitHub no disponible</h1><p>" + esc(message) + "</p><p><a href='/'>Volver al inicio</a></p>"), status_code=503)
     body = """<h1>Fuentes GitHub</h1>
     <p>Selecciona un repositorio candidato. El procesamiento se realiza localmente y genera un manifiesto JSON descargable; no modifica OSAP.</p>
     <section class="panel"><h2>Añadir repositorio</h2>
