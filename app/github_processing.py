@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-"""Generate the GitHub resource manifest from the acquisition database.
+"""Acquire, analyze and export one GitHub repository into resources.json.
 
-The inventory, file metadata and enrichment results are already persisted by
-github_catalog. Manifest generation must therefore be a database export: it
-must not clone GitHub again, reread 30k local files or call Gemini.
+Inventory and acquisition are resumable. Selected blobs are fetched together
+with a partial sparse Git checkout; structural analysis and Gemini enrichment
+are persisted before the final manifest is serialized from SQLite.
 """
 
 import asyncio
@@ -250,9 +250,11 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
         failed = 0
         for row in pending:
             relative = Path(str(row["path"]))
-            source = checkout.joinpath(*relative.parts)
-            destination = destination_root.joinpath(*relative.parts)
             try:
+                if relative.is_absolute() or ".." in relative.parts or "\\" in str(row["path"]):
+                    raise ValueError("Ruta de fichero no válida")
+                source = checkout.joinpath(*relative.parts)
+                destination = destination_root.joinpath(*relative.parts)
                 if not source.is_file():
                     raise FileNotFoundError("Git no materializó el fichero seleccionado")
                 size = source.stat().st_size
@@ -383,7 +385,7 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
 
 
 def process_repository(repository_id: int) -> None:
-    """Export all already-downloaded DB rows to resources.json using SQL + JSON only."""
+    """Run acquisition and analysis once, then export the persisted catalog to JSON."""
     ensure_processing_schema()
     lock = _LOCKS.setdefault(int(repository_id), threading.Lock())
     if not lock.acquire(blocking=False):
