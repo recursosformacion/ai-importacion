@@ -278,8 +278,7 @@ def github_home(imported: int = 0):
         """).fetchall()
     body = """<h1>Fuentes GitHub</h1>
     <p><a href='/github/exploration'>Exploración persistente y presupuesto de búsqueda</a></p>
-    <p>Registra repositorios públicos y examina su árbol de archivos para localizar partituras y formatos musicales.
-    Puedes descargar candidatos para su análisis local. La procedencia GitHub se conserva y no se incorporan automáticamente a OSAP.</p>
+    <p>Busca repositorios musicales, selecciona los que interesan y usa una sola acción para incorporarlos. La aplicación inventaría el repositorio, descarga los archivos reconocidos en bloque y prepara el JSON desde el inventario guardado en SQLite. No hay que lanzar tareas separadas.</p>
     <section class="panel"><h2>Buscar repositorios con archivos musicales</h2>
     <form method="get" action="/github/search">
       <input name="q" type="search" style="min-width:min(32rem,100%)" placeholder="Opcional: compositor, colección, repertorio o tema..." />
@@ -294,16 +293,16 @@ def github_home(imported: int = 0):
       <input name="repository" type="hidden" value="https://musetrainer.github.io/library">
       <button>Añadir MuseTrainer Library</button>
     </form>
-    <p class="muted">Después pulsa «Leer repositorio» para inventariar los archivos de la carpeta scores. La lectura no descarga todavía las partituras.</p></section>
+    </section>
     <section class="panel"><h2>Añadir otro repositorio conocido</h2>
     <form method="post" action="/github/add">
       <input name="repository" type="text" required placeholder="OpenScore/Lieder o https://github.com/OpenScore/Lieder">
       <button>Añadir repositorio</button>
     </form>
-    <p class="muted">Puedes registrar directamente cualquier repositorio público de GitHub. No pegues tokens ni credenciales en este formulario.</p></section>
+    <p class="muted">Al añadirlo, el inventario, la descarga agrupada y la generación del JSON comienzan automáticamente. No pegues tokens ni credenciales en este formulario.</p></section>
     <section class="panel"><h2>Repositorios registrados</h2>"""
     if imported > 0:
-        body += "<p class='panel'>Se han incorporado "+str(min(imported,10000))+" repositorios al catálogo. Pulsa «Leer repositorio» para obtener el inventario de archivos; todavía no se ha descargado ningún fichero.</p>"
+        body += "<p class='panel'>Se han incorporado "+str(min(imported,10000))+" repositorios al catálogo.</p>"
     if repositories:
         body += "<table><tr><th>Repositorio</th><th>Licencia declarada</th><th>Archivos musicales</th><th>Última lectura</th><th>Acción</th></tr>"
         for repo in repositories:
@@ -1060,7 +1059,7 @@ def github_repository(repository_id: int, q: str = ""):
     if processing_job and processing_job["status"] == "completed":
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(processing_job["processed_count"]) + ".</p>"
         body += "<p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
-        body += "<p>El procesamiento agrupado incluye inventario, descarga selectiva en bloque y generación del JSON. No tienes que descargar archivos ni preparar otro paquete.</p>"
+        body += "<p>El JSON se construye desde los registros persistidos en SQLite. Para actualizarlo basta con abrir el enlace de descarga; no se repite la descarga de los archivos.</p>"
 
     elif processing_job and processing_job["status"] == "running":
         body += "<p id='processing-state'>Procesamiento en curso: inventario, descarga agrupada y generación del JSON. La página se actualizará automáticamente cada 10 segundos.</p>"
@@ -1069,7 +1068,7 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p>No se pudo completar el procesamiento: " + esc(processing_job["error_text"]) + "</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar procesamiento</button></form>"
     else:
-        body += "<p>Inventaría el repositorio y descargará en bloque los ficheros musicales seleccionados; después generará el JSON enriquecido.</p>"
+        body += "<p>La aplicación inventariará el repositorio, descargará en bloque los archivos musicales y generará el JSON automáticamente.</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
     body += "</section>"
     body += "<details class='panel'><summary>Inventario técnico de archivos (" + str(total) + ")</summary>"
