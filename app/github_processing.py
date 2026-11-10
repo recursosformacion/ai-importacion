@@ -8,13 +8,18 @@ must not clone GitHub again, reread 30k local files or call Gemini.
 """
 
 import asyncio
+import hashlib
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
-from app.db import connect
+from app.db import DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, connect
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 ROOT = Path(os.getenv("AI_IMPORTACION_GITHUB_DIR", "data/github-repositories")).resolve()
@@ -136,42 +141,169 @@ def _resource_record(repo, row) -> dict:
 
 
 def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
-    """For a newly added repository, populate the existing catalog once.
+    """Inventory once, then acquire selected blobs in one sparse Git checkout."""
+    from app import github_catalog
 
-    Existing inventories are trusted. A tree scan is only needed when the
-    repository has no catalog rows; existing rows are reused and only missing
-    downloads are fetched before exporting the manifest.
-    """
     with connect(DB_PATH) as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM github_files WHERE repository_id=?",
-            (repository_id,),
+        repo = conn.execute(
+            "SELECT * FROM github_repositories WHERE id=?", (repository_id,)
+        ).fetchone()
+        if repo is None:
+            raise ValueError("Repositorio inexistente")
+        inventory_count = conn.execute(
+            "SELECT COUNT(*) FROM github_files WHERE repository_id=?", (repository_id,)
         ).fetchone()[0]
 
-    async def acquire() -> None:
-        from app import github_catalog
-
-        # Reuse any inventory already present. Only a brand-new repository
-        # needs a GitHub tree scan; existing 30k-row inventories stay local.
-        if not count:
-            response = await github_catalog.github_scan(repository_id)
-            if getattr(response, "status_code", 200) >= 400:
-                raise RuntimeError("No se pudo inventariar el repositorio en GitHub")
-
+    if not inventory_count:
+        response = asyncio.run(github_catalog.github_scan(repository_id))
+        if getattr(response, "status_code", 200) >= 400:
+            raise RuntimeError("No se pudo inventariar el repositorio en GitHub")
         with connect(DB_PATH) as conn:
-            pending = [
-                int(row["id"]) for row in conn.execute("""
-                    SELECT id FROM github_files
-                    WHERE repository_id=? AND extension<>'.txt'
-                      AND COALESCE(download_status,'not_downloaded')
-                          NOT IN ('downloaded','too_large')
-                    ORDER BY path
-                """, (repository_id,)).fetchall()
-            ]
-        if pending:
-            await github_catalog._run_repository_downloads(repository_id, pending)
+            repo = conn.execute(
+                "SELECT * FROM github_repositories WHERE id=?", (repository_id,)
+            ).fetchone()
 
-    asyncio.run(acquire())
+    with connect(DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT id,path,size_bytes FROM github_files
+            WHERE repository_id=? AND extension<>'.txt'
+              AND COALESCE(download_status,'not_downloaded')
+                  NOT IN ('downloaded','too_large')
+            ORDER BY path
+        """, (repository_id,)).fetchall()
+
+    pending = []
+    for row in rows:
+        if row["size_bytes"] is not None and int(row["size_bytes"]) > MAX_DOWNLOAD_BYTES:
+            with connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE github_files SET download_status='too_large',download_error=? WHERE id=?",
+                    ("Supera el límite configurado", row["id"]),
+                )
+        elif row["path"] and "\n" not in row["path"] and "\r" not in row["path"]:
+            pending.append(row)
+
+    if not pending:
+        return
+
+    full_name = repo["full_name"]
+    owner, name = full_name.split("/", 1)
+    branch = repo["default_branch"] or "main"
+    stamp = _now()
+    with connect(DB_PATH) as conn:
+        conn.execute("""
+            INSERT INTO github_download_jobs
+              (repository_id,status,total,completed,failed,current_path,started_at,updated_at)
+            VALUES(?,'running',?,0,0,'',?,?)
+            ON CONFLICT(repository_id) DO UPDATE SET status='running',
+              total=excluded.total,completed=0,failed=0,current_path='',
+              started_at=excluded.started_at,updated_at=excluded.updated_at
+        """, (repository_id, len(pending), stamp, stamp))
+        conn.execute("""
+            UPDATE github_processing_jobs
+            SET stage='download',progress_count=0,total_count=?,updated_at=?
+            WHERE repository_id=?
+        """, (len(pending), stamp, repository_id))
+
+    destination_root = DOWNLOAD_DIR / "github" / str(repository_id)
+    destination_root.mkdir(parents=True, exist_ok=True)
+    clone_url = f"https://github.com/{owner}/{name}.git"
+    environment = dict(os.environ)
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GIT_LFS_SKIP_SMUDGE"] = "1"
+
+    with tempfile.TemporaryDirectory(prefix="ai-importacion-github-") as temporary:
+        checkout = Path(temporary) / "repository"
+        clone = subprocess.run(
+            ["git", "clone", "--filter=blob:none", "--no-checkout", "--depth=1",
+             "--single-branch", "--branch", branch, clone_url, str(checkout)],
+            capture_output=True, text=True, env=environment,
+        )
+        if clone.returncode:
+            detail = (clone.stderr or clone.stdout or "git clone falló")[-3000:]
+            raise RuntimeError("No se pudo obtener el repositorio mediante Git: " + detail)
+
+        init = subprocess.run(
+            ["git", "-C", str(checkout), "sparse-checkout", "init", "--no-cone"],
+            capture_output=True, text=True, env=environment,
+        )
+        if init.returncode:
+            raise RuntimeError("No se pudo preparar sparse checkout: " + (init.stderr or "")[-2000:])
+
+        patterns = []
+        for row in pending:
+            path = str(row["path"]).replace("\\", "/")
+            escaped = "".join("\\" + char if char in "*?[" else char for char in path)
+            patterns.append("/" + escaped)
+        sparse_file = checkout / ".git" / "info" / "sparse-checkout"
+        sparse_file.write_text("\n".join(patterns) + "\n", encoding="utf-8")
+
+        checkout_result = subprocess.run(
+            ["git", "-C", str(checkout), "checkout", "--force", "HEAD"],
+            capture_output=True, text=True, env=environment,
+        )
+        if checkout_result.returncode:
+            raise RuntimeError("No se pudieron materializar los ficheros seleccionados: " +
+                               (checkout_result.stderr or "")[-3000:])
+
+        completed = 0
+        failed = 0
+        for row in pending:
+            relative = Path(str(row["path"]))
+            source = checkout.joinpath(*relative.parts)
+            destination = destination_root.joinpath(*relative.parts)
+            try:
+                if not source.is_file():
+                    raise FileNotFoundError("Git no materializó el fichero seleccionado")
+                size = source.stat().st_size
+                if size > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("Supera el límite configurado")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary_file = destination.with_name(destination.name + ".part")
+                digest = hashlib.sha256()
+                with source.open("rb") as input_file, temporary_file.open("wb") as output_file:
+                    while True:
+                        chunk = input_file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        output_file.write(chunk)
+                os.replace(temporary_file, destination)
+                raw_url = (
+                    "https://raw.githubusercontent.com/" + quote(owner, safe="") + "/"
+                    + quote(name, safe="") + "/" + quote(branch, safe="") + "/"
+                    + quote(str(row["path"]), safe="/")
+                )
+                with connect(DB_PATH) as conn:
+                    conn.execute("""
+                        UPDATE github_files SET download_status='downloaded',local_path=?,
+                          download_url=?,sha256=?,downloaded_bytes=?,downloaded_at=?,download_error=NULL
+                        WHERE id=?
+                    """, (str(destination), raw_url, digest.hexdigest(), size, _now(), row["id"]))
+                completed += 1
+            except Exception as exc:
+                failed += 1
+                with connect(DB_PATH) as conn:
+                    conn.execute("""
+                        UPDATE github_files SET download_status='error',download_error=?
+                        WHERE id=?
+                    """, (str(exc)[:1000], row["id"]))
+            with connect(DB_PATH) as conn:
+                conn.execute("""
+                    UPDATE github_download_jobs SET completed=?,failed=?,current_path=?,updated_at=?
+                    WHERE repository_id=?
+                """, (completed + failed, failed, str(row["path"]), _now(), repository_id))
+                conn.execute("""
+                    UPDATE github_processing_jobs SET progress_count=?,updated_at=?
+                    WHERE repository_id=?
+                """, (completed + failed, _now(), repository_id))
+
+    with connect(DB_PATH) as conn:
+        conn.execute("""
+            UPDATE github_download_jobs SET status='completed',current_path='',updated_at=?
+            WHERE repository_id=?
+        """, (_now(), repository_id))
+
 
 
 def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int, int]:
