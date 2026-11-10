@@ -313,8 +313,7 @@ def github_home(imported: int = 0):
                 "<div class='muted'>" + esc(repo["description"]) + "</div></td>"
                 "<td>" + esc(license_text) + "</td><td>" + str(repo["files"]) + "</td>"
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
-                "<td><form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
-                "<a href='/github/" + str(repo["id"]) + "'>Resultado JSON</a></td></tr>"
+                "<td><a href='/github/" + str(repo["id"]) + "'>Estado y JSON</a></td></tr>"
             )
         body += "</table>"
     else:
@@ -391,6 +390,9 @@ async def github_add(repository: str = Form(...)):
                   metadata.get("description") or "", license_data.get("spdx_id") or "",
                   license_data.get("name") or "", int(metadata.get("stargazers_count") or 0), now()))
             row = conn.execute("SELECT id FROM github_repositories WHERE full_name=?", (full_name,)).fetchone()
+        from app.github_processing import enqueue_repository, ensure_processing_schema
+        ensure_processing_schema()
+        enqueue_repository(int(row["id"]))
         return RedirectResponse(f"/github/{row['id']}", status_code=303)
     except (ValueError, httpx.HTTPError) as exc:
         return HTMLResponse(_page("No se pudo añadir", "<h1>No se pudo añadir el repositorio</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver</a></p>"), status_code=400)
