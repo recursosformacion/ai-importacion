@@ -124,7 +124,7 @@ def _resource_record(repo, row) -> dict:
     }
 
 
-def _acquire_only_when_inventory_is_absent(repository_id: int) -> None:
+def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
     """For a newly added repository, populate the existing catalog once.
 
     Existing inventories are trusted and exported directly. This path is only
@@ -136,15 +136,16 @@ def _acquire_only_when_inventory_is_absent(repository_id: int) -> None:
             "SELECT COUNT(*) FROM github_files WHERE repository_id=?",
             (repository_id,),
         ).fetchone()[0]
-    if count:
-        return
 
     async def acquire() -> None:
         from app import github_catalog
 
-        response = await github_catalog.github_scan(repository_id)
-        if getattr(response, "status_code", 200) >= 400:
-            raise RuntimeError("No se pudo inventariar el repositorio en GitHub")
+        # Reuse any inventory already present. Only a brand-new repository
+        # needs a GitHub tree scan; existing 30k-row inventories stay local.
+        if not count:
+            response = await github_catalog.github_scan(repository_id)
+            if getattr(response, "status_code", 200) >= 400:
+                raise RuntimeError("No se pudo inventariar el repositorio en GitHub")
 
         with connect(DB_PATH) as conn:
             pending = [
@@ -172,7 +173,7 @@ def process_repository(repository_id: int) -> None:
     started = _now()
     out = ROOT / str(int(repository_id)) / ".osap-import"
     try:
-        _acquire_only_when_inventory_is_absent(repository_id)
+        _ensure_catalog_inventory_and_downloads(repository_id)
         with connect(DB_PATH) as conn:
             repo = conn.execute(
                 "SELECT * FROM github_repositories WHERE id=?", (repository_id,)
