@@ -478,7 +478,7 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
                               json.dumps(ai, ensure_ascii=False), ai.get("model") or "", _now()))
         completed += 1
         with connect(DB_PATH) as conn:
-            conn.execute("UPDATE github_processing_jobs SET progress_count=?,updated_at=? WHERE repository_id=?",
+            conn.execute("UPDATE github_processing_jobs SET progress_count=?,current_path='',updated_at=? WHERE repository_id=?",
                          (completed, _now(), repository_id))
     return completed, total
 
@@ -499,7 +499,7 @@ def process_repository(repository_id: int) -> None:
                 (repository_id,status,stage,progress_count,total_count,started_at,updated_at,error_text)
                 VALUES(?,'running','inventory',0,0,?,?,NULL)
                 ON CONFLICT(repository_id) DO UPDATE SET status='running',stage='inventory',
-                progress_count=0,total_count=0,started_at=excluded.started_at,
+                progress_count=0,total_count=0,current_path='',started_at=excluded.started_at,
                 updated_at=excluded.updated_at,error_text=NULL""",
                 (repository_id, started, started))
         logging.getLogger(__name__).info("GitHub %s: comienza procesamiento del repositorio", repository_id)
