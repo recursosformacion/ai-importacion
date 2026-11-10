@@ -55,7 +55,7 @@ def test_exploration_static_route_is_not_captured_by_repository_id(tmp_path, mon
     assert "Fuentes GitHub" in response.text
     assert "1. Buscar repositorios" in response.text
     assert "2. Seleccionar repositorios" in response.text
-    assert "Seleccionar" in response.text
+    assert "Descubrir colecciones musicales en GitHub" in response.text
 
 
 def test_repository_selection_is_restored_and_submitted_across_pages(tmp_path, monkeypatch):
@@ -201,7 +201,9 @@ def test_bulk_repository_actions_ignore_process_and_restore(tmp_path, monkeypatc
 
 def test_selected_discovered_repository_can_be_imported_into_catalog(tmp_path, monkeypatch):
     import app.github_catalog as catalog
+    import app.github_processing as processing
 
+    monkeypatch.setattr(processing, "enqueue_repositories", lambda repository_ids: None)
     db_path = str(tmp_path / "catalog-import.sqlite3")
     monkeypatch.setattr(exploration, "DB_PATH", db_path)
     monkeypatch.setattr(catalog, "DB_PATH", db_path)
