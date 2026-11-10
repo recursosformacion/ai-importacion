@@ -300,10 +300,11 @@ def github_main():
 def exploration_home(page: int = 1, status: str = "", q: str = "",
                     catalog_added: int = 0, processing_started: int = 0, catalog_skipped: int = 0):
     ensure_schema()
-    from app import github_catalog
-    from app.github_processing import ensure_processing_schema
+    from app import github_catalog, github_processing
+    github_catalog.DB_PATH = DB_PATH
+    github_processing.DB_PATH = DB_PATH
     github_catalog.ensure_schema()
-    ensure_processing_schema()
+    github_processing.ensure_processing_schema()
     page = max(1, int(page or 1))
     status = status if status in {"pending","qualified","below_threshold","partial","error","ignored"} else ""
     q = q.strip()[:120]
@@ -572,10 +573,12 @@ def exploration_repository_action(
 @router.post("/github/exploration/repository/incorporate")
 def incorporate_discovered_repository(full_name: str = Form(...)):
     ensure_schema()
-    from app import github_catalog
-    from app.github_processing import enqueue_repository, ensure_processing_schema
+    from app import github_catalog, github_processing
+    from app.github_processing import enqueue_repository
+    github_catalog.DB_PATH = DB_PATH
+    github_processing.DB_PATH = DB_PATH
     github_catalog.ensure_schema()
-    ensure_processing_schema()
+    github_processing.ensure_processing_schema()
     with db() as source:
         row=source.execute("""SELECT * FROM github_discovered_repositories
           WHERE full_name=? AND status IN ('qualified','partial') AND musical_file_count>=?""",
