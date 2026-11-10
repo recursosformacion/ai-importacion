@@ -190,7 +190,7 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
                            (materialize.stderr or "")[-3000:])
 
 
-def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
+def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
     """Inventory once, then acquire selected blobs in one sparse Git checkout."""
     from app import github_catalog
 
@@ -234,7 +234,7 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
             pending.append(row)
 
     if not pending:
-        return
+        return False
 
     full_name = repo["full_name"]
     owner, name = full_name.split("/", 1)
@@ -482,7 +482,7 @@ def process_repository(repository_id: int) -> None:
                 progress_count=0,total_count=0,started_at=excluded.started_at,
                 updated_at=excluded.updated_at,error_text=NULL""",
                 (repository_id, started, started))
-        _ensure_catalog_inventory_and_downloads(repository_id)
+        acquisition_performed = _ensure_catalog_inventory_and_downloads(repository_id)
         with connect(DB_PATH) as conn:
             repo_for_analysis = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
             if repo_for_analysis is None:
@@ -539,8 +539,8 @@ def process_repository(repository_id: int) -> None:
                 "repository": repo["full_name"],
                 "commit_sha": commit_sha,
                 "snapshot": "database_inventory",
-                "download_strategy": "previously_acquired_files",
-                "local_repository_path": str(ROOT / str(int(repository_id))),
+                "download_strategy": "sparse_git_checkout" if acquisition_performed else "reused_local_inventory",
+                "local_repository_path": str(DOWNLOAD_DIR / "github" / str(int(repository_id))),
             },
             "rights_notice": (
                 "La licencia declarada por GitHub no ha sido verificada. "
@@ -552,7 +552,7 @@ def process_repository(repository_id: int) -> None:
                 "resources_exported": len(records),
                 "not_exported_or_not_downloaded": max(0, inventory_count - len(rows)),
                 "metadata_source": "database",
-                "github_clone_performed": False,
+                "github_clone_performed": acquisition_performed,
                 "files_read_during_export": 0,
                 "gemini_calls_during_export": 0,
             },
