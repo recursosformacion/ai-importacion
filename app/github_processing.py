@@ -10,6 +10,7 @@ are persisted before the final manifest is serialized from SQLite.
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -44,6 +45,7 @@ def ensure_processing_schema() -> None:
           stage TEXT NOT NULL DEFAULT 'pending',
           progress_count INTEGER NOT NULL DEFAULT 0,
           total_count INTEGER NOT NULL DEFAULT 0,
+          current_path TEXT NOT NULL DEFAULT '',
           started_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           FOREIGN KEY(repository_id) REFERENCES github_repositories(id) ON DELETE CASCADE
@@ -54,6 +56,7 @@ def ensure_processing_schema() -> None:
             "stage": "TEXT NOT NULL DEFAULT 'pending'",
             "progress_count": "INTEGER NOT NULL DEFAULT 0",
             "total_count": "INTEGER NOT NULL DEFAULT 0",
+            "current_path": "TEXT NOT NULL DEFAULT ''",
         }.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE github_processing_jobs ADD COLUMN {name} {definition}")
@@ -252,7 +255,7 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
         """, (repository_id, len(pending), stamp, stamp))
         conn.execute("""
             UPDATE github_processing_jobs
-            SET stage='download',progress_count=0,total_count=?,updated_at=?
+            SET stage='download',progress_count=0,total_count=?,current_path='',updated_at=?
             WHERE repository_id=?
         """, (len(pending), stamp, repository_id))
 
@@ -320,9 +323,9 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
                     WHERE repository_id=?
                 """, (completed + failed, failed, str(row["path"]), _now(), repository_id))
                 conn.execute("""
-                    UPDATE github_processing_jobs SET progress_count=?,updated_at=?
+                    UPDATE github_processing_jobs SET progress_count=?,current_path=?,updated_at=?
                     WHERE repository_id=?
-                """, (completed + failed, _now(), repository_id))
+                """, (completed + failed, str(row["path"]), _now(), repository_id))
 
     with connect(DB_PATH) as conn:
         conn.execute("""
@@ -354,10 +357,18 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
     completed = 0
     with connect(DB_PATH) as conn:
         conn.execute("""UPDATE github_processing_jobs SET stage='analysis',progress_count=0,
-            total_count=?,updated_at=? WHERE repository_id=?""", (total, _now(), repository_id))
+            total_count=?,current_path='',updated_at=? WHERE repository_id=?""", (total, _now(), repository_id))
 
     # Extract text from PDF, scanned scores and native notation formats locally.
     for item in notation_files:
+        with connect(DB_PATH) as conn:
+            conn.execute("""UPDATE github_processing_jobs SET progress_count=?,current_path=?,updated_at=?
+                WHERE repository_id=?""", (completed, item["path"], _now(), repository_id))
+        if completed % 100 == 0:
+            logging.getLogger(__name__).info(
+                "GitHub %s: análisis local %s/%s (%s)",
+                repository_id, completed, total, item["path"],
+            )
         with connect(DB_PATH) as conn:
             previous = conn.execute(
                 "SELECT status,sha256,extracted_text FROM github_content_extractions WHERE github_file_id=?",
@@ -404,11 +415,19 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
                           json.dumps(ai, ensure_ascii=False), ai.get("model") or "", _now()))
         completed += 1
         with connect(DB_PATH) as conn:
-            conn.execute("UPDATE github_processing_jobs SET progress_count=?,updated_at=? WHERE repository_id=?",
+            conn.execute("UPDATE github_processing_jobs SET progress_count=?,current_path='',updated_at=? WHERE repository_id=?",
                          (completed, _now(), repository_id))
 
     # Parse MusicXML/MXL and MIDI structure; reuse results when the content hash is unchanged.
     for item in structural_files:
+        with connect(DB_PATH) as conn:
+            conn.execute("""UPDATE github_processing_jobs SET progress_count=?,current_path=?,updated_at=?
+                WHERE repository_id=?""", (completed, item["path"], _now(), repository_id))
+        if completed % 100 == 0:
+            logging.getLogger(__name__).info(
+                "GitHub %s: análisis estructural %s/%s (%s)",
+                repository_id, completed, total, item["path"],
+            )
         with connect(DB_PATH) as conn:
             previous = conn.execute(
                 "SELECT status,sha256,analyzer_version,analysis_json FROM github_file_analyses WHERE github_file_id=?",
@@ -483,6 +502,7 @@ def process_repository(repository_id: int) -> None:
                 progress_count=0,total_count=0,started_at=excluded.started_at,
                 updated_at=excluded.updated_at,error_text=NULL""",
                 (repository_id, started, started))
+        logging.getLogger(__name__).info("GitHub %s: comienza procesamiento del repositorio", repository_id)
         acquisition_performed = _ensure_catalog_inventory_and_downloads(repository_id)
         with connect(DB_PATH) as conn:
             repo_for_analysis = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
@@ -568,18 +588,20 @@ def process_repository(repository_id: int) -> None:
         with connect(DB_PATH) as conn:
             conn.execute(
                 """UPDATE github_processing_jobs SET status='completed',stage='completed',commit_sha=?,
-                   processed_count=?,output_dir=?,progress_count=?,total_count=?,updated_at=?,error_text=NULL
+                   processed_count=?,output_dir=?,progress_count=?,total_count=?,current_path='',updated_at=?,error_text=NULL
                    WHERE repository_id=?""",
                 (commit_sha, len(records), str(out), len(records), len(records), stamp, repository_id),
             )
     except Exception as exc:
+        logging.getLogger(__name__).exception("GitHub %s: error durante el procesamiento", repository_id)
         with connect(DB_PATH) as conn:
             conn.execute(
-                """UPDATE github_processing_jobs SET status='error',stage='error',updated_at=?,
+                """UPDATE github_processing_jobs SET status='error',stage='error',current_path='',updated_at=?,
                    error_text=? WHERE repository_id=?""",
                 (_now(), str(exc)[:2000], repository_id),
             )
     finally:
+        logging.getLogger(__name__).info("GitHub %s: procesamiento finalizado", repository_id)
         lock.release()
 
 
@@ -589,6 +611,28 @@ def _process_repository_batch(repository_ids: list[int]) -> None:
     with _PROCESSING_QUEUE_LOCK:
         for repository_id in dict.fromkeys(int(value) for value in repository_ids):
             process_repository(repository_id)
+
+
+def recover_processing_jobs() -> int:
+    """Resume jobs interrupted by a server restart or a lost daemon thread."""
+    ensure_processing_schema()
+    with connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT repository_id FROM github_processing_jobs WHERE status IN ('queued','running','pending') ORDER BY updated_at"
+        ).fetchall()
+        ids = [int(row["repository_id"]) for row in rows]
+        if ids:
+            conn.execute("""
+                UPDATE github_processing_jobs
+                SET status='queued',stage='queued',current_path='',updated_at=?,error_text=NULL
+                WHERE status IN ('queued','running','pending')
+            """, (_now(),))
+    if ids:
+        logging.getLogger(__name__).warning(
+            "Recuperando %s trabajos GitHub pendientes/interrumpidos", len(ids)
+        )
+        enqueue_repositories(ids)
+    return len(ids)
 
 
 def enqueue_repositories(repository_ids: list[int]) -> None:
