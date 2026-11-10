@@ -494,8 +494,11 @@ def exploration_repository_action(
     if not selected or action not in {"ignore", "remove", "process", "restore", "catalog"}:
         return RedirectResponse("/github/exploration", status_code=303)
     if action == "catalog":
-        from app import github_catalog
+        from app import github_catalog, github_processing
+        github_catalog.DB_PATH = DB_PATH
+        github_processing.DB_PATH = DB_PATH
         github_catalog.ensure_schema()
+        github_processing.ensure_processing_schema()
         with db() as source:
             rows = source.execute(
                 "SELECT * FROM github_discovered_repositories WHERE full_name IN ("+
@@ -529,8 +532,7 @@ def exploration_repository_action(
                     processing_ids.append(int(repository["id"]))
                 added += 1
         # Incorporation and full processing are one operation.
-        from app.github_processing import enqueue_repositories, ensure_processing_schema
-        ensure_processing_schema()
+        from app.github_processing import enqueue_repositories
         enqueue_repositories(processing_ids)
         skipped = len(rows) - len(eligible)
         return RedirectResponse(
