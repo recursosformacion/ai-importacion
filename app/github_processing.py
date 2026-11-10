@@ -35,11 +35,22 @@ def ensure_processing_schema() -> None:
           processed_count INTEGER NOT NULL DEFAULT 0,
           output_dir TEXT NOT NULL DEFAULT '',
           error_text TEXT,
+          stage TEXT NOT NULL DEFAULT 'pending',
+          progress_count INTEGER NOT NULL DEFAULT 0,
+          total_count INTEGER NOT NULL DEFAULT 0,
           started_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           FOREIGN KEY(repository_id) REFERENCES github_repositories(id) ON DELETE CASCADE
         );
         """)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_processing_jobs)")}
+        for name, definition in {
+            "stage": "TEXT NOT NULL DEFAULT 'pending'",
+            "progress_count": "INTEGER NOT NULL DEFAULT 0",
+            "total_count": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE github_processing_jobs ADD COLUMN {name} {definition}")
 
 
 def _json_object(value: str | None) -> dict:
@@ -163,6 +174,82 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
     asyncio.run(acquire())
 
 
+def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int, int]:
+    """Persist structural analysis and Gemini enrichment before exporting the JSON."""
+    from app.analysis_engine import analyze_local_music_file
+    from app.github_catalog import ANALYZER_VERSION
+    from app.metadata_enrichment import enrich_music_metadata
+
+    supported = {".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar"}
+    with connect(DB_PATH) as conn:
+        files = conn.execute("""
+            SELECT id,path,name,extension,local_path,sha256
+            FROM github_files
+            WHERE repository_id=? AND download_status='downloaded'
+              AND local_path IS NOT NULL
+            ORDER BY path
+        """, (repository_id,)).fetchall()
+    candidates = [row for row in files if (row["extension"] or "").lower() in supported]
+    completed = 0
+    for item in candidates:
+        with connect(DB_PATH) as conn:
+            previous = conn.execute(
+                "SELECT status,sha256,analyzer_version,analysis_json FROM github_file_analyses WHERE github_file_id=?",
+                (item["id"],),
+            ).fetchone()
+        current = bool(previous and previous["sha256"] == item["sha256"]
+                       and previous["analyzer_version"] == ANALYZER_VERSION
+                       and previous["status"] in {"ok", "not_musicxml"})
+        if not current:
+            result = analyze_local_music_file(item["local_path"])
+            analysis_json = json.dumps(result["analysis"], ensure_ascii=False)
+            with connect(DB_PATH) as conn:
+                conn.execute("""
+                    INSERT INTO github_file_analyses
+                      (github_file_id,analysis_type,status,analysis_json,error_text,analyzed_at,sha256,analyzer_version)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(github_file_id) DO UPDATE SET
+                      analysis_type=excluded.analysis_type,status=excluded.status,
+                      analysis_json=excluded.analysis_json,error_text=excluded.error_text,
+                      analyzed_at=excluded.analyzed_at,sha256=excluded.sha256,
+                      analyzer_version=excluded.analyzer_version
+                """, (item["id"], result["analysis_type"], result["status"], analysis_json,
+                      result["error_text"], _now(), item["sha256"], ANALYZER_VERSION))
+            metadata = result["analysis"] if isinstance(result["analysis"], dict) else {}
+        else:
+            try:
+                metadata = json.loads(previous["analysis_json"] or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+        has_title = bool(metadata.get("work_title") or metadata.get("title"))
+        has_creators = bool(metadata.get("creators"))
+        if not has_title or not has_creators:
+            with connect(DB_PATH) as conn:
+                ai_row = conn.execute(
+                    "SELECT sha256 FROM github_ai_metadata_enrichments WHERE github_file_id=?",
+                    (item["id"],),
+                ).fetchone()
+            if not ai_row or ai_row["sha256"] != item["sha256"]:
+                ai = enrich_music_metadata(filename=item["name"], repository=repository, metadata=metadata)
+                if ai.get("status") == "ok":
+                    with connect(DB_PATH) as conn:
+                        conn.execute("""
+                            INSERT INTO github_ai_metadata_enrichments
+                              (github_file_id,sha256,metadata_json,model,analyzed_at,error_text)
+                            VALUES(?,?,?,?,?,NULL)
+                            ON CONFLICT(github_file_id) DO UPDATE SET
+                              sha256=excluded.sha256,metadata_json=excluded.metadata_json,
+                              model=excluded.model,analyzed_at=excluded.analyzed_at,error_text=NULL
+                        """, (item["id"], item["sha256"] or "",
+                              json.dumps(ai, ensure_ascii=False), ai.get("model") or "", _now()))
+        completed += 1
+        with connect(DB_PATH) as conn:
+            conn.execute("""UPDATE github_processing_jobs
+                SET stage='analysis',progress_count=?,updated_at=? WHERE repository_id=?""",
+                (completed, _now(), repository_id))
+    return completed, len(candidates)
+
+
 def process_repository(repository_id: int) -> None:
     """Export all already-downloaded DB rows to resources.json using SQL + JSON only."""
     ensure_processing_schema()
@@ -173,7 +260,27 @@ def process_repository(repository_id: int) -> None:
     started = _now()
     out = ROOT / str(int(repository_id)) / ".osap-import"
     try:
+        with connect(DB_PATH) as conn:
+            conn.execute("""INSERT INTO github_processing_jobs
+                (repository_id,status,stage,progress_count,total_count,started_at,updated_at,error_text)
+                VALUES(?,'running','inventory',0,0,?,?,NULL)
+                ON CONFLICT(repository_id) DO UPDATE SET status='running',stage='inventory',
+                progress_count=0,total_count=0,started_at=excluded.started_at,
+                updated_at=excluded.updated_at,error_text=NULL""",
+                (repository_id, started, started))
         _ensure_catalog_inventory_and_downloads(repository_id)
+        with connect(DB_PATH) as conn:
+            repo_for_analysis = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+            if repo_for_analysis is None:
+                raise ValueError("Repositorio inexistente")
+            total_analysis = conn.execute("""SELECT COUNT(*) FROM github_files
+                WHERE repository_id=? AND download_status='downloaded' AND local_path IS NOT NULL
+                  AND lower(extension) IN ('.musicxml','.mxl','.xml','.mid','.midi','.kar')""",
+                (repository_id,)).fetchone()[0]
+            conn.execute("""UPDATE github_processing_jobs SET stage='analysis',progress_count=0,
+                total_count=?,updated_at=? WHERE repository_id=?""",
+                (total_analysis, _now(), repository_id))
+        _analyze_downloaded_files(repository_id, dict(repo_for_analysis))
         with connect(DB_PATH) as conn:
             repo = conn.execute(
                 "SELECT * FROM github_repositories WHERE id=?", (repository_id,)
@@ -181,14 +288,8 @@ def process_repository(repository_id: int) -> None:
             if repo is None:
                 raise ValueError("Repositorio inexistente")
 
-            conn.execute(
-                """INSERT INTO github_processing_jobs
-                   (repository_id,status,started_at,updated_at,error_text)
-                   VALUES(?,'running',?,?,NULL)
-                   ON CONFLICT(repository_id) DO UPDATE SET status='running',
-                   started_at=excluded.started_at,updated_at=excluded.updated_at,error_text=NULL""",
-                (repository_id, started, started),
-            )
+            conn.execute("UPDATE github_processing_jobs SET stage='export',updated_at=? WHERE repository_id=?",
+                         (_now(), repository_id))
 
             inventory_count = conn.execute(
                 "SELECT COUNT(*) FROM github_files WHERE repository_id=? AND extension<>'.txt'",
@@ -256,15 +357,15 @@ def process_repository(repository_id: int) -> None:
         stamp = _now()
         with connect(DB_PATH) as conn:
             conn.execute(
-                """UPDATE github_processing_jobs SET status='completed',commit_sha=?,
-                   processed_count=?,output_dir=?,updated_at=?,error_text=NULL
+                """UPDATE github_processing_jobs SET status='completed',stage='completed',commit_sha=?,
+                   processed_count=?,output_dir=?,progress_count=?,total_count=?,updated_at=?,error_text=NULL
                    WHERE repository_id=?""",
-                (commit_sha, len(records), str(out), stamp, repository_id),
+                (commit_sha, len(records), str(out), len(records), len(records), stamp, repository_id),
             )
     except Exception as exc:
         with connect(DB_PATH) as conn:
             conn.execute(
-                """UPDATE github_processing_jobs SET status='error',updated_at=?,
+                """UPDATE github_processing_jobs SET status='error',stage='error',updated_at=?,
                    error_text=? WHERE repository_id=?""",
                 (_now(), str(exc)[:2000], repository_id),
             )
