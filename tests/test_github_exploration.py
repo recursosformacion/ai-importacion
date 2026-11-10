@@ -134,7 +134,7 @@ def test_exploration_budget_has_no_arbitrary_twenty_minute_cap(tmp_path, monkeyp
         response = client.get("/github/exploration")
 
     assert response.status_code == 200
-    assert "name='minutes' min='1' value='60'" in response.text
+    assert "name='minutes' min='1' max='1440' value='60'" in response.text
     assert "max='20'" not in response.text
 
 
