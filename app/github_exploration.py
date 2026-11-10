@@ -326,6 +326,9 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
           d.updated_at,d.last_checked_at,d.last_error,
           (SELECT id FROM github_repositories r WHERE r.full_name=d.full_name) AS catalog_id,
           (SELECT p.status FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processing_status,
+          (SELECT p.stage FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processing_stage,
+          (SELECT p.progress_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS progress_count,
+          (SELECT p.total_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS total_count,
           (SELECT p.processed_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processed_count,
           (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt') AS inventory_count,
           (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt' AND f.download_status='downloaded') AS downloaded_count,
@@ -334,30 +337,18 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
           ORDER BY d.musical_file_count DESC, d.full_name COLLATE NOCASE ASC
           LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
     total=sum(counts.values())
-    body="<h1>Exploración persistente de GitHub</h1>"
+    body="<h1>Fuentes GitHub</h1>"
     if catalog_added or catalog_skipped:
         body+="<section class='panel'><b>Incorporación y procesamiento:</b> "+str(catalog_added)+" repositorios incorporados; "+str(processing_started)+" repositorios en cola de procesamiento. Se procesan de uno en uno y el JSON se genera automáticamente al terminar."
         if catalog_skipped:
             body+=" "+str(catalog_skipped)+" omitidos porque no alcanzan el mínimo de "+str(MIN_MUSICAL_FILES)+" archivos musicales inspeccionados."
         body+="</section>"
-    body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
-    body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
-    body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
-    body+="<label>Duración máxima de búsqueda (minutos; 240 = cuatro horas) <input type='number' name='minutes' min='1' value='"+str(state["requested_minutes"] or 60)+"'></label> "
-    body+="<button"+(" disabled" if state["job_status"] in ("queued","running") else "")+">Continuar exploración</button></form>"
-    body+="<div class='panel' id='exploration-live' data-status-url='/github/exploration/status'><b>Estado del trabajo:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span>"
-    body+="<p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p>"
-    body+="<p id='job-message'>"+esc(state["last_message"])+"</p></div>"
-    body+="<p class='muted'>La exploración continúa en segundo plano durante el tiempo indicado. Si reinicias la aplicación, queda pausada y puedes reanudarla cuando decidas.</p></section>"
-    body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q_pending)+"</b></p><ul>"
-    for label in ("pending","qualified","below_threshold","partial","error","ignored"):
-        body+="<li>"+label+": "+str(counts.get(label,0))+"</li>"
-    body+="</ul><p>Última ejecución: "+esc(state["last_run_at"] or "ninguna")+" · "+esc(state["last_message"])+"</p>"
-    if state["resume_after"]:
-        body+="<p><b>Reanudación disponible a partir de:</b> "+esc(state["resume_after"])+" (UTC)</p>"
-    body+="</section>"
-    body+="<section class='panel'><h2>Repositorios descubiertos</h2>"
-    body+="<p>Se muestran "+str(len(repositories))+" de "+str(filtered_total)+" resultados filtrados. La paginación permite recorrer todo el catálogo. Solo se incorporan repositorios con al menos "+str(MIN_MUSICAL_FILES)+" archivos musicales detectados; los PDF y documentos auxiliares no cuentan como archivos musicales.</p>"
+    body+="<section class='panel'><h2>1. Buscar repositorios</h2><p>Descubrir colecciones musicales en GitHub y guardar los resultados.</p>"
+    body+="<form method='post' action='/github/exploration/run'><label>Duración de búsqueda (minutos) <input type='number' name='minutes' min='1' max='1440' value='"+str(state["requested_minutes"] or 240)+"'></label> "
+    body+="<button"+(" disabled" if state["job_status"] in ("queued","running") else "")+">Buscar repositorios</button></form>"
+    body+="<div id='exploration-live'><b>Estado:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span><p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p><p id='job-message'>"+esc(state["last_message"])+"</p></div></section>"
+    body+="<section class='panel'><h2>2. Seleccionar repositorios</h2><p>Elegir qué colecciones se quieren incorporar. Inventariar, descargar agrupadamente y analizar los ficheros. Construir el catálogo a partir de los datos almacenados en SQLite. Ver el estado, las cantidades y obtener el JSON generado.</p>"
+    body+="<p>Se muestran "+str(len(repositories))+" de "+str(filtered_total)+" repositorios que cumplen el criterio de más de 10 archivos musicales.</p>"
     body+="<form method='get' action='/github/exploration'><label>Buscar <input name='q' value='"+esc(q)+"' placeholder='Propietario, repositorio o descripción'></label> "
     body+="<label>Estado <select name='status'><option value=''>Todos</option>"
     for value,label in (("pending","Pendiente"),("qualified","Cumple mínimo"),("below_threshold","Por debajo del mínimo"),("partial","Árbol parcial"),("error","Error"),("ignored","Ignorado")):
@@ -367,12 +358,12 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         body+="<form method='post' action='/github/exploration/repositories/action'>"
         body+="<input type='hidden' name='return_page' value='"+str(page)+"'><input type='hidden' name='return_status' value='"+esc(status)+"'><input type='hidden' name='return_q' value='"+esc(q)+"'>"
         body+="<p><label><input type='checkbox' data-select-visible> Seleccionar todos los visibles</label> · Seleccionados: <b id='repo-selection-count'>0</b> "
-        body+="<button name='action' value='ignore'>Quitar seleccionados de la lista</button></p>"
+        body+="<button name='action' value='remove'>Quitar seleccionados de la lista</button></p>"
         body+="<table><tr><th>Quitar</th><th>Repositorio</th><th>Archivos musicales</th><th>Proceso</th><th>Información</th></tr>"
         for r in repositories:
             status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
             detail=("<div class='muted'>"+esc(r["last_error"])+"</div>") if r["last_error"] else ""
-            body+="<tr><td><input class='repo-select' type='checkbox' name='repositories' value='"+esc(r["full_name"])+"'></td>"
+            body+="<tr data-processing='"+esc(r["processing_status"] or "")+"'><td><input class='repo-select' type='checkbox' name='repositories' value='"+esc(r["full_name"])+"'></td>"
             body+="<td><a href='https://github.com/"+esc(r["full_name"])+"'>"+esc(r["full_name"])+"</a><div class='muted'>"+esc(r["description"])+"</div>"+detail+"</td>"
             count_cell = str(r["musical_file_count"])
             admission = ("Sí" if r["status"] in ("qualified","partial") else
@@ -385,7 +376,12 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
                     body+=esc(status_label)
             else:
                 pstatus=r["processing_status"] or "pendiente"
-                body+="<b>"+esc(pstatus)+"</b><div class='muted'>Inventariados: "+str(r["inventory_count"] or 0)+" · Descargados: "+str(r["downloaded_count"] or 0)+" · Analizados: "+str(r["analyzed_count"] or 0)+"</div>"
+                body+="<b>"+esc(pstatus)+"</b><div class='muted'>"+esc(r["processing_stage"] or "En cola")+" · Inventariados: "+str(r["inventory_count"] or 0)+" · Descargados: "+str(r["downloaded_count"] or 0)+" · Analizados: "+str(r["analyzed_count"] or 0)+"</div>"
+                if r["processing_stage"]=="analysis" and r["total_count"]:
+                    pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
+                    body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])
+                elif pstatus=="running":
+                    body+="<div class='muted'>Inventario y descarga en curso</div>"
                 if pstatus=="completed":
                     body+="<div><a href='/github/"+str(r["catalog_id"])+"/resources.json'>Descargar resources.json ("+str(r["processed_count"] or 0)+" recursos)</a></div>"
             body+="</td><td>"+esc(r["last_error"] or "—")+"</td></tr>"
@@ -397,7 +393,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         if page<pages: body+=" <a href='/github/exploration?page="+str(page+1)+"&status="+esc(status)+"&q="+quote(q)+"'>Siguiente →</a>"
         body+="</p>"
     else:
-        body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales detectados (mín. "+str(MIN_MUSICAL_FILES)+")</th><th>Admisión al catálogo</th><th>Actualizado</th><th>Comprobado</th></tr></table>"
+        body+="<p>No hay repositorios que cumplan el criterio por ahora.</p>"
         body+="<p>No hay repositorios para estos filtros.</p>"
     body+="</section><p><a href='/github'>Volver a Fuentes GitHub</a></p>"
     live_script = """<script>
@@ -459,6 +455,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
    const button=document.querySelector("form[action='/github/exploration/run'] button");
    if(button)button.disabled=['queued','running'].includes(d.job_status);
    if(['queued','running'].includes(d.job_status))setTimeout(refresh,5000);
+   else if(document.querySelector("tr[data-processing='running']"))setTimeout(()=>location.reload(),5000);
   }catch(e){
    const message=document.getElementById('job-message');
    if(message)message.textContent='No se pudo consultar el estado; se volverá a intentar automáticamente.';
@@ -485,7 +482,7 @@ def exploration_repository_action(
         value.strip() for value in repositories
         if value and "/" in value and len(value) <= 200
     ))
-    if not selected or action not in {"ignore", "process", "restore", "catalog"}:
+    if not selected or action not in {"ignore", "remove", "process", "restore", "catalog"}:
         return RedirectResponse("/github/exploration", status_code=303)
     if action == "catalog":
         from app import github_catalog
@@ -533,7 +530,12 @@ def exploration_repository_action(
         )
     placeholders = ",".join("?" for _ in selected)
     with db() as c:
-        if action == "ignore":
+        if action == "remove":
+            c.execute(
+                f"DELETE FROM github_discovered_repositories WHERE full_name IN ({placeholders})",
+                selected,
+            )
+        elif action == "ignore":
             c.execute(
                 f"UPDATE github_discovered_repositories SET status='ignored' "
                 f"WHERE full_name IN ({placeholders})",
