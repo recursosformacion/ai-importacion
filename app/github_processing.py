@@ -29,7 +29,7 @@ MUSIC = {
     ".ove", ".enc", ".nwc", ".nwctxt", ".gp", ".gp3", ".gp4", ".gp5",
     ".gpx", ".gp7", ".pdf",
 }
-MAX_FILES = int(os.getenv("AI_IMPORTACION_GITHUB_MAX_FILES", "3000"))
+MAX_FILES = int(os.getenv("AI_IMPORTACION_GITHUB_MAX_FILES", "100000"))
 MAX_GEMINI_FILES = int(os.getenv("AI_IMPORTACION_GEMINI_MAX_FILES", "100"))
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
