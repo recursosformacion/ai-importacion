@@ -24,6 +24,7 @@ from app.db import DOWNLOAD_DIR, MAX_DOWNLOAD_BYTES, connect
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 ROOT = Path(os.getenv("AI_IMPORTACION_GITHUB_DIR", "data/github-repositories")).resolve()
 _LOCKS: dict[int, threading.Lock] = {}
+_PROCESSING_QUEUE_LOCK = threading.Lock()
 
 
 def _now() -> str:
@@ -583,8 +584,11 @@ def process_repository(repository_id: int) -> None:
 
 
 def _process_repository_batch(repository_ids: list[int]) -> None:
-    for repository_id in dict.fromkeys(int(value) for value in repository_ids):
-        process_repository(repository_id)
+    # A single queue worker at a time prevents simultaneous clones and Gemini
+    # batches when the user selects several repositories from the same page.
+    with _PROCESSING_QUEUE_LOCK:
+        for repository_id in dict.fromkeys(int(value) for value in repository_ids):
+            process_repository(repository_id)
 
 
 def enqueue_repositories(repository_ids: list[int]) -> None:
