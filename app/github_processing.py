@@ -309,12 +309,13 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
 
 
 def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int, int]:
-    """Persist structural analysis and Gemini enrichment before exporting the JSON."""
+    """Persist structural analysis, local text extraction and Gemini metadata."""
     from app.analysis_engine import analyze_local_music_file
+    from app.content_extraction import SUPPORTED_SUFFIXES, extract_local_content
     from app.github_catalog import ANALYZER_VERSION
     from app.metadata_enrichment import enrich_music_metadata
 
-    supported = {".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar"}
+    structural = {".musicxml", ".mxl", ".xml", ".mid", ".midi", ".kar"}
     with connect(DB_PATH) as conn:
         files = conn.execute("""
             SELECT id,path,name,extension,local_path,sha256
@@ -323,9 +324,67 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
               AND local_path IS NOT NULL
             ORDER BY path
         """, (repository_id,)).fetchall()
-    candidates = [row for row in files if (row["extension"] or "").lower() in supported]
+    notation_files = [row for row in files if (row["extension"] or "").lower() in SUPPORTED_SUFFIXES]
+    structural_files = [row for row in files if (row["extension"] or "").lower() in structural]
+    total = len(notation_files) + len(structural_files)
     completed = 0
-    for item in candidates:
+    with connect(DB_PATH) as conn:
+        conn.execute("""UPDATE github_processing_jobs SET stage='analysis',progress_count=0,
+            total_count=?,updated_at=? WHERE repository_id=?""", (total, _now(), repository_id))
+
+    # Extract text from PDF, scanned scores and native notation formats locally.
+    for item in notation_files:
+        with connect(DB_PATH) as conn:
+            previous = conn.execute(
+                "SELECT status,sha256,extracted_text FROM github_content_extractions WHERE github_file_id=?",
+                (item["id"],),
+            ).fetchone()
+        if previous and previous["sha256"] == item["sha256"] and previous["status"] not in {
+            "error", "ocr_error", "ocr_unavailable", "image_ocr_no_text"
+        }:
+            extracted_text = previous["extracted_text"] or ""
+        else:
+            result = extract_local_content(item["local_path"])
+            extracted_text = result.get("text") or ""
+            with connect(DB_PATH) as conn:
+                conn.execute("""
+                    INSERT INTO github_content_extractions
+                      (github_file_id,status,page_count,extracted_characters,extracted_text,error_text,analyzed_at,sha256)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(github_file_id) DO UPDATE SET
+                      status=excluded.status,page_count=excluded.page_count,
+                      extracted_characters=excluded.extracted_characters,
+                      extracted_text=excluded.extracted_text,error_text=excluded.error_text,
+                      analyzed_at=excluded.analyzed_at,sha256=excluded.sha256
+                """, (item["id"], result["status"], result["page_count"],
+                      result["extracted_characters"], extracted_text[:200000],
+                      result["error_text"], _now(), item["sha256"]))
+        ai_context = {"source_text_excerpt": extracted_text[:3500]} if extracted_text else {}
+        with connect(DB_PATH) as conn:
+            ai_row = conn.execute(
+                "SELECT sha256 FROM github_ai_metadata_enrichments WHERE github_file_id=?",
+                (item["id"],),
+            ).fetchone()
+        if (not ai_row or ai_row["sha256"] != item["sha256"]) and (extracted_text or item["name"]):
+            ai = enrich_music_metadata(filename=item["name"], repository=repository, metadata=ai_context)
+            if ai.get("status") == "ok":
+                with connect(DB_PATH) as conn:
+                    conn.execute("""
+                        INSERT INTO github_ai_metadata_enrichments
+                          (github_file_id,sha256,metadata_json,model,analyzed_at,error_text)
+                        VALUES(?,?,?,?,?,NULL)
+                        ON CONFLICT(github_file_id) DO UPDATE SET
+                          sha256=excluded.sha256,metadata_json=excluded.metadata_json,
+                          model=excluded.model,analyzed_at=excluded.analyzed_at,error_text=NULL
+                    """, (item["id"], item["sha256"] or "",
+                          json.dumps(ai, ensure_ascii=False), ai.get("model") or "", _now()))
+        completed += 1
+        with connect(DB_PATH) as conn:
+            conn.execute("UPDATE github_processing_jobs SET progress_count=?,updated_at=? WHERE repository_id=?",
+                         (completed, _now(), repository_id))
+
+    # Parse MusicXML/MXL and MIDI structure; reuse results when the content hash is unchanged.
+    for item in structural_files:
         with connect(DB_PATH) as conn:
             previous = conn.execute(
                 "SELECT status,sha256,analyzer_version,analysis_json FROM github_file_analyses WHERE github_file_id=?",
@@ -336,7 +395,6 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
                        and previous["status"] in {"ok", "not_musicxml"})
         if not current:
             result = analyze_local_music_file(item["local_path"])
-            analysis_json = json.dumps(result["analysis"], ensure_ascii=False)
             with connect(DB_PATH) as conn:
                 conn.execute("""
                     INSERT INTO github_file_analyses
@@ -347,7 +405,8 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
                       analysis_json=excluded.analysis_json,error_text=excluded.error_text,
                       analyzed_at=excluded.analyzed_at,sha256=excluded.sha256,
                       analyzer_version=excluded.analyzer_version
-                """, (item["id"], result["analysis_type"], result["status"], analysis_json,
+                """, (item["id"], result["analysis_type"], result["status"],
+                      json.dumps(result["analysis"], ensure_ascii=False),
                       result["error_text"], _now(), item["sha256"], ANALYZER_VERSION))
             metadata = result["analysis"] if isinstance(result["analysis"], dict) else {}
         else:
@@ -355,9 +414,7 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
                 metadata = json.loads(previous["analysis_json"] or "{}")
             except (TypeError, ValueError):
                 metadata = {}
-        has_title = bool(metadata.get("work_title") or metadata.get("title"))
-        has_creators = bool(metadata.get("creators"))
-        if not has_title or not has_creators:
+        if not (metadata.get("work_title") or metadata.get("title")) or not metadata.get("creators"):
             with connect(DB_PATH) as conn:
                 ai_row = conn.execute(
                     "SELECT sha256 FROM github_ai_metadata_enrichments WHERE github_file_id=?",
@@ -378,10 +435,10 @@ def _analyze_downloaded_files(repository_id: int, repository: dict) -> tuple[int
                               json.dumps(ai, ensure_ascii=False), ai.get("model") or "", _now()))
         completed += 1
         with connect(DB_PATH) as conn:
-            conn.execute("""UPDATE github_processing_jobs
-                SET stage='analysis',progress_count=?,updated_at=? WHERE repository_id=?""",
-                (completed, _now(), repository_id))
-    return completed, len(candidates)
+            conn.execute("UPDATE github_processing_jobs SET progress_count=?,updated_at=? WHERE repository_id=?",
+                         (completed, _now(), repository_id))
+    return completed, total
+
 
 
 def process_repository(repository_id: int) -> None:
@@ -407,13 +464,6 @@ def process_repository(repository_id: int) -> None:
             repo_for_analysis = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
             if repo_for_analysis is None:
                 raise ValueError("Repositorio inexistente")
-            total_analysis = conn.execute("""SELECT COUNT(*) FROM github_files
-                WHERE repository_id=? AND download_status='downloaded' AND local_path IS NOT NULL
-                  AND lower(extension) IN ('.musicxml','.mxl','.xml','.mid','.midi','.kar')""",
-                (repository_id,)).fetchone()[0]
-            conn.execute("""UPDATE github_processing_jobs SET stage='analysis',progress_count=0,
-                total_count=?,updated_at=? WHERE repository_id=?""",
-                (total_analysis, _now(), repository_id))
         _analyze_downloaded_files(repository_id, dict(repo_for_analysis))
         with connect(DB_PATH) as conn:
             repo = conn.execute(
