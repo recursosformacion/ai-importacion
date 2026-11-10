@@ -115,6 +115,14 @@ def db():
     return connect(DB_PATH)
 
 
+def ensure_processing_tables() -> None:
+    # Keep the processing worker on the same database path as this catalog
+    # module, including tests and deployments that override DB_PATH at runtime.
+    from app import github_processing
+    github_processing.DB_PATH = DB_PATH
+    github_processing.ensure_processing_schema()
+
+
 def ensure_schema() -> None:
     with db() as conn:
         conn.executescript("""
@@ -389,8 +397,8 @@ async def github_add(repository: str = Form(...)):
                   metadata.get("description") or "", license_data.get("spdx_id") or "",
                   license_data.get("name") or "", int(metadata.get("stargazers_count") or 0), now()))
             row = conn.execute("SELECT id FROM github_repositories WHERE full_name=?", (full_name,)).fetchone()
-        from app.github_processing import enqueue_repository, ensure_processing_schema
-        ensure_processing_schema()
+        from app.github_processing import enqueue_repository
+        ensure_processing_tables()
         enqueue_repository(int(row["id"]))
         return RedirectResponse(f"/github/{row['id']}", status_code=303)
     except (ValueError, httpx.HTTPError) as exc:
@@ -982,8 +990,8 @@ def github_export_resources_json(repository_id: int):
 @router.post("/github/{repository_id}/process")
 def github_process(repository_id: int):
     ensure_schema()
-    from app.github_processing import enqueue_repository, ensure_processing_schema
-    ensure_processing_schema()
+    from app.github_processing import enqueue_repository
+    ensure_processing_tables()
     with db() as conn:
         exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
     if not exists:
@@ -995,8 +1003,7 @@ def github_process(repository_id: int):
 @router.get("/github/{repository_id}/resources.json")
 def github_resources_json(repository_id: int):
     ensure_schema()
-    from app.github_processing import ensure_processing_schema
-    ensure_processing_schema()
+    ensure_processing_tables()
     with db() as conn:
         exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
         job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
