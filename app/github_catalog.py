@@ -1018,6 +1018,10 @@ def github_repository(repository_id: int, q: str = ""):
         repo = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
         if not repo:
             raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+        processing_job = conn.execute(
+            "SELECT * FROM github_processing_jobs WHERE repository_id=?",
+            (repository_id,),
+        ).fetchone()
         files = conn.execute("""
             SELECT f.*,a.status AS analysis_status,a.sha256 AS analysis_sha256,a.analysis_json,a.error_text AS analysis_error,x.status AS extraction_status,x.sha256 AS extraction_sha256,x.extracted_characters,x.extracted_text,x.error_text AS extraction_error
             FROM github_files f LEFT JOIN github_file_analyses a ON a.github_file_id=f.id LEFT JOIN github_content_extractions x ON x.github_file_id=f.id
