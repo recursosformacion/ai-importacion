@@ -439,9 +439,10 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
    if(message)message.textContent=d.last_message;
    const button=document.querySelector("form[action='/github/exploration/run'] button");
    if(button)button.disabled=['queued','running'].includes(d.job_status);
-  }catch(e){}
+   if(['queued','running'].includes(d.job_status))setTimeout(refresh,10000);
+  }catch(e){setTimeout(refresh,15000);}
  }
- setInterval(refresh,3000);
+ if(['queued','running'].includes(document.getElementById('job-status')?.textContent||''))setTimeout(refresh,10000);
 })();
 </script>"""
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem'>"+body+live_script+"</body></html>")
