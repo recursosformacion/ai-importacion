@@ -1066,7 +1066,7 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p class='muted'>Última lectura: " + esc(scan["completed_at"] or scan["started_at"]) + " · " + str(scan["candidate_count"]) + " archivos candidatos · " + ("árbol truncado: la lectura puede ser parcial" if scan["truncated"] else "árbol completo") + "</p>"
         if scan["error_text"]:
             body += "<p class='muted'>" + esc(scan["error_text"]) + "</p>"
-    body += "<h2>Archivos localizados (" + str(total) + ")</h2><form method='get'><input name='q' type='text' value='" + esc(q) + "' placeholder='Filtrar por ruta'><button>Filtrar</button></form>"
+    body += "<details class='panel'><summary>Archivos localizados (" + str(total) + ") · consulta opcional</summary><form method='get'><input name='q' type='text' value='" + esc(q) + "' placeholder='Filtrar por ruta'><button>Filtrar</button></form>"
     if files:
         folder_counts = {}
         for item in files:
@@ -1093,8 +1093,7 @@ def github_repository(repository_id: int, q: str = ""):
             elif status == "too_large":
                 action = "Supera el límite configurado"
             else:
-                label = "Reintentar" if status == "error" else "Descargar"
-                action = "<form method='post' action='/github/files/" + str(item["id"]) + "/download'><button>" + label + "</button></form>"
+                action = "Pendiente; se gestiona mediante el procesamiento agrupado"
             if item["download_error"]:
                 action += "<div class='muted'>" + esc(item["download_error"]) + "</div>"
             analysis_status = item["analysis_status"] or "pendiente"
@@ -1131,27 +1130,8 @@ def github_repository(repository_id: int, q: str = ""):
         body += "</table>"
     else:
         body += "<p>No hay archivos inventariados que coincidan. Ejecuta una lectura del repositorio.</p>"
+    body += "</details>"
     body += "<p><a href='/github'>Volver a fuentes GitHub</a></p>"
-    body += """<script>
-(async function(){
- const panel=document.getElementById('download-progress'); if(!panel)return;
- const url=panel.dataset.statusUrl;
- async function refresh(){
-  try{
-   const response=await fetch(url,{cache:'no-store'}); if(!response.ok)return;
-   const d=await response.json();
-   const state=document.getElementById('download-state');
-   const detail=document.getElementById('download-detail');
-   const bar=document.getElementById('download-bar');
-   state.textContent=d.status==='running'?'En curso':d.status==='queued'?'En cola':d.status==='completed'?'Finalizada':d.status==='interrupted'?'Interrumpida; pulsa de nuevo para continuar':'Sin iniciar';
-   detail.textContent=d.completed+' de '+d.total+' archivos descargados · '+d.failed+' errores · '+d.pending+' pendientes'+(d.current_path?' · Actual: '+d.current_path:'');
-   bar.value=d.total?Math.round(d.completed*100/d.total):0;
-   if(d.status==='running'||d.status==='queued')setTimeout(refresh,2000);
-  }catch(e){setTimeout(refresh,5000);}
- }
- refresh();
-})();
-</script>"""
     return HTMLResponse(_page("Repositorio " + repo["full_name"], body))
 
 
