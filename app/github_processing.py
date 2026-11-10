@@ -140,6 +140,56 @@ def _resource_record(repo, row) -> dict:
     }
 
 
+def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
+                         checkout: Path, environment: dict | None = None) -> None:
+    """Clone Git metadata once and materialize only the selected repository paths."""
+    env = dict(os.environ) if environment is None else environment
+    clone = subprocess.run(
+        ["git", "clone", "--filter=blob:none", "--no-checkout", "--depth=1",
+         "--no-recurse-submodules", "--single-branch", "--branch", branch,
+         clone_url, str(checkout)],
+        capture_output=True, text=True, env=env,
+    )
+    if clone.returncode:
+        detail = (clone.stderr or clone.stdout or "git clone falló")[-3000:]
+        raise RuntimeError("No se pudo obtener el repositorio mediante Git: " + detail)
+
+    init = subprocess.run(
+        ["git", "-C", str(checkout), "sparse-checkout", "init", "--no-cone"],
+        capture_output=True, text=True, env=env,
+    )
+    if init.returncode:
+        raise RuntimeError("No se pudo preparar sparse checkout: " + (init.stderr or "")[-2000:])
+
+    patterns = []
+    for raw_path in paths:
+        path = str(raw_path).replace("\\", "/")
+        if not path or path.startswith("/") or "\n" in path or "\r" in path:
+            raise ValueError("Ruta de fichero no válida")
+        parts = Path(path).parts
+        if ".." in parts:
+            raise ValueError("Ruta de fichero no válida")
+        escaped = "".join("\\" + char if char in "*?[" else char for char in path)
+        patterns.append("/" + escaped)
+
+    sparse = subprocess.run(
+        ["git", "-C", str(checkout), "sparse-checkout", "set", "--no-cone", "--stdin"],
+        input="\n".join(patterns) + "\n",
+        capture_output=True, text=True, env=env,
+    )
+    if sparse.returncode:
+        raise RuntimeError("No se pudieron seleccionar los ficheros del repositorio: " +
+                           (sparse.stderr or "")[-3000:])
+
+    materialize = subprocess.run(
+        ["git", "-C", str(checkout), "checkout", "--force", "HEAD"],
+        capture_output=True, text=True, env=env,
+    )
+    if materialize.returncode:
+        raise RuntimeError("No se pudieron materializar los ficheros seleccionados: " +
+                           (materialize.stderr or "")[-3000:])
+
+
 def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
     """Inventory once, then acquire selected blobs in one sparse Git checkout."""
     from app import github_catalog
@@ -214,43 +264,10 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
 
     with tempfile.TemporaryDirectory(prefix="ai-importacion-github-") as temporary:
         checkout = Path(temporary) / "repository"
-        clone = subprocess.run(
-            ["git", "clone", "--filter=blob:none", "--no-checkout", "--depth=1",
-             "--single-branch", "--branch", branch, clone_url, str(checkout)],
-            capture_output=True, text=True, env=environment,
+        _clone_sparse_checkout(
+            clone_url, branch, [str(row["path"]) for row in pending],
+            checkout, environment,
         )
-        if clone.returncode:
-            detail = (clone.stderr or clone.stdout or "git clone falló")[-3000:]
-            raise RuntimeError("No se pudo obtener el repositorio mediante Git: " + detail)
-
-        init = subprocess.run(
-            ["git", "-C", str(checkout), "sparse-checkout", "init", "--no-cone"],
-            capture_output=True, text=True, env=environment,
-        )
-        if init.returncode:
-            raise RuntimeError("No se pudo preparar sparse checkout: " + (init.stderr or "")[-2000:])
-
-        patterns = []
-        for row in pending:
-            path = str(row["path"]).replace("\\", "/")
-            escaped = "".join("\\" + char if char in "*?[" else char for char in path)
-            patterns.append("/" + escaped)
-        sparse = subprocess.run(
-            ["git", "-C", str(checkout), "sparse-checkout", "set", "--no-cone", "--stdin"],
-            input="\n".join(patterns) + "\n",
-            capture_output=True, text=True, env=environment,
-        )
-        if sparse.returncode:
-            raise RuntimeError("No se pudieron seleccionar los ficheros del repositorio: " +
-                               (sparse.stderr or "")[-3000:])
-
-        checkout_result = subprocess.run(
-            ["git", "-C", str(checkout), "checkout", "--force", "HEAD"],
-            capture_output=True, text=True, env=environment,
-        )
-        if checkout_result.returncode:
-            raise RuntimeError("No se pudieron materializar los ficheros seleccionados: " +
-                               (checkout_result.stderr or "")[-3000:])
 
         completed = 0
         failed = 0
