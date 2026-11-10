@@ -1073,7 +1073,7 @@ def github_repository(repository_id: int, q: str = ""):
     body += "</section>"
     body += "<details class='panel'><summary>Inventario técnico de archivos (" + str(total) + ")</summary>"
     body += "<p>Este inventario es informativo. No tienes que descargar los archivos uno a uno ni generar otro paquete: el procesamiento agrupado anterior ya prepara el JSON de importación.</p>"
-    body += "<p><a href='/github/" + str(repository_id) + "/acquisition'>Documentación técnica de adquisición</a></p></details>"
+    body += "<p>El inventario y los detalles técnicos se conservan en esta base de datos; no hace falta ejecutar otra preparación.</p></details>"
     if scan:
         body += "<p class='muted'>Última lectura: " + esc(scan["completed_at"] or scan["started_at"]) + " · " + str(scan["candidate_count"]) + " archivos candidatos · " + ("árbol truncado: la lectura puede ser parcial" if scan["truncated"] else "árbol completo") + "</p>"
         if scan["error_text"]:
