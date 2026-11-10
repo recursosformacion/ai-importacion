@@ -322,9 +322,16 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         q_pending=c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status!='done'").fetchone()["n"]
         state=c.execute("SELECT * FROM github_exploration_state WHERE id=1").fetchone()
         filtered_total=c.execute("SELECT COUNT(*) n FROM github_discovered_repositories"+clause,params).fetchone()["n"]
-        repositories=c.execute("""SELECT full_name,description,status,musical_file_count,
-          updated_at,last_checked_at,last_error FROM github_discovered_repositories"""+clause+"""
-          ORDER BY musical_file_count DESC, full_name COLLATE NOCASE ASC
+        repositories=c.execute("""SELECT d.full_name,d.description,d.status,d.musical_file_count,
+          d.updated_at,d.last_checked_at,d.last_error,
+          (SELECT id FROM github_repositories r WHERE r.full_name=d.full_name) AS catalog_id,
+          (SELECT p.status FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processing_status,
+          (SELECT p.processed_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processed_count,
+          (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt') AS inventory_count,
+          (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt' AND f.download_status='downloaded') AS downloaded_count,
+          (SELECT COUNT(*) FROM github_file_analyses a JOIN github_files f ON f.id=a.github_file_id JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name) AS analyzed_count
+          FROM github_discovered_repositories d"""+clause.replace("musical_file_count","d.musical_file_count").replace("status=?","d.status=?").replace("full_name LIKE","d.full_name LIKE").replace("description LIKE","d.description LIKE")+"""
+          ORDER BY d.musical_file_count DESC, d.full_name COLLATE NOCASE ASC
           LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
@@ -360,8 +367,8 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         body+="<form method='post' action='/github/exploration/repositories/action'>"
         body+="<input type='hidden' name='return_page' value='"+str(page)+"'><input type='hidden' name='return_status' value='"+esc(status)+"'><input type='hidden' name='return_q' value='"+esc(q)+"'>"
         body+="<p><label><input type='checkbox' data-select-visible> Seleccionar todos los visibles</label> · Seleccionados: <b id='repo-selection-count'>0</b> "
-        body+="<button name='action' value='catalog'>Incorporar seleccionados y generar JSON</button></p>"
-        body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales detectados (mín. "+str(MIN_MUSICAL_FILES)+")</th><th>Admisión al catálogo</th><th>Actualizado</th><th>Comprobado</th></tr>"
+        body+="<button name='action' value='ignore'>Quitar seleccionados de la lista</button></p>"
+        body+="<table><tr><th>Quitar</th><th>Repositorio</th><th>Archivos musicales</th><th>Proceso</th><th>Información</th></tr>"
         for r in repositories:
             status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
             detail=("<div class='muted'>"+esc(r["last_error"])+"</div>") if r["last_error"] else ""
@@ -370,8 +377,18 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
             count_cell = str(r["musical_file_count"])
             admission = ("Sí" if r["status"] in ("qualified","partial") else
                          "Pendiente de reinspección" if r["status"] == "pending" else "No disponible")
-            body+="<td>"+esc(status_label)+"</td><td><b>"+esc(count_cell)+"</b></td><td>"+esc(admission)+"</td>"
-            body+="<td>"+esc((r["updated_at"] or "")[:10])+"</td><td>"+esc(r["last_checked_at"] or "—")+"</td></tr>"
+            body+="<td><b>"+esc(count_cell)+"</b></td><td>"
+            if not r["catalog_id"]:
+                if r["status"] in ("qualified","partial"):
+                    body+="<button type='submit' name='full_name' value='"+esc(r["full_name"])+"' formaction='/github/exploration/repository/incorporate' formmethod='post' formnovalidate>Seleccionar</button>"
+                else:
+                    body+=esc(status_label)
+            else:
+                pstatus=r["processing_status"] or "pendiente"
+                body+="<b>"+esc(pstatus)+"</b><div class='muted'>Inventariados: "+str(r["inventory_count"] or 0)+" · Descargados: "+str(r["downloaded_count"] or 0)+" · Analizados: "+str(r["analyzed_count"] or 0)+"</div>"
+                if pstatus=="completed":
+                    body+="<div><a href='/github/"+str(r["catalog_id"])+"/resources.json'>Descargar resources.json ("+str(r["processed_count"] or 0)+" recursos)</a></div>"
+            body+="</td><td>"+esc(r["last_error"] or "—")+"</td></tr>"
         body+="</table></form>"
         pages=max(1,(filtered_total+page_size-1)//page_size)
         body+="<p class='pagination'>"
