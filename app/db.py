@@ -23,10 +23,10 @@ def esc(value: object | None) -> str:
     return html.escape("" if value is None else str(value))
 
 
-def connect(db_path: str):
+def connect(db_path: str, timeout: float = 15):
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=15)
+    conn = sqlite3.connect(db_path, timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
