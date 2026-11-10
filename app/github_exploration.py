@@ -300,6 +300,10 @@ def github_main():
 def exploration_home(page: int = 1, status: str = "", q: str = "",
                     catalog_added: int = 0, processing_started: int = 0, catalog_skipped: int = 0):
     ensure_schema()
+    from app import github_catalog
+    from app.github_processing import ensure_processing_schema
+    github_catalog.ensure_schema()
+    ensure_processing_schema()
     page = max(1, int(page or 1))
     status = status if status in {"pending","qualified","below_threshold","partial","error","ignored"} else ""
     q = q.strip()[:120]
@@ -394,7 +398,6 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         body+="</p>"
     else:
         body+="<p>No hay repositorios que cumplan el criterio por ahora.</p>"
-        body+="<p>No hay repositorios para estos filtros.</p>"
     body+="</section><p><a href='/github'>Volver a Fuentes GitHub</a></p>"
     live_script = """<script>
 (function(){
