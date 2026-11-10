@@ -336,7 +336,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     body+="<div class='panel' id='exploration-live' data-status-url='/github/exploration/status'><b>Estado del trabajo:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span>"
     body+="<p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p>"
     body+="<p id='job-message'>"+esc(state["last_message"])+"</p></div>"
-    body+="<p class='muted'>La exploración continúa en segundo plano. Puedes cerrar esta página; el progreso se guarda en SQLite y se reanuda si se reinicia la aplicación.</p></section>"
+    body+="<p class='muted'>La exploración continúa en segundo plano durante el tiempo indicado. Si reinicias la aplicación, queda pausada y puedes reanudarla cuando decidas.</p></section>"
     body+="<section class='panel'><h2>Estado acumulado</h2><p>Repositorios guardados: <b>"+str(total)+"</b> · Páginas/consultas pendientes: <b>"+str(q_pending)+"</b></p><ul>"
     for label in ("pending","qualified","below_threshold","partial","error","ignored"):
         body+="<li>"+label+": "+str(counts.get(label,0))+"</li>"
