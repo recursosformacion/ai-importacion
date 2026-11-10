@@ -530,7 +530,19 @@ def exploration_repository_action(
                     (row["full_name"],),
                 ).fetchone()
                 if repository:
-                    processing_ids.append(int(repository["id"]))
+                    repository_id = int(repository["id"])
+                    processing_ids.append(repository_id)
+                    target.execute("""
+                        INSERT INTO github_processing_jobs
+                          (repository_id,status,stage,progress_count,total_count,current_path,
+                           started_at,updated_at,error_text)
+                        VALUES(?,'queued','queued',0,0,'',?,?,NULL)
+                        ON CONFLICT(repository_id) DO UPDATE SET
+                          status=CASE WHEN github_processing_jobs.status='completed'
+                                      THEN 'queued' ELSE 'queued' END,
+                          stage='queued',progress_count=0,total_count=0,current_path='',
+                          updated_at=excluded.updated_at,error_text=NULL
+                    """, (repository_id, now(), now()))
                 added += 1
         # Incorporation and full processing are one operation.
         from app.github_processing import enqueue_repositories
