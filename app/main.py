@@ -309,6 +309,14 @@ async def lifespan(_: FastAPI):
         asyncio.to_thread(run_startup_maintenance), name="startup-maintenance"
     )
     from app.github_exploration import recover_exploration_state, stop_exploration_worker
+    from app import github_catalog, github_processing
+    github_catalog.ensure_schema()
+    github_processing.DB_PATH = github_catalog.DB_PATH
+    github_processing.ensure_processing_schema()
+    recovered_processing = github_processing.recover_processing_jobs()
+    logging.getLogger(__name__).info(
+        "Cola de procesamiento GitHub recuperada: %s trabajos", recovered_processing
+    )
     exploration_started = time.perf_counter()
     recover_exploration_state()
     exploration_worker = None
