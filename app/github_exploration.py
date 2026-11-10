@@ -291,6 +291,11 @@ async def inspect_one(client):
                       (now(),str(exc)[:500],name))
         return True,f"{name}: error: {str(exc)[:160]}"
 
+@router.get("/github", include_in_schema=False)
+def github_main():
+    return RedirectResponse("/github/exploration", status_code=303)
+
+
 @router.get("/github/exploration",response_class=HTMLResponse)
 def exploration_home(page: int = 1, status: str = "", q: str = "",
                     catalog_added: int = 0, processing_started: int = 0, catalog_skipped: int = 0):
@@ -535,6 +540,33 @@ def exploration_repository_action(
     if return_status: destination += "&status="+quote(return_status)
     if return_q: destination += "&q="+quote(return_q)
     return RedirectResponse(destination, status_code=303)
+
+
+@router.post("/github/exploration/repository/incorporate")
+def incorporate_discovered_repository(full_name: str = Form(...)):
+    ensure_schema()
+    from app import github_catalog
+    from app.github_processing import enqueue_repository, ensure_processing_schema
+    github_catalog.ensure_schema()
+    ensure_processing_schema()
+    with db() as source:
+        row=source.execute("""SELECT * FROM github_discovered_repositories
+          WHERE full_name=? AND status IN ('qualified','partial') AND musical_file_count>=?""",
+          (full_name,MIN_MUSICAL_FILES)).fetchone()
+    if not row:
+        return RedirectResponse("/github/exploration",status_code=303)
+    with github_catalog.db() as target:
+        target.execute("""INSERT INTO github_repositories
+          (full_name,html_url,default_branch,description,license_spdx,license_name,stars,added_at)
+          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(full_name) DO UPDATE SET
+          html_url=excluded.html_url,default_branch=excluded.default_branch,
+          description=excluded.description,license_spdx=excluded.license_spdx,stars=excluded.stars""",
+          (row["full_name"],row["html_url"],row["default_branch"],row["description"],
+           row["license_spdx"],row["license_spdx"],row["stars"],now()))
+        repo=target.execute("SELECT id FROM github_repositories WHERE full_name=?",(full_name,)).fetchone()
+    if repo:
+        enqueue_repository(int(repo["id"]))
+    return RedirectResponse("/github/exploration",status_code=303)
 
 
 _exploration_task: asyncio.Task | None = None
