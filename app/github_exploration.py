@@ -337,7 +337,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
           (SELECT p.processed_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processed_count,
           (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt') AS inventory_count,
           (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt' AND f.download_status='downloaded') AS downloaded_count,
-          (SELECT COUNT(*) FROM github_file_analyses a JOIN github_files f ON f.id=a.github_file_id JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name) AS analyzed_count
+          (SELECT COUNT(DISTINCT f.id) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id LEFT JOIN github_file_analyses a ON a.github_file_id=f.id LEFT JOIN github_content_extractions x ON x.github_file_id=f.id WHERE r.full_name=d.full_name AND (a.github_file_id IS NOT NULL OR x.github_file_id IS NOT NULL)) AS analyzed_count
           FROM github_discovered_repositories d"""+clause.replace("musical_file_count","d.musical_file_count").replace("status=?","d.status=?").replace("full_name LIKE","d.full_name LIKE").replace("description LIKE","d.description LIKE")+"""
           ORDER BY d.musical_file_count DESC, d.full_name COLLATE NOCASE ASC
           LIMIT ? OFFSET ?""",params+[page_size,(page-1)*page_size]).fetchall()
