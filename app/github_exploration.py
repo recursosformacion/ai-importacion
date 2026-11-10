@@ -370,7 +370,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         body+="<button name='action' value='remove'>Quitar seleccionados de la lista</button></p>"
         body+="<table><tr><th>Quitar</th><th>Repositorio</th><th>Archivos musicales</th><th>Proceso</th><th>Información</th></tr>"
         for r in repositories:
-            status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
+            status_label={"pending":"Pendiente de inspección","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado","completed":"Inspección completada"}.get(r["status"],r["status"])
             detail=("<div class='muted'>"+esc(r["last_error"])+"</div>") if r["last_error"] else ""
             body+="<tr data-processing='"+esc(r["processing_status"] or "")+"'><td><input class='repo-select' type='checkbox' name='repositories' value='"+esc(r["full_name"])+"'></td>"
             body+="<td><a href='https://github.com/"+esc(r["full_name"])+"'>"+esc(r["full_name"])+"</a><div class='muted'>"+esc(r["description"])+"</div>"+detail+"</td>"
@@ -386,7 +386,8 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
                     body+=esc(status_label)
             else:
                 pstatus=r["processing_status"] or "pendiente"
-                body+="<b>"+esc(pstatus)+"</b><div class='muted'>"+esc(r["processing_stage"] or "En cola")+" · Inventariados: "+str(r["inventory_count"] or 0)+" · Descargados: "+str(r["downloaded_count"] or 0)+" · Analizados: "+str(r["analyzed_count"] or 0)+"</div>"
+                pstatus_label={"pending":"Pendiente de iniciar","pendiente":"Pendiente de procesamiento","queued":"En cola","running":"En curso","completed":"Completado","error":"Error"}.get(pstatus,pstatus)
+                body+="<b>"+esc(pstatus_label)+"</b><div class='muted'>"+esc(r["processing_stage"] or "En cola")+" · Inventariados: "+str(r["inventory_count"] or 0)+" · Descargados: "+str(r["downloaded_count"] or 0)+" · Analizados: "+str(r["analyzed_count"] or 0)+"</div>"
                 if r["processing_stage"]=="analysis" and r["total_count"]:
                     pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])
