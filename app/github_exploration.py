@@ -331,7 +331,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
     body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
     body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
-    body+="<label>Duración máxima de búsqueda (minutos; 240 = cuatro horas) <input type='number' name='minutes' min='1' value='"+str(state.get("requested_minutes") or 60)+"'></label> "
+    body+="<label>Duración máxima de búsqueda (minutos; 240 = cuatro horas) <input type='number' name='minutes' min='1' value='"+str(state["requested_minutes"] or 60)+"'></label> "
     body+="<button"+(" disabled" if state["job_status"] in ("queued","running") else "")+">Continuar exploración</button></form>"
     body+="<div class='panel' id='exploration-live' data-status-url='/github/exploration/status'><b>Estado del trabajo:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span>"
     body+="<p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p>"
