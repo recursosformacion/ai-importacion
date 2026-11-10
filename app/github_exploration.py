@@ -57,7 +57,7 @@ def load_github_token():
 
 
 TOKEN = load_github_token()
-MIN_MUSICAL_FILES = 100
+MIN_MUSICAL_FILES = 11
 PER_PAGE = 100
 MAX_SEARCH_PAGES = 10
 QUERIES = [
@@ -160,7 +160,7 @@ def ensure_schema():
               (name,"https://github.com/"+name,now()))
         # Reclassify the catalog only once per threshold policy, not on every
         # page view, status poll, or application restart.
-        threshold_migration = "repository_threshold_100_v1"
+        threshold_migration = "repository_threshold_11_v2"
         if not c.execute(
             "SELECT 1 FROM github_exploration_migrations WHERE migration_key=?",
             (threshold_migration,),
@@ -331,7 +331,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
     body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
     body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
-    body+="<label>Duración máxima de búsqueda (minutos; 240 = cuatro horas) <input type='number' name='minutes' min='1' value='60'></label> "
+    body+="<label>Duración máxima de búsqueda (minutos; 240 = cuatro horas) <input type='number' name='minutes' min='1' value='+str(state["requested_minutes"] or 60)+'></label> "
     body+="<button"+(" disabled" if state["job_status"] in ("queued","running") else "")+">Continuar exploración</button></form>"
     body+="<div class='panel' id='exploration-live' data-status-url='/github/exploration/status'><b>Estado del trabajo:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span>"
     body+="<p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p>"
@@ -355,10 +355,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         body+="<form method='post' action='/github/exploration/repositories/action'>"
         body+="<input type='hidden' name='return_page' value='"+str(page)+"'><input type='hidden' name='return_status' value='"+esc(status)+"'><input type='hidden' name='return_q' value='"+esc(q)+"'>"
         body+="<p><label><input type='checkbox' data-select-visible> Seleccionar todos los visibles</label> · Seleccionados: <b id='repo-selection-count'>0</b> "
-        body+="<button name='action' value='ignore'>Ignorar</button> "
-        body+="<button name='action' value='process'>Volver a inspeccionar</button> "
-        body+="<button name='action' value='restore'>Restaurar</button> "
-        body+="<button name='action' value='catalog'>Incorporar y procesar</button></p>"
+        body+="<button name='action' value='catalog'>Incorporar seleccionados y generar JSON</button></p>"
         body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales detectados (mín. "+str(MIN_MUSICAL_FILES)+")</th><th>Admisión al catálogo</th><th>Actualizado</th><th>Comprobado</th></tr>"
         for r in repositories:
             status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
