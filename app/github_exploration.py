@@ -293,7 +293,7 @@ async def inspect_one(client):
 
 @router.get("/github/exploration",response_class=HTMLResponse)
 def exploration_home(page: int = 1, status: str = "", q: str = "",
-                    catalog_added: int = 0, catalog_skipped: int = 0):
+                    catalog_added: int = 0, processing_started: int = 0, catalog_skipped: int = 0):
     ensure_schema()
     page = max(1, int(page or 1))
     status = status if status in {"pending","qualified","below_threshold","partial","error","ignored"} else ""
@@ -324,7 +324,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     total=sum(counts.values())
     body="<h1>Exploración persistente de GitHub</h1>"
     if catalog_added or catalog_skipped:
-        body+="<section class='panel'><b>Incorporación al catálogo:</b> "+str(catalog_added)+" repositorios incorporados."
+        body+="<section class='panel'><b>Incorporación y procesamiento:</b> "+str(catalog_added)+" repositorios incorporados; "+str(processing_started)+" procesamientos iniciados. El JSON se genera automáticamente al terminar."
         if catalog_skipped:
             body+=" "+str(catalog_skipped)+" omitidos porque no alcanzan el mínimo de "+str(MIN_MUSICAL_FILES)+" archivos musicales inspeccionados."
         body+="</section>"
@@ -634,12 +634,17 @@ async def stop_exploration_worker():
     _exploration_task = None
 
 
-def resume_exploration_worker():
+def recover_exploration_state():
+    """Do not launch a long GitHub crawl implicitly when the app starts."""
     ensure_schema()
     with db() as c:
-        state = c.execute("SELECT enabled,job_status FROM github_exploration_state WHERE id=1").fetchone()
-    if state and state["enabled"]:
-        return start_exploration_worker()
+        c.execute("""UPDATE github_exploration_state
+          SET enabled=0,
+              job_status=CASE WHEN job_status IN ('queued','running') THEN 'paused' ELSE job_status END,
+              last_message=CASE WHEN job_status IN ('queued','running')
+                THEN 'Exploración pausada al iniciar la aplicación. Pulsa Continuar y fija el tiempo para reanudar.'
+                ELSE last_message END
+          WHERE id=1""")
     return None
 
 
