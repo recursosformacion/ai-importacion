@@ -330,6 +330,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
           d.updated_at,d.last_checked_at,d.last_error,
           (SELECT id FROM github_repositories r WHERE r.full_name=d.full_name) AS catalog_id,
           (SELECT p.status FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processing_status,
+          (SELECT p.error_text FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processing_error,
           (SELECT p.stage FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processing_stage,
           (SELECT p.progress_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS progress_count,
           (SELECT p.total_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS total_count,
@@ -373,9 +374,10 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
             admission = ("Sí" if r["status"] in ("qualified","partial") else
                          "Pendiente de reinspección" if r["status"] == "pending" else "No disponible")
             body+="<td><b>"+esc(count_cell)+"</b></td><td>"
-            if not r["catalog_id"]:
+            if not r["catalog_id"] or r["processing_status"]=="error":
                 if r["status"] in ("qualified","partial"):
-                    body+="<button type='submit' name='full_name' value='"+esc(r["full_name"])+"' formaction='/github/exploration/repository/incorporate' formmethod='post' formnovalidate>Seleccionar</button>"
+                    button_label="Reintentar" if r["catalog_id"] else "Seleccionar"
+                    body+="<button type='submit' name='full_name' value='"+esc(r["full_name"])+"' formaction='/github/exploration/repository/incorporate' formmethod='post' formnovalidate>"+button_label+"</button>"
                 else:
                     body+=esc(status_label)
             else:
@@ -384,11 +386,14 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
                 if r["processing_stage"]=="analysis" and r["total_count"]:
                     pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])
+                elif pstatus=="running" and r["processing_stage"]=="download" and r["total_count"]:
+                    pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
+                    body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])+" archivos adquiridos"
                 elif pstatus=="running":
                     body+="<div class='muted'>Inventario y descarga en curso</div>"
                 if pstatus=="completed":
                     body+="<div><a href='/github/"+str(r["catalog_id"])+"/resources.json'>Descargar resources.json ("+str(r["processed_count"] or 0)+" recursos)</a></div>"
-            body+="</td><td>"+esc(r["last_error"] or "—")+"</td></tr>"
+            body+="</td><td>"+esc(r["processing_error"] or r["last_error"] or "—")+"</td></tr>"
         body+="</table></form>"
         pages=max(1,(filtered_total+page_size-1)//page_size)
         body+="<p class='pagination'>"
