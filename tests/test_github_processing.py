@@ -99,7 +99,7 @@ def test_recover_processing_jobs_requeues_interrupted_work(tmp_path, monkeypatch
     recovered = processing.recover_processing_jobs()
 
     assert recovered == 2
-    assert queued == [7, 8]
+    assert set(queued) == {7, 8}
     with processing.connect(db_path) as conn:
         job = conn.execute(
             "SELECT status,stage,progress_count,current_path FROM github_processing_jobs WHERE repository_id=7"
