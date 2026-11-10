@@ -1031,8 +1031,7 @@ def github_resources_json(repository_id: int):
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
 def github_repository(repository_id: int, q: str = ""):
     ensure_schema()
-    from app.github_processing import ensure_processing_schema
-    ensure_processing_schema()
+    ensure_processing_tables()
     with db() as conn:
         repo = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
         if not repo:
