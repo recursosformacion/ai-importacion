@@ -98,7 +98,7 @@ def _resource_record(repo, row) -> dict:
         ]
 
     extension = (row["extension"] or Path(row["path"]).suffix).lower().lstrip(".")
-    status = row["analysis_status"] or "not_analyzed"
+    status = row["analysis_status"] or row["extraction_status"] or "not_analyzed"
     return {
         "resource_key": "github:" + repo["full_name"] + ":" + (row["sha"] or row["path"]),
         "resource": {
@@ -135,7 +135,7 @@ def _resource_record(repo, row) -> dict:
             "analysis_status": status,
             "content_size": row["downloaded_bytes"] or row["size_bytes"] or 0,
             "downloaded_at": row["downloaded_at"],
-            "analyzed_at": row["analyzed_at"],
+            "analyzed_at": row["analyzed_at"] or row["extracted_at"],
         },
     }
 
@@ -483,11 +483,12 @@ def process_repository(repository_id: int) -> None:
                 SELECT f.id,f.path,f.name,f.extension,f.size_bytes,f.sha,f.html_url,
                        f.download_url,f.downloaded_at,f.downloaded_bytes,f.sha256,
                        a.status AS analysis_status,a.analysis_json,a.error_text AS analysis_error,
-                       a.analyzed_at,
+                       a.analyzed_at,x.status AS extraction_status,x.analyzed_at AS extracted_at,
                        ai.metadata_json AS ai_metadata_json,ai.sha256 AS ai_sha256,
                        ai.model AS ai_model
                 FROM github_files f
                 LEFT JOIN github_file_analyses a ON a.github_file_id=f.id
+                LEFT JOIN github_content_extractions x ON x.github_file_id=f.id
                 LEFT JOIN github_ai_metadata_enrichments ai ON ai.github_file_id=f.id
                 WHERE f.repository_id=?
                   AND f.download_status='downloaded'
