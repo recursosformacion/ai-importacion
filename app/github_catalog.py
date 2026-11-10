@@ -1003,8 +1003,19 @@ def github_resources_json(repository_id: int):
         job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    if job and job["status"] == "running":
+        raise HTTPException(status_code=409, detail="El JSON se está generando; vuelve a descargarlo cuando termine")
+
+    # The download action is also the single "build latest JSON" action.
+    # Regeneration reads the existing DB inventory; it does not rescan GitHub
+    # when rows already exist and does not reread source files or call Gemini.
+    from app.github_processing import process_repository
+    process_repository(repository_id)
+    with db() as conn:
+        job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
     if not job or job["status"] != "completed":
-        raise HTTPException(status_code=409, detail="El JSON todavía no está disponible")
+        detail = job["error_text"] if job else "No se pudo generar el JSON"
+        raise HTTPException(status_code=500, detail=detail or "No se pudo generar el JSON")
     path = Path(job["output_dir"]) / "resources.json"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="No se encuentra el JSON generado")
