@@ -494,6 +494,7 @@ def process_repository(repository_id: int) -> None:
                   AND f.download_status='downloaded'
                   AND f.local_path IS NOT NULL
                   AND LOWER(COALESCE(f.extension,'')) <> '.txt'
+                  AND NOT (LOWER(COALESCE(f.extension,''))='.xml' AND a.status='not_musicxml')
                 ORDER BY f.path
             """, (repository_id,)).fetchall()
 
