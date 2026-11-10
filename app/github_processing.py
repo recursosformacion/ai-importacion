@@ -127,9 +127,9 @@ def _resource_record(repo, row) -> dict:
 def _ensure_catalog_inventory_and_downloads(repository_id: int) -> None:
     """For a newly added repository, populate the existing catalog once.
 
-    Existing inventories are trusted and exported directly. This path is only
-    used when no github_files rows exist, so a 30k-file catalog is never
-    rescanned or downloaded again just to build its JSON manifest.
+    Existing inventories are trusted. A tree scan is only needed when the
+    repository has no catalog rows; existing rows are reused and only missing
+    downloads are fetched before exporting the manifest.
     """
     with connect(DB_PATH) as conn:
         count = conn.execute(
@@ -190,6 +190,10 @@ def process_repository(repository_id: int) -> None:
                 (repository_id, started, started),
             )
 
+            inventory_count = conn.execute(
+                "SELECT COUNT(*) FROM github_files WHERE repository_id=? AND extension<>'.txt'",
+                (repository_id,),
+            ).fetchone()[0]
             rows = conn.execute("""
                 SELECT f.id,f.path,f.name,f.extension,f.size_bytes,f.sha,f.html_url,
                        f.download_url,f.downloaded_at,f.downloaded_bytes,f.sha256,
@@ -233,8 +237,10 @@ def process_repository(repository_id: int) -> None:
                 "La presencia pública no acredita permiso de redistribución."
             ),
             "processing": {
-                "files_in_database": len(rows),
+                "inventory_files_in_database": inventory_count,
+                "downloaded_files_in_database": len(rows),
                 "resources_exported": len(records),
+                "not_exported_or_not_downloaded": max(0, inventory_count - len(rows)),
                 "metadata_source": "database",
                 "github_clone_performed": False,
                 "files_read_during_export": 0,
