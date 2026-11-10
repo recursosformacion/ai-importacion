@@ -654,6 +654,7 @@ async def run_exploration_worker():
                 with db() as c:
                     c.execute("""UPDATE github_exploration_state SET enabled=0,job_status='rate_limited',
                       last_run_at=?,last_run_seconds=0,last_message=? WHERE id=1""", (now(), message))
+                logging.getLogger(__name__).warning("Exploración GitHub en espera: %s", message)
                 return
         except ValueError:
             pass
@@ -689,6 +690,7 @@ async def run_exploration_worker():
                         pending = c.execute("SELECT COUNT(*) n FROM github_discovered_repositories WHERE status='pending'").fetchone()["n"]
                         todo = c.execute("SELECT COUNT(*) n FROM github_discovery_queries WHERE status IN ('pending','running') AND page<=?", (MAX_SEARCH_PAGES,)).fetchone()["n"]
                     if not pending and not todo:
+                        no_more_work = True
                         break
     except GitHubRateLimit as exc:
         rate_limit = exc
@@ -700,6 +702,7 @@ async def run_exploration_worker():
               WHERE id=1""", (now(), elapsed))
         raise
     except Exception as exc:
+        logging.getLogger(__name__).exception("Error en el trabajador de exploración GitHub")
         elapsed = round(time.monotonic() - started, 1)
         with db() as c:
             c.execute("""UPDATE github_exploration_state SET enabled=0,job_status='error',
