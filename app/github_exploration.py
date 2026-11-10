@@ -331,7 +331,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     body+="<p>La exploración se conserva en SQLite. Cada ejecución continúa desde la siguiente página o repositorio pendiente; no vuelve a empezar desde el principio.</p>"
     body+="<p>Autenticación GitHub: <b>"+("configurada" if TOKEN else "sin token")+"</b>.</p>"
     body+="<section class='panel'><h2>Presupuesto de esta ejecución</h2><form method='post' action='/github/exploration/run'>"
-    body+="<label>Tiempo máximo (minutos) <input type='number' name='minutes' min='1' value='60'></label> "
+    body+="<label>Duración máxima de búsqueda (minutos; 240 = cuatro horas) <input type='number' name='minutes' min='1' value='60'></label> "
     body+="<button"+(" disabled" if state["job_status"] in ("queued","running") else "")+">Continuar exploración</button></form>"
     body+="<div class='panel' id='exploration-live' data-status-url='/github/exploration/status'><b>Estado del trabajo:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span>"
     body+="<p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p>"
@@ -429,20 +429,26 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
  async function refresh(){
   try{
    const r=await fetch(statusUrl,{cache:'no-store'});
-   if(!r.ok)return;
+   if(!r.ok)throw new Error('HTTP '+r.status);
    const d=await r.json();
    const status=document.getElementById('job-status');
    const progress=document.getElementById('job-progress');
    const message=document.getElementById('job-message');
    if(status)status.textContent=d.job_status;
-   if(progress)progress.textContent='Páginas: '+d.progress_discoveries+' · Repositorios inspeccionados: '+d.progress_inspections;
-   if(message)message.textContent=d.last_message;
+   if(progress)progress.textContent='Páginas de búsqueda: '+d.progress_discoveries+' · Repositorios inspeccionados: '+d.progress_inspections+' · Repositorios guardados: '+Object.values(d.repositories||{}).reduce((a,b)=>a+b,0);
+   if(message)message.textContent=d.last_message||'Esperando actividad del explorador…';
    const button=document.querySelector("form[action='/github/exploration/run'] button");
    if(button)button.disabled=['queued','running'].includes(d.job_status);
-   if(['queued','running'].includes(d.job_status))setTimeout(refresh,10000);
-  }catch(e){setTimeout(refresh,15000);}
+   if(['queued','running'].includes(d.job_status))setTimeout(refresh,5000);
+  }catch(e){
+   const message=document.getElementById('job-message');
+   if(message)message.textContent='No se pudo consultar el estado; se volverá a intentar automáticamente.';
+   setTimeout(refresh,5000);
+  }
  }
- if(['queued','running'].includes(document.getElementById('job-status')?.textContent||''))setTimeout(refresh,10000);
+ // Consultar inmediatamente tras cargar la página, aunque el HTML inicial
+ // muestre un estado antiguo. Después se mantiene el sondeo mientras trabaja.
+ setTimeout(refresh,500);
 })();
 </script>"""
     return HTMLResponse("<!doctype html><html lang='es'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem'>"+body+live_script+"</body></html>")
