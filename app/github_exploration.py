@@ -389,8 +389,8 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
                 elif pstatus=="running" and r["processing_stage"]=="download" and r["total_count"]:
                     pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])+" archivos adquiridos"
-                elif pstatus=="running":
-                    body+="<div class='muted'>Inventario y descarga en curso</div>"
+                elif pstatus in ("running","queued"):
+                    body+="<progress></progress><div class='muted'>"+("En cola" if pstatus=="queued" else "Inventariando y preparando la descarga")+"</div>"
                 if pstatus=="completed":
                     body+="<div><a href='/github/"+str(r["catalog_id"])+"/resources.json'>Descargar resources.json ("+str(r["processed_count"] or 0)+" recursos)</a></div>"
             body+="</td><td>"+esc(r["processing_error"] or r["last_error"] or "—")+"</td></tr>"
@@ -463,7 +463,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
    const button=document.querySelector("form[action='/github/exploration/run'] button");
    if(button)button.disabled=['queued','running'].includes(d.job_status);
    if(['queued','running'].includes(d.job_status))setTimeout(refresh,5000);
-   else if(document.querySelector("tr[data-processing='running']"))setTimeout(()=>location.reload(),5000);
+   else if(document.querySelector("tr[data-processing='running'],tr[data-processing='queued']"))setTimeout(()=>location.reload(),5000);
   }catch(e){
    const message=document.getElementById('job-message');
    if(message)message.textContent='No se pudo consultar el estado; se volverá a intentar automáticamente.';
@@ -592,6 +592,13 @@ def incorporate_discovered_repository(full_name: str = Form(...)):
            row["license_spdx"],row["license_spdx"],row["stars"],now()))
         repo=target.execute("SELECT id FROM github_repositories WHERE full_name=?",(full_name,)).fetchone()
     if repo:
+        with github_catalog.db() as target:
+            target.execute("""INSERT INTO github_processing_jobs
+                (repository_id,status,stage,progress_count,total_count,started_at,updated_at,error_text)
+                VALUES(?,'queued','queued',0,0,?, ?,NULL)
+                ON CONFLICT(repository_id) DO UPDATE SET status='queued',stage='queued',
+                progress_count=0,total_count=0,updated_at=excluded.updated_at,error_text=NULL""",
+                (int(repo["id"]),now(),now()))
         enqueue_repository(int(repo["id"]))
     return RedirectResponse("/github/exploration",status_code=303)
 
