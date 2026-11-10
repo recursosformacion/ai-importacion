@@ -57,21 +57,46 @@ def test_local_context_extracts_text_without_using_filename(tmp_path):
     assert "not-the-title" not in context
 
 
-def test_full_snapshot_clone_does_not_use_partial_blob_filter(tmp_path, monkeypatch):
+def test_music_snapshot_uses_one_filtered_sparse_checkout_batch(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     calls = []
 
-    def fake_run(args, cwd=None, timeout=1800):
-        calls.append(args)
-        Path(args[-1]).mkdir(parents=True, exist_ok=True)
+    def fake_run(args, cwd=None, timeout=1800, input_text=None):
+        calls.append((args, input_text))
+        if "clone" in args:
+            target = Path(args[-1])
+            (target / ".git").mkdir(parents=True)
+            (target / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+            return SimpleNamespace(stdout="", stderr="")
+        if args[:2] == ["git", "rev-parse"]:
+            return SimpleNamespace(stdout="abc123\n", stderr="")
+        if args[:3] == ["git", "ls-tree", "-r"]:
+            return SimpleNamespace(
+                stdout="score.musicxml\0README.md\0nested/score.mxl\0",
+                stderr="",
+            )
+        return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(processing, "_run", fake_run)
     target = tmp_path / "repo"
-    processing._clone_complete_snapshot("https://github.com/example/music.git", target)
 
-    clone_args = calls[0]
+    commit, selected = processing._prepare_music_snapshot(
+        "https://github.com/example/music.git", target
+    )
+
+    assert commit == "abc123"
+    assert selected == ["nested/score.mxl", "score.musicxml"]
+    clone_args = calls[0][0]
     assert "clone" in clone_args
-    assert "--depth=1" in clone_args
+    assert "--filter=blob:none" in clone_args
+    assert "--no-checkout" in clone_args
     assert "--no-recurse-submodules" in clone_args
-    assert "--filter=blob:none" not in clone_args
-    assert "--no-checkout" not in clone_args
-    assert target.is_dir()
+
+    sparse_set = next(call for call in calls if call[0][:4] == [
+        "git", "sparse-checkout", "set", "--no-cone"
+    ])
+    assert sparse_set[0][-1] == "--stdin"
+    assert sparse_set[1] == "nested/score.mxl\nscore.musicxml\n"
+    assert any(call[0][:3] == ["git", "checkout", "--force"] for call in calls)
+    assert not any(call[0][:2] == ["git", "show"] for call in calls)
