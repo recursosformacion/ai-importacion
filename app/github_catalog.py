@@ -401,6 +401,7 @@ async def github_scan(repository_id: int):
     ensure_schema()
     with db() as conn:
         repo = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+        processing_job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
     if not repo:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
     started = now()
@@ -977,9 +978,42 @@ def github_export_resources_json(repository_id: int):
         raise
 
 
+@router.post("/github/{repository_id}/process")
+def github_process(repository_id: int):
+    ensure_schema()
+    from app.github_processing import enqueue_repository, ensure_processing_schema
+    ensure_processing_schema()
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    enqueue_repository(repository_id)
+    return RedirectResponse(f"/github/{repository_id}", status_code=303)
+
+
+@router.get("/github/{repository_id}/resources.json")
+def github_resources_json(repository_id: int):
+    ensure_schema()
+    from app.github_processing import ensure_processing_schema
+    ensure_processing_schema()
+    with db() as conn:
+        exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+        job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    if not job or job["status"] != "completed":
+        raise HTTPException(status_code=409, detail="El JSON todavía no está disponible")
+    path = Path(job["output_dir"]) / "resources.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No se encuentra el JSON generado")
+    return FileResponse(path, media_type="application/json", filename=f"github-{repository_id}-resources.json")
+
+
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
 def github_repository(repository_id: int, q: str = ""):
     ensure_schema()
+    from app.github_processing import ensure_processing_schema
+    ensure_processing_schema()
     with db() as conn:
         repo = conn.execute("SELECT * FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
         if not repo:
@@ -1005,6 +1039,20 @@ def github_repository(repository_id: int, q: str = ""):
         too_large_count = int(download_counts["too_large"] or 0)
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
+    body += "<section class='panel'><h2>Procesamiento agrupado del repositorio</h2>"
+    if processing_job and processing_job["status"] == "completed":
+        body += "<p>Procesamiento terminado. Recursos JSON: " + str(processing_job["processed_count"]) + ".</p>"
+        body += "<p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
+    elif processing_job and processing_job["status"] == "running":
+        body += "<p>Procesamiento en curso. Puedes volver a esta página para consultar el resultado.</p>"
+    elif processing_job and processing_job["status"] == "error":
+        body += "<p>No se pudo completar el procesamiento: " + esc(processing_job["error_text"]) + "</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar procesamiento</button></form>"
+    else:
+        body += "<p>Inventaría el repositorio y descargará en bloque los ficheros musicales seleccionados; después generará el JSON enriquecido.</p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
+    body += "</section>"
     body += "<section class='panel' style='border:2px solid #174f89;background:#fff'>"
     body += "<h2 style='margin-top:0'>Descarga del repositorio</h2>"
     body += "<p><b>" + str(total) + " archivos inventariados</b> · " + str(downloaded_count) + " descargados · " + str(pending_count) + " pendientes"
