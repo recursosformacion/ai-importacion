@@ -1050,7 +1050,7 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(processing_job["processed_count"]) + ".</p>"
         body += "<p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<p>El procesamiento agrupado incluye inventario, descarga selectiva en bloque y generación del JSON. No tienes que descargar archivos ni preparar otro paquete.</p>"
-        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reprocesar y completar el JSON</button></form>"
+
     elif processing_job and processing_job["status"] == "running":
         body += "<p id='processing-state'>Procesamiento en curso: inventario, descarga agrupada y generación del JSON. La página se actualizará automáticamente cada 10 segundos.</p>"
         body += "<script>setTimeout(function(){location.reload()},10000)</script>"
