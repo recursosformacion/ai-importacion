@@ -358,7 +358,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
         body+="<button name='action' value='ignore'>Ignorar</button> "
         body+="<button name='action' value='process'>Volver a inspeccionar</button> "
         body+="<button name='action' value='restore'>Restaurar</button> "
-        body+="<button name='action' value='catalog'>Incorporar al catálogo</button></p>"
+        body+="<button name='action' value='catalog'>Incorporar y procesar</button></p>"
         body+="<table><tr><th>Sel.</th><th>Repositorio</th><th>Estado</th><th>Archivos musicales detectados (mín. "+str(MIN_MUSICAL_FILES)+")</th><th>Admisión al catálogo</th><th>Actualizado</th><th>Comprobado</th></tr>"
         for r in repositories:
             status_label={"pending":"Pendiente","qualified":"Cumple mínimo","below_threshold":"Por debajo del mínimo","partial":"Árbol parcial","error":"Error","ignored":"Ignorado"}.get(r["status"],r["status"])
@@ -476,6 +476,7 @@ def exploration_repository_action(
             and int(row["musical_file_count"] or 0) >= MIN_MUSICAL_FILES
         ]
         added = 0
+        processing_ids = []
         with github_catalog.db() as target:
             for row in eligible:
                 target.execute("""
@@ -488,10 +489,21 @@ def exploration_repository_action(
                       stars=excluded.stars
                 """, (row["full_name"],row["html_url"],row["default_branch"],row["description"],
                       row["license_spdx"],row["license_spdx"],row["stars"],now()))
+                repository = target.execute(
+                    "SELECT id FROM github_repositories WHERE full_name=?",
+                    (row["full_name"],),
+                ).fetchone()
+                if repository:
+                    processing_ids.append(int(repository["id"]))
                 added += 1
+        # Incorporation and full processing are one operation.
+        from app.github_processing import enqueue_repository, ensure_processing_schema
+        ensure_processing_schema()
+        for repository_id in processing_ids:
+            enqueue_repository(repository_id)
         skipped = len(rows) - len(eligible)
         return RedirectResponse(
-            "/github/exploration?catalog_added="+str(added)+"&catalog_skipped="+str(skipped),
+            "/github/exploration?catalog_added="+str(added)+"&processing_started="+str(len(processing_ids))+"&catalog_skipped="+str(skipped),
             status_code=303,
         )
     placeholders = ",".join("?" for _ in selected)
