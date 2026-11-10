@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import os
 import time
 from pathlib import Path
@@ -336,6 +337,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
           (SELECT p.progress_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS progress_count,
           (SELECT p.total_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS total_count,
           (SELECT p.processed_count FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS processed_count,
+          (SELECT p.current_path FROM github_processing_jobs p JOIN github_repositories r ON r.id=p.repository_id WHERE r.full_name=d.full_name) AS current_path,
           (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt') AS inventory_count,
           (SELECT COUNT(*) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id WHERE r.full_name=d.full_name AND f.extension<>'.txt' AND f.download_status='downloaded') AS downloaded_count,
           (SELECT COUNT(DISTINCT f.id) FROM github_files f JOIN github_repositories r ON r.id=f.repository_id LEFT JOIN github_file_analyses a ON a.github_file_id=f.id LEFT JOIN github_content_extractions x ON x.github_file_id=f.id WHERE r.full_name=d.full_name AND (a.github_file_id IS NOT NULL OR x.github_file_id IS NOT NULL)) AS analyzed_count
@@ -350,7 +352,8 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
             body+=" "+str(catalog_skipped)+" omitidos porque no alcanzan el mínimo de "+str(MIN_MUSICAL_FILES)+" archivos musicales inspeccionados."
         body+="</section>"
     body+="<section class='panel'><h2>1. Buscar repositorios</h2><p>Descubrir colecciones musicales en GitHub y guardar los resultados.</p>"
-    body+="<form method='post' action='/github/exploration/run'><label>Duración de búsqueda (minutos) <input type='number' name='minutes' min='1' max='1440' value='"+str(state["requested_minutes"] or 240)+"'></label> "
+    body+="<form method='post' action='/github/exploration/run'><label>Duración máxima de búsqueda (minutos) <input type='number' name='minutes' min='1' max='1440' value='"+str(state["requested_minutes"] or 240)+"'></label> "
+    body+="<p class='muted'>Se detiene antes si no quedan búsquedas o repositorios pendientes, o si GitHub aplica un límite de solicitudes.</p>"
     body+="<button"+(" disabled" if state["job_status"] in ("queued","running") else "")+">Buscar repositorios</button></form>"
     body+="<div id='exploration-live'><b>Estado:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span><p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p><p id='job-message'>"+esc(state["last_message"])+"</p></div></section>"
     body+="<section class='panel'><h2>2. Seleccionar repositorios</h2><p>Elegir qué colecciones se quieren incorporar. Inventariar, descargar agrupadamente y analizar los ficheros. Construir el catálogo a partir de los datos almacenados en SQLite. Ver el estado, las cantidades y obtener el JSON generado.</p>"
@@ -387,9 +390,13 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
                 if r["processing_stage"]=="analysis" and r["total_count"]:
                     pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])
+                    if r["current_path"]:
+                        body+="<div class='muted'>Analizando: "+esc(r["current_path"])+"</div>"
                 elif pstatus=="running" and r["processing_stage"]=="download" and r["total_count"]:
                     pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])+" archivos adquiridos"
+                    if r["current_path"]:
+                        body+="<div class='muted'>Descargando: "+esc(r["current_path"])+"</div>"
                 elif pstatus in ("running","queued"):
                     stage_label={"inventory":"Inventariando archivos","download":"Descargando archivos agrupadamente","analysis":"Analizando archivos musicales","export":"Generando resources.json","queued":"En cola"}.get(r["processing_stage"] or pstatus,"Procesando")
                     body+="<progress></progress><div class='muted'>"+stage_label+"</div>"
@@ -465,7 +472,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
    const button=document.querySelector("form[action='/github/exploration/run'] button");
    if(button)button.disabled=['queued','running'].includes(d.job_status);
    if(['queued','running'].includes(d.job_status))setTimeout(refresh,5000);
-   else if(document.querySelector("tr[data-processing='running'],tr[data-processing='queued']"))setTimeout(()=>location.reload(),5000);
+   else if(document.querySelector("tr[data-processing='running'],tr[data-processing='queued'],tr[data-processing='pending']"))setTimeout(()=>location.reload(),5000);
   }catch(e){
    const message=document.getElementById('job-message');
    if(message)message.textContent='No se pudo consultar el estado; se volverá a intentar automáticamente.';
@@ -635,6 +642,10 @@ async def run_exploration_worker():
             "SELECT requested_minutes,resume_after FROM github_exploration_state WHERE id=1"
         ).fetchone()
     budget = max(1, int(state["requested_minutes"] or 60)) * 60
+    logging.getLogger(__name__).info(
+        "Exploración GitHub iniciada: presupuesto máximo de %s minutos", int(budget / 60)
+    )
+    no_more_work = False
     if state["resume_after"]:
         try:
             resume_dt = datetime.fromisoformat(state["resume_after"])
@@ -655,6 +666,7 @@ async def run_exploration_worker():
                 did, msg = await discover_one(client)
                 if did:
                     discoveries += 1
+                    logging.getLogger(__name__).info("Exploración GitHub: %s", msg)
                 with db() as c:
                     c.execute("""UPDATE github_exploration_state SET progress_discoveries=?,
                       progress_inspections=?,last_message=? WHERE id=1""",
@@ -664,11 +676,13 @@ async def run_exploration_worker():
                 did, msg = await inspect_one(client)
                 if did:
                     inspections += 1
+                    logging.getLogger(__name__).info("Exploración GitHub: %s", msg)
                 with db() as c:
                     c.execute("""UPDATE github_exploration_state SET progress_discoveries=?,
                       progress_inspections=?,last_message=? WHERE id=1""",
                       (discoveries, inspections, msg if did else "No hay más repositorios pendientes de inspección."))
                 if not did and discoveries == 0 and inspections == 0:
+                    no_more_work = True
                     break
                 if not did and discoveries > 0:
                     with db() as c:
@@ -697,12 +711,23 @@ async def run_exploration_worker():
         message = f"Exploración pausada por límite de GitHub. {discoveries} páginas y {inspections} repositorios procesados en {elapsed} s. {rate_limit}"
         status = "rate_limited"
     else:
-        message = f"{discoveries} páginas de descubrimiento y {inspections} repositorios inspeccionados en {elapsed} s."
+        if no_more_work:
+            message = (
+                f"No quedan consultas ni repositorios pendientes. "
+                f"Se inspeccionaron {discoveries} páginas y {inspections} repositorios en {elapsed} s; "
+                f"el presupuesto era de {int(budget / 60)} minutos."
+            )
+        else:
+            message = (
+                f"Presupuesto de {int(budget / 60)} minutos agotado: "
+                f"{discoveries} páginas de descubrimiento y {inspections} repositorios inspeccionados."
+            )
         status = "completed"
     with db() as c:
         c.execute("""UPDATE github_exploration_state SET enabled=0,job_status=?,
           last_run_at=?,last_run_seconds=?,last_message=?,resume_after=? WHERE id=1""",
           (status, now(), elapsed, message, rate_limit.resume_after if rate_limit else None))
+    logging.getLogger(__name__).info("Exploración GitHub finalizada: %s", message)
 
 
 def start_exploration_worker():
