@@ -7,6 +7,7 @@ github_catalog. Manifest generation must therefore be a database export: it
 must not clone GitHub again, reread 30k local files or call Gemini.
 """
 
+import asyncio
 import json
 import os
 import threading
@@ -123,6 +124,44 @@ def _resource_record(repo, row) -> dict:
     }
 
 
+def _acquire_only_when_inventory_is_absent(repository_id: int) -> None:
+    """For a newly added repository, populate the existing catalog once.
+
+    Existing inventories are trusted and exported directly. This path is only
+    used when no github_files rows exist, so a 30k-file catalog is never
+    rescanned or downloaded again just to build its JSON manifest.
+    """
+    with connect(DB_PATH) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM github_files WHERE repository_id=?",
+            (repository_id,),
+        ).fetchone()[0]
+    if count:
+        return
+
+    async def acquire() -> None:
+        from app import github_catalog
+
+        response = await github_catalog.github_scan(repository_id)
+        if getattr(response, "status_code", 200) >= 400:
+            raise RuntimeError("No se pudo inventariar el repositorio en GitHub")
+
+        with connect(DB_PATH) as conn:
+            pending = [
+                int(row["id"]) for row in conn.execute("""
+                    SELECT id FROM github_files
+                    WHERE repository_id=? AND extension<>'.txt'
+                      AND COALESCE(download_status,'not_downloaded')
+                          NOT IN ('downloaded','too_large')
+                    ORDER BY path
+                """, (repository_id,)).fetchall()
+            ]
+        if pending:
+            await github_catalog._run_repository_downloads(repository_id, pending)
+
+    asyncio.run(acquire())
+
+
 def process_repository(repository_id: int) -> None:
     """Export all already-downloaded DB rows to resources.json using SQL + JSON only."""
     ensure_processing_schema()
@@ -133,6 +172,7 @@ def process_repository(repository_id: int) -> None:
     started = _now()
     out = ROOT / str(int(repository_id)) / ".osap-import"
     try:
+        _acquire_only_when_inventory_is_absent(repository_id)
         with connect(DB_PATH) as conn:
             repo = conn.execute(
                 "SELECT * FROM github_repositories WHERE id=?", (repository_id,)
