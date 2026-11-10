@@ -263,7 +263,7 @@ def test_exploration_table_shows_count_and_only_lists_repositories_at_threshold(
                (full_name,html_url,discovery_query,discovered_at,status,
                 musical_file_count,last_checked_at)
                VALUES('example/too-small','https://github.com/example/too-small',
-                      'test','2026-01-02','below_threshold',99,'2026-01-02')"""
+                      'test','2026-01-02','below_threshold',10,'2026-01-02')"""
         )
         conn.execute(
             """INSERT INTO github_discovered_repositories
