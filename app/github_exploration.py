@@ -498,10 +498,9 @@ def exploration_repository_action(
                     processing_ids.append(int(repository["id"]))
                 added += 1
         # Incorporation and full processing are one operation.
-        from app.github_processing import enqueue_repository, ensure_processing_schema
+        from app.github_processing import enqueue_repositories, ensure_processing_schema
         ensure_processing_schema()
-        for repository_id in processing_ids:
-            enqueue_repository(repository_id)
+        enqueue_repositories(processing_ids)
         skipped = len(rows) - len(eligible)
         return RedirectResponse(
             "/github/exploration?catalog_added="+str(added)+"&processing_started="+str(len(processing_ids))+"&catalog_skipped="+str(skipped),
