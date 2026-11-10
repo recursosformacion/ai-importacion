@@ -391,7 +391,8 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
                     pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])+" archivos adquiridos"
                 elif pstatus in ("running","queued"):
-                    body+="<progress></progress><div class='muted'>"+("En cola" if pstatus=="queued" else "Inventariando y preparando la descarga")+"</div>"
+                    stage_label={"inventory":"Inventariando archivos","download":"Descargando archivos agrupadamente","analysis":"Analizando archivos musicales","export":"Generando resources.json","queued":"En cola"}.get(r["processing_stage"] or pstatus,"Procesando")
+                    body+="<progress></progress><div class='muted'>"+stage_label+"</div>"
                 if pstatus=="completed":
                     body+="<div><a href='/github/"+str(r["catalog_id"])+"/resources.json'>Descargar resources.json ("+str(r["processed_count"] or 0)+" recursos)</a></div>"
             body+="</td><td>"+esc(r["processing_error"] or r["last_error"] or "—")+"</td></tr>"
