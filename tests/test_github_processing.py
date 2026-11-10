@@ -13,7 +13,7 @@ def test_processing_schema_contains_stage_progress_and_output_fields(tmp_path, m
 
     with processing.connect(processing.DB_PATH) as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_processing_jobs)")}
-    assert {"status", "stage", "progress_count", "total_count", "processed_count", "output_dir"} <= columns
+    assert {"status", "stage", "progress_count", "total_count", "current_path", "processed_count", "output_dir"} <= columns
 
 
 def test_resource_record_combines_structural_and_ai_metadata():
@@ -77,3 +77,33 @@ def test_sparse_checkout_materializes_only_selected_music_files(tmp_path):
     assert (checkout / "scores" / "piece.musicxml").is_file()
     assert (checkout / "scores" / "piece.mid").is_file()
     assert not (checkout / "docs" / "README.txt").exists()
+
+
+def test_recover_processing_jobs_requeues_interrupted_work(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "recovery.sqlite3")
+    monkeypatch.setattr(processing, "DB_PATH", db_path)
+    processing.ensure_processing_schema()
+    with processing.connect(db_path) as conn:
+        conn.execute("CREATE TABLE github_repositories(id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO github_repositories(id) VALUES(7)")
+        conn.execute("""
+            INSERT INTO github_processing_jobs
+              (repository_id,status,stage,progress_count,total_count,started_at,updated_at)
+            VALUES(7,'running','analysis',12,100,'start','before-restart')
+        """)
+
+    queued = []
+    monkeypatch.setattr(processing, "enqueue_repositories", lambda ids: queued.extend(ids))
+
+    recovered = processing.recover_processing_jobs()
+
+    assert recovered == 1
+    assert queued == [7]
+    with processing.connect(db_path) as conn:
+        job = conn.execute(
+            "SELECT status,stage,progress_count,current_path FROM github_processing_jobs WHERE repository_id=7"
+        ).fetchone()
+    assert job["status"] == "queued"
+    assert job["stage"] == "queued"
+    assert job["progress_count"] == 12
+    assert job["current_path"] == ""
