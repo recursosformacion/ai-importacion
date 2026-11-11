@@ -171,7 +171,7 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
     if len(selected_oids) == len(paths) and selected_oids:
         bulk = subprocess.run(
             ["git", "-C", str(checkout), "fetch-pack", "--stdin", "--no-progress", clone_url],
-            input="\\n".join(selected_oids) + "\\n",
+            input="\n".join(selected_oids) + "\n",
             capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
         )
         if bulk.returncode:
