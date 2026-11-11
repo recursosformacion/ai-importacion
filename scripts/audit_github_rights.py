@@ -10,13 +10,14 @@ import asyncio
 import json
 
 from app.github_catalog import ensure_schema
-from app.github_db import connect
+from app.db import connect
+from app.github_catalog import DB_PATH
 from app.github_legal import audit_repository, reconcile_database
 
 
 async def main():
     ensure_schema()
-    with connect() as conn:
+    with connect(DB_PATH) as conn:
         repositories = conn.execute(
             "SELECT id,full_name FROM github_repositories ORDER BY id"
         ).fetchall()
