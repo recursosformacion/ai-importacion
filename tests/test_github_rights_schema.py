@@ -38,10 +38,13 @@ def test_github_score_files_keep_repository_license_separate(tmp_path, monkeypat
 
 def test_github_score_serving_requires_file_level_redistribution(tmp_path, monkeypatch):
     db_path = tmp_path / "github-serve.sqlite3"
-    score = tmp_path / "authorized.mxl"
+    download_root = tmp_path / "downloads"
+    score = download_root / "github" / "1" / "authorized.mxl"
+    score.parent.mkdir(parents=True)
     score.write_bytes(b"authorized github score")
     monkeypatch.setattr(main, "DB_PATH", str(db_path))
     monkeypatch.setattr(catalog, "DB_PATH", str(db_path))
+    monkeypatch.setattr(catalog, "DOWNLOAD_DIR", download_root)
     with TestClient(main.app) as client:
         catalog.ensure_schema()
         with catalog.db() as conn:
