@@ -783,9 +783,9 @@ def enqueue_repositories(repository_ids: list[int]) -> None:
         placeholders = ",".join("?" for _ in selected)
         conn.execute(
             f"""UPDATE github_processing_jobs
-                SET status='queued',stage='queued',current_path='',updated_at=?
+                SET status='queued',stage='queued',current_path='',error_text=NULL,updated_at=?
                 WHERE repository_id IN ({placeholders})
-                  AND status IN ('pending','queued')""",
+                  AND status IN ('pending','queued','error')""",
             [_now(), *selected],
         )
     _start_persistent_worker()
