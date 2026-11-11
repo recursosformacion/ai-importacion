@@ -391,9 +391,17 @@ def process_repository(repository_id: int):
                     "path": relative,
                     "commit_sha": commit,
                     "git_blob_sha": sha,
-                    "license_spdx": repo["license_spdx"] or None,
-                    "license_name": repo["license_name"] or None,
-                    "rights_status": "unverified",
+                    # Repository licensing is provenance only, never proof of
+                    # redistribution rights for an individual score file.
+                    "repository_license_spdx": repo["license_spdx"] or None,
+                    "repository_license_name": repo["license_name"] or None,
+                    "file_license_spdx": None,
+                    "file_license_name": None,
+                    "license_scope": "repository" if repo["license_spdx"] or repo["license_name"] else "unknown",
+                    "rights_status": "unverified" if suffix in {".mxl", ".ly"} else "not_applicable",
+                    "distribution_mode": "external_link" if suffix in {".mxl", ".ly"} else "not_applicable",
+                    "transcriber_credit": None,
+                    "external_url": repo["html_url"].rstrip("/") + "/blob/" + commit + "/" + relative,
                 },
                 "identification": {
                     "provider": "gemini" if title_source == "gemini" or ai_data else None,
@@ -406,9 +414,13 @@ def process_repository(repository_id: int):
                     "content_size": len(raw),
                 },
             })
+            # MXL/LilyPond files are parsed as temporary acquisition inputs only.
+            # Their public record is metadata plus the original GitHub link.
+            if suffix in {".mxl", ".ly"}:
+                path.unlink(missing_ok=True)
 
         payload = {
-            "schema": "osap-resource-import/1.1",
+            "schema": "osap-resource-import/1.2",
             "generated_at": _now(),
             "source": {
                 "provider": "github",
