@@ -313,9 +313,21 @@ async def lifespan(_: FastAPI):
     github_catalog.ensure_schema()
     github_processing.DB_PATH = github_catalog.DB_PATH
     github_processing.ensure_processing_schema()
-    recovered_processing = github_processing.recover_processing_jobs()
-    logging.getLogger(__name__).info(
-        "Cola de procesamiento GitHub recuperada: %s trabajos", recovered_processing
+    async def recover_github_processing():
+        # Queue recovery can wait on SQLite while the detached worker is
+        # finishing a write. Never hold Uvicorn readiness hostage to that wait.
+        try:
+            recovered = await asyncio.to_thread(github_processing.recover_processing_jobs)
+            logging.getLogger(__name__).info(
+                "Cola de procesamiento GitHub recuperada: %s trabajos", recovered
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "No se pudo recuperar la cola de procesamiento GitHub"
+            )
+
+    processing_recovery_worker = asyncio.create_task(
+        recover_github_processing(), name="github-processing-recovery"
     )
     exploration_started = time.perf_counter()
     recover_exploration_state()
@@ -325,8 +337,9 @@ async def lifespan(_: FastAPI):
         time.perf_counter() - exploration_started,
     )
     async def github_processing_watchdog():
-        # Restart the detached processor if it exits unexpectedly while the
-        # web application remains online. An active worker is never duplicated.
+        # Do not race the initial recovery; later checks restart the detached
+        # processor if it exits unexpectedly while the web application runs.
+        await asyncio.gather(processing_recovery_worker, return_exceptions=True)
         while True:
             await asyncio.sleep(15)
             try:
@@ -338,6 +351,7 @@ async def lifespan(_: FastAPI):
 
     workers = [
         maintenance_worker,
+        processing_recovery_worker,
         asyncio.create_task(capture_job_queue()),
         asyncio.create_task(content_analysis_job_queue()),
         asyncio.create_task(github_processing_watchdog(), name="github-processing-watchdog"),
