@@ -146,8 +146,9 @@ def _resource_record(repo, row) -> dict:
 
 
 def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
-                         checkout: Path, environment: dict | None = None) -> None:
-    """Clone Git metadata once and materialize only the selected repository paths."""
+                         checkout: Path, environment: dict | None = None,
+                         blob_oids: list[str] | None = None) -> None:
+    """Fetch selected blob objects in one Git pack, then materialize them locally."""
     env = dict(os.environ) if environment is None else environment
     clone = subprocess.run(
         ["git", "clone", "--filter=blob:none", "--no-checkout", "--depth=1",
@@ -159,6 +160,47 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
         detail = (clone.stderr or clone.stdout or "git clone falló")[-3000:]
         raise RuntimeError("No se pudo obtener el repositorio mediante Git: " + detail)
 
+    # A partial clone normally lazy-fetches missing blobs as checkout touches
+    # them. Explicitly request every selected blob together so GitHub sends one
+    # pack instead of one network round-trip per file.
+    selected_oids = list(dict.fromkeys(
+        value for value in (blob_oids or [])
+        if value and len(value) in (40, 64)
+        and all(char in "0123456789abcdefABCDEF" for char in value)
+    ))
+    if len(selected_oids) == len(paths) and selected_oids:
+        bulk = subprocess.run(
+            ["git", "-C", str(checkout), "fetch-pack", "--stdin", "--no-progress", clone_url],
+            input="\\n".join(selected_oids) + "\\n",
+            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+        )
+        if bulk.returncode:
+            # Some Git servers disable requests for reachable object IDs.
+            # Fall back to one unfiltered shallow pack, never to per-file HTTP.
+            fallback = subprocess.run(
+                ["git", "-C", str(checkout), "fetch", "--refetch", "--no-filter",
+                 "--depth=1", "origin", branch],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+            )
+            if fallback.returncode:
+                raise RuntimeError(
+                    "Falló la descarga Git agrupada de objetos y también el fallback "
+                    "de un único pack completo: " +
+                    (fallback.stderr or bulk.stderr or "")[-3000:]
+                )
+    else:
+        # Incomplete blob hashes cannot be safely fetched in a batch. Fetch the
+        # shallow branch as one pack, then disable lazy network reads at checkout.
+        fallback = subprocess.run(
+            ["git", "-C", str(checkout), "fetch", "--refetch", "--no-filter",
+             "--depth=1", "origin", branch],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+        )
+        if fallback.returncode:
+            raise RuntimeError("No se pudo obtener el contenido Git en un único pack: " +
+                               (fallback.stderr or "")[-3000:])
+
+    env["GIT_NO_LAZY_FETCH"] = "1"
     init = subprocess.run(
         ["git", "-C", str(checkout), "sparse-checkout", "init", "--no-cone"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
@@ -220,7 +262,7 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
 
     with connect(DB_PATH) as conn:
         rows = conn.execute("""
-            SELECT id,path,size_bytes FROM github_files
+            SELECT id,path,size_bytes,sha FROM github_files
             WHERE repository_id=? AND extension<>'.txt'
               AND COALESCE(download_status,'not_downloaded')
                   NOT IN ('downloaded','too_large')
@@ -275,7 +317,7 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
         checkout = Path(temporary) / "repository"
         _clone_sparse_checkout(
             clone_url, branch, [str(row["path"]) for row in pending],
-            checkout, environment,
+            checkout, environment, [str(row["sha"] or "") for row in pending],
         )
         logging.getLogger(__name__).info(
             "GitHub %s: transferencia por lotes terminada; procesando los archivos desde el checkout local.",
