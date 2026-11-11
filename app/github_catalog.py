@@ -467,9 +467,11 @@ async def github_audit(repository_id: int):
         repo = conn.execute("SELECT full_name FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
     if not repo:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
-    from app.github_legal import audit_repository
+    from app.github_legal import audit_repository, reconcile_database
     try:
         result = await audit_repository(repository_id, repo["full_name"])
+        if result["status"] == "blocked":
+            reconcile_database()
     except (ValueError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return RedirectResponse(f"/github/{repository_id}?audit=" + result["status"], status_code=303)
