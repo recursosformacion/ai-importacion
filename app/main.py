@@ -1966,7 +1966,8 @@ def analyze_downloaded_musicxml(identifier: str):
                         file_license["license_spdx"], file_license["license_name"],
                         file_license["license_url"], file_license["license_scope"],
                         rights_status, distribution_mode, transcriber, attribution,
-                        file_license["license_url"] or "", now(), file_row["id"],
+                        (file_license["license_url"] or file_row["source_url"]) if file_license["license_scope"] == "file" else "",
+                        now(), file_row["id"],
                     ),
                 )
             if distribution_mode != "hosted":
