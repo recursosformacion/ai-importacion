@@ -324,10 +324,23 @@ async def lifespan(_: FastAPI):
         "Estado del catálogo GitHub recuperado sin iniciar exploraciones automáticamente en %.2f s",
         time.perf_counter() - exploration_started,
     )
+    async def github_processing_watchdog():
+        # Restart the detached processor if it exits unexpectedly while the
+        # web application remains online. An active worker is never duplicated.
+        while True:
+            await asyncio.sleep(15)
+            try:
+                await asyncio.to_thread(github_processing.recover_processing_jobs)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Error comprobando la cola del trabajador GitHub"
+                )
+
     workers = [
         maintenance_worker,
         asyncio.create_task(capture_job_queue()),
         asyncio.create_task(content_analysis_job_queue()),
+        asyncio.create_task(github_processing_watchdog(), name="github-processing-watchdog"),
     ]
     if exploration_worker is not None:
         workers.append(exploration_worker)
