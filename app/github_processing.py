@@ -163,12 +163,13 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
     # A partial clone normally lazy-fetches missing blobs as checkout touches
     # them. Explicitly request every selected blob together so GitHub sends one
     # pack instead of one network round-trip per file.
-    selected_oids = list(dict.fromkeys(
+    valid_oids = [
         value for value in (blob_oids or [])
         if value and len(value) in (40, 64)
         and all(char in "0123456789abcdefABCDEF" for char in value)
-    ))
-    if len(selected_oids) == len(paths) and selected_oids:
+    ]
+    selected_oids = list(dict.fromkeys(valid_oids))
+    if len(valid_oids) == len(paths) and selected_oids:
         bulk = subprocess.run(
             ["git", "-C", str(checkout), "fetch-pack", "--stdin", "--no-progress", clone_url],
             input="\n".join(selected_oids) + "\n",
