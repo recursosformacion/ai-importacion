@@ -231,67 +231,101 @@ def init_db():
 
 
 def run_startup_maintenance():
-    """Run non-essential, potentially table-wide data cleanup outside server startup."""
+    """Normalize archive relevance in short transactions, yielding SQLite between batches."""
+    import logging
+
     started = time.perf_counter()
     cleanup_migration = "normalize_archive_file_relevance_v1"
+    batch_size = 250
     try:
         with db() as conn:
-            if conn.execute(
+            already_applied = conn.execute(
                 "SELECT 1 FROM app_startup_migrations WHERE migration_key=?",
                 (cleanup_migration,),
-            ).fetchone():
-                return
-            stale_xml = conn.execute(
-                """SELECT fa.file_id FROM archive_file_analyses fa
-                   JOIN archive_files f ON f.id=fa.file_id
-                   WHERE fa.status='error'
-                     AND fa.error_text='El XML no tiene la estructura de una partitura MusicXML.'
-                     AND lower(f.file_name) LIKE '%.xml'
-                     AND lower(f.file_name) NOT LIKE '%.musicxml'"""
-            ).fetchall()
-            for row in stale_xml:
-                conn.execute(
+            ).fetchone()
+        if already_applied:
+            return
+
+        # Reclassify stale XML analyses in bounded transactions. The previous
+        # implementation updated the whole table in one transaction, which
+        # could hold SQLite's single writer lock while GitHub processing ran.
+        last_file_id = 0
+        while True:
+            with db() as conn:
+                rows = conn.execute(
+                    """SELECT fa.file_id FROM archive_file_analyses fa
+                       JOIN archive_files f ON f.id=fa.file_id
+                       WHERE fa.file_id > ?
+                         AND fa.status='error'
+                         AND fa.error_text='El XML no tiene la estructura de una partitura MusicXML.'
+                         AND lower(f.file_name) LIKE '%.xml'
+                         AND lower(f.file_name) NOT LIKE '%.musicxml'
+                       ORDER BY fa.file_id LIMIT ?""",
+                    (last_file_id, batch_size),
+                ).fetchall()
+                ids = [int(row["file_id"]) for row in rows]
+                if not ids:
+                    break
+                normalized = json.dumps({
+                    "format": "xml",
+                    "status": "not_musicxml",
+                    "message": "XML válido, pero no es una partitura MusicXML.",
+                }, ensure_ascii=False)
+                conn.executemany(
                     """UPDATE archive_file_analyses
                        SET status='not_musicxml',analysis_json=?,error_text=NULL
                        WHERE file_id=?""",
-                    (json.dumps({
-                        "format": "xml",
-                        "status": "not_musicxml",
-                        "message": "XML válido, pero no es una partitura MusicXML.",
-                    }, ensure_ascii=False), row["file_id"]),
+                    [(normalized, file_id) for file_id in ids],
                 )
+                last_file_id = ids[-1]
+
+        # Mark irrelevant XML metadata and scan artefacts in small batches too.
+        irrelevant_predicate = """(
+            (lower(file_name) LIKE '%.xml' AND (
+                lower(file_name) LIKE '%_files.xml'
+                OR lower(file_name) LIKE '%_meta.xml'
+                OR lower(file_name) LIKE '%_metadata.xml'
+                OR lower(file_name) LIKE '%_contents.xml'
+                OR lower(COALESCE(archive_format,'')) IN ('metadata','marc','dublin core','contents')
+            ))
+            OR lower(file_name) LIKE '%thumb%'
+            OR lower(file_name) LIKE '%thumbnail%'
+            OR lower(file_name) LIKE '%tile%'
+            OR lower(file_name) LIKE '%scandata%'
+            OR lower(COALESCE(archive_format,'')) LIKE '%single page processed jp2%'
+            OR lower(COALESCE(archive_format,'')) LIKE '%single page original jp2%'
+            OR lower(COALESCE(archive_format,'')) LIKE '%jp2 zip%'
+            OR lower(COALESCE(archive_format,'')) LIKE '%jp2 tar%'
+        )"""
+        last_id = 0
+        while True:
+            with db() as conn:
+                rows = conn.execute(
+                    f"SELECT id FROM archive_files WHERE id>? AND {irrelevant_predicate} ORDER BY id LIMIT ?",
+                    (last_id, batch_size),
+                ).fetchall()
+                ids = [int(row["id"]) for row in rows]
+                if not ids:
+                    break
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE archive_files SET relevant=0 WHERE id IN ({placeholders})",
+                    ids,
+                )
+                last_id = ids[-1]
+
+        # The marker is written only after every batch succeeds. If interrupted,
+        # the idempotent cleanup safely resumes on the next application start.
+        with db() as conn:
             conn.execute(
-                """UPDATE archive_files SET relevant=0
-                   WHERE lower(file_name) LIKE '%.xml'
-                     AND (
-                       lower(file_name) LIKE '%_files.xml'
-                       OR lower(file_name) LIKE '%_meta.xml'
-                       OR lower(file_name) LIKE '%_metadata.xml'
-                       OR lower(file_name) LIKE '%_contents.xml'
-                       OR lower(COALESCE(archive_format,'')) IN ('metadata','marc','dublin core','contents')
-                     )"""
-            )
-            conn.execute(
-                """UPDATE archive_files SET relevant=0
-                   WHERE lower(file_name) LIKE '%thumb%'
-                      OR lower(file_name) LIKE '%thumbnail%'
-                      OR lower(file_name) LIKE '%tile%'
-                      OR lower(file_name) LIKE '%scandata%'
-                      OR lower(COALESCE(archive_format,'')) LIKE '%single page processed jp2%'
-                      OR lower(COALESCE(archive_format,'')) LIKE '%single page original jp2%'
-                      OR lower(COALESCE(archive_format,'')) LIKE '%jp2 zip%'
-                      OR lower(COALESCE(archive_format,'')) LIKE '%jp2 tar%'"""
-            )
-            conn.execute(
-                "INSERT INTO app_startup_migrations(migration_key,applied_at) VALUES(?,?)",
+                "INSERT OR IGNORE INTO app_startup_migrations(migration_key,applied_at) VALUES(?,?)",
                 (cleanup_migration, now()),
             )
-        import logging
         logging.getLogger(__name__).info(
-            "Mantenimiento de inicio completado en %.2f s", time.perf_counter() - started
+            "Mantenimiento de inicio completado por lotes en %.2f s",
+            time.perf_counter() - started,
         )
     except Exception:
-        import logging
         logging.getLogger(__name__).exception("Falló el mantenimiento de inicio diferido")
 
 
