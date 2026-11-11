@@ -34,12 +34,8 @@ def connect(db_path: str):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=60000")
     conn.execute("PRAGMA foreign_keys=ON")
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-    except sqlite3.OperationalError:
-        # Another process may be changing journal state during startup. The
-        # busy timeout applies to subsequent statements; a later connection
-        # will retry enabling WAL.
-        pass
+    # WAL is enabled once during application initialization (main.init_db).
+    # Do not execute PRAGMA journal_mode=WAL on every connection: changing or
+    # negotiating journal mode from each worker write creates avoidable locks.
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
