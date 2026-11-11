@@ -618,10 +618,10 @@ def process_repository(repository_id: int):
                     "path": relative,
                     "commit_sha": commit,
                     "git_blob_sha": sha,
-                    # Repository licensing is provenance only, never proof of
-                    # redistribution rights for an individual score file.
-                    "repository_license_spdx": repo["license_spdx"] or None,
-                    "repository_license_name": repo["license_name"] or None,
+                    # The archived repository license is the default grant for score files
+                    # unless the README or an individual file explicitly excludes them.
+                    "repository_license_spdx": repo["legal_license_spdx"] or None,
+                    "repository_license_name": repo["legal_license_spdx"] or None,
                     "file_license_spdx": file_license["license_spdx"],
                     "file_license_name": file_license["license_name"],
                     "file_license_url": file_license["license_url"],
