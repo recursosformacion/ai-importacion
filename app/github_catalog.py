@@ -4,6 +4,7 @@ import html
 import os
 import re
 import sqlite3
+from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
