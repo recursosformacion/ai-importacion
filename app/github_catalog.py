@@ -1067,9 +1067,30 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<p>El JSON se construye desde los registros persistidos en SQLite. Para actualizarlo basta con abrir el enlace de descarga; no se repite la descarga de los archivos.</p>"
 
-    elif processing_job and processing_job["status"] == "running":
-        body += "<p id='processing-state'>Procesamiento en curso: inventario, descarga agrupada y generación del JSON. La página se actualizará automáticamente cada 10 segundos.</p>"
-        body += "<script>setTimeout(function(){location.reload()},10000)</script>"
+    elif processing_job and processing_job["status"] in {"queued", "running"}:
+        stage_labels = {
+            "queued": "En cola",
+            "starting": "Preparando",
+            "inventory": "Comprobando inventario",
+            "download": "Transferencia agrupada",
+            "analysis": "Análisis local",
+            "export": "Generando resources.json",
+        }
+        stage = str(processing_job["stage"] or processing_job["status"])
+        stage_label = stage_labels.get(stage, stage)
+        progress = int(processing_job["progress_count"] or 0)
+        progress_total = int(processing_job["total_count"] or 0)
+        current_path = str(processing_job["current_path"] or "")
+        body += "<p id='processing-state'>" + esc(stage_label) + " · " + str(progress) + " / " + str(progress_total) + "</p>"
+        if progress_total > 0:
+            percentage = min(100, int(progress * 100 / progress_total))
+            body += "<progress max='" + str(progress_total) + "' value='" + str(min(progress, progress_total)) + "' style='width:100%'></progress>"
+            body += "<p>" + str(percentage) + "% completado</p>"
+        else:
+            body += "<p>El trabajador ha aceptado el trabajo; está preparando el inventario.</p>"
+        if current_path:
+            body += "<p class='muted'><code>" + esc(current_path) + "</code></p>"
+        body += "<p class='muted'>Actualización automática cada 10 segundos.</p><script>setTimeout(function(){location.reload()},10000)</script>"
     elif processing_job and processing_job["status"] == "error":
         body += "<p>No se pudo completar el procesamiento: " + esc(processing_job["error_text"]) + "</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar procesamiento</button></form>"
