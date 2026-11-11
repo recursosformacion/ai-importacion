@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -652,16 +653,51 @@ def recover_processing_jobs() -> int:
     return len(ids)
 
 
+def _start_persistent_worker() -> None:
+    """Start a detached queue worker; browser requests never own processing lifetime."""
+    project_root = Path(__file__).resolve().parent.parent
+    log_path = project_root / "data" / "github-worker.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    environment = dict(os.environ)
+    environment["PYTHONUNBUFFERED"] = "1"
+    log_handle = log_path.open("a", encoding="utf-8")
+    kwargs = {
+        "cwd": str(project_root),
+        "env": environment,
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_handle,
+        "stderr": subprocess.STDOUT,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen([sys.executable, "-m", "app.github_worker"], **kwargs)
+    finally:
+        log_handle.close()
+
+
 def enqueue_repositories(repository_ids: list[int]) -> None:
+    """Persist queue state and wake the detached worker process."""
     ensure_processing_schema()
     selected = list(dict.fromkeys(int(value) for value in repository_ids))
-    if selected:
-        threading.Thread(
-            target=_process_repository_batch,
-            args=(selected,),
-            daemon=True,
-            name="github-resource-db-export",
-        ).start()
+    if not selected:
+        return
+    with connect(DB_PATH) as conn:
+        placeholders = ",".join("?" for _ in selected)
+        conn.execute(
+            f"""UPDATE github_processing_jobs
+                SET status='queued',stage='queued',current_path='',updated_at=?
+                WHERE repository_id IN ({placeholders})
+                  AND status IN ('pending','queued')""",
+            [_now(), *selected],
+        )
+    _start_persistent_worker()
 
 
 def enqueue_repository(repository_id: int) -> None:
