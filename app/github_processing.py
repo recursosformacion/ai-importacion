@@ -287,6 +287,9 @@ def process_repository(repository_id: int):
     ensure_processing_schema()
     from app.github_catalog import ensure_schema as ensure_github_catalog_schema
     ensure_github_catalog_schema()
+    from app.github_legal import assert_repository_approved
+    # Defense in depth: a worker cannot bypass the HTTP route's legal gate.
+    assert_repository_approved(repository_id)
     lock = _LOCKS.setdefault(repository_id, threading.Lock())
     if not lock.acquire(blocking=False):
         return
