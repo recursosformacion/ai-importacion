@@ -437,6 +437,7 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<p><b>Sin autorización para alojar ficheros:</b> el repositorio sí se indexa y procesa para generar metadatos. Los ficheros musicales no se descargan ni se almacenan; se conserva únicamente el enlace a GitHub. Motivo: " + esc(repo["legal_alert"] or "No existe una licencia abierta explícita y verificable.") + "</p>"
         if job and job["status"] == "completed":
             body += "<p>Procesamiento de metadatos terminado: " + str(job["processed_count"]) + " registros, sin descargar contenido musical.</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON de metadatos</a></p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar o actualizar metadatos (sin descargar partituras)</button></form>"
     elif job and job["status"] == "completed":
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
