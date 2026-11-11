@@ -101,14 +101,77 @@ def analyze_musicxml(path: str | Path) -> dict:
     else:
         measures = sum(1 for child in root if _local_name(child.tag) == "measure")
         parts = [{"id": part_id, "name": name, "measures": measures} for part_id, name in part_names.items()]
+    rights_values = [
+        element.text.strip() for element in root.iter()
+        if _local_name(element.tag) == "rights" and element.text and element.text.strip()
+    ]
+    license_text = "; ".join(dict.fromkeys(rights_values))
+    import re
+    license_url_match = re.search(r"https?://[^\\s<>]+", license_text)
+    spdx_match = re.search(
+        r"\\b(?:CC0-1\\.0|CC-BY-(?:1\\.0|2\\.0|2\\.5|3\\.0|4\\.0))\\b",
+        license_text, re.I,
+    )
     return {
         "format": "mxl" if source.suffix.lower() == ".mxl" else "musicxml",
         "status": "ok",
         "title": title,
         "creators": creators,
+        "license_name": license_text or None,
+        "license_spdx": spdx_match.group(0).upper() if spdx_match else None,
+        "license_url": license_url_match.group(0).rstrip(".,);]") if license_url_match else None,
         "part_count": len(parts),
         "parts": parts,
         "measure_count": max((part["measures"] for part in parts), default=0),
         "root_element": root_name,
+        "source_size_bytes": source.stat().st_size,
+    }
+
+
+def analyze_lilypond(path: str | Path) -> dict:
+    """Extract metadata and explicit rights comments from a LilyPond source file."""
+    import re
+
+    source = Path(path)
+    text = source.read_text("utf-8", errors="replace")
+    if len(text) > 25 * 1024 * 1024:
+        raise ValueError("El fichero LilyPond supera el límite de análisis.")
+
+    def header_value(key: str) -> str | None:
+        match = re.search(
+            rf"(?im)^\\s*{re.escape(key)}\\s*=\\s*[\"'](.*?)[\"']",
+            text,
+        )
+        return match.group(1).strip()[:500] if match else None
+
+    title = header_value("title")
+    composer = header_value("composer")
+    arranger = header_value("arranger")
+    transcriber_match = re.search(
+        r"(?im)^\\s*%+\\s*(?:transcriber|transcribed by|transcription)\\s*[:=-]\\s*(.+)$",
+        text,
+    )
+    license_match = re.search(
+        r"(?im)^\\s*%+\\s*(?:license|licence|rights)\\s*[:=-]\\s*(.+)$",
+        text,
+    )
+    license_text = license_match.group(1).strip()[:1000] if license_match else None
+    license_url_match = re.search(r"https?://[^\\s<>]+", license_text or "")
+    spdx_match = re.search(
+        r"\\b(?:CC0-1\\.0|CC-BY-(?:1\\.0|2\\.0|2\\.5|3\\.0|4\\.0))\\b",
+        license_text or "", re.I,
+    )
+    creators = []
+    for name, kind in (
+        (composer, "composer"), (arranger, "arranger"),
+        (transcriber_match.group(1).strip() if transcriber_match else None, "transcriber"),
+    ):
+        if name:
+            creators.append({"name": name[:500], "type": kind})
+    return {
+        "format": "lilypond", "status": "ok", "title": title, "creators": creators,
+        "license_name": license_text,
+        "license_spdx": spdx_match.group(0).upper() if spdx_match else None,
+        "license_url": license_url_match.group(0).rstrip(".,);]") if license_url_match else None,
         "source_size_bytes": source.stat().st_size,
     }
