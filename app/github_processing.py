@@ -152,7 +152,7 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
         ["git", "clone", "--filter=blob:none", "--no-checkout", "--depth=1",
          "--no-recurse-submodules", "--single-branch", "--branch", branch,
          clone_url, str(checkout)],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     if clone.returncode:
         detail = (clone.stderr or clone.stdout or "git clone falló")[-3000:]
@@ -160,7 +160,7 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
 
     init = subprocess.run(
         ["git", "-C", str(checkout), "sparse-checkout", "init", "--no-cone"],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     if init.returncode:
         raise RuntimeError("No se pudo preparar sparse checkout: " + (init.stderr or "")[-2000:])
@@ -179,7 +179,7 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
     sparse = subprocess.run(
         ["git", "-C", str(checkout), "sparse-checkout", "set", "--no-cone", "--stdin"],
         input="\n".join(patterns) + "\n",
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     if sparse.returncode:
         raise RuntimeError("No se pudieron seleccionar los ficheros del repositorio: " +
@@ -187,7 +187,7 @@ def _clone_sparse_checkout(clone_url: str, branch: str, paths: list[str],
 
     materialize = subprocess.run(
         ["git", "-C", str(checkout), "checkout", "--force", "HEAD"],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     if materialize.returncode:
         raise RuntimeError("No se pudieron materializar los ficheros seleccionados: " +
