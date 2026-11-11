@@ -303,7 +303,7 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
             WHERE repository_id=?
         """, (len(pending), stamp, repository_id))
 
-    destination_root = DOWNLOAD_DIR / "github" / str(repository_id)
+    destination_root = DOWNLOAD_DIR / "github" / owner / name
     destination_root.mkdir(parents=True, exist_ok=True)
     clone_url = f"https://github.com/{owner}/{name}.git"
     environment = dict(os.environ)
@@ -565,6 +565,7 @@ def process_repository(repository_id: int) -> None:
                 progress_count=0,total_count=0,current_path='',started_at=excluded.started_at,
                 updated_at=excluded.updated_at,error_text=NULL""",
                 (repository_id, started, started))
+        out.mkdir(parents=True, exist_ok=True)
         logging.getLogger(__name__).info("GitHub %s: comienza procesamiento del repositorio", repository_id)
         acquisition_performed = _ensure_catalog_inventory_and_downloads(repository_id)
         with connect(DB_PATH) as conn:
@@ -624,7 +625,7 @@ def process_repository(repository_id: int) -> None:
                 "commit_sha": commit_sha,
                 "snapshot": "database_inventory",
                 "download_strategy": "sparse_git_checkout" if acquisition_performed else "reused_local_inventory",
-                "local_repository_path": str(DOWNLOAD_DIR / "github" / str(int(repository_id))),
+                "local_repository_path": str(DOWNLOAD_DIR / "github" / repository_parts[0] / repository_parts[1]),
             },
             "rights_notice": (
                 "La licencia declarada por GitHub no ha sido verificada. "
