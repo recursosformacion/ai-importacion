@@ -180,3 +180,66 @@ def test_file_rights_route_controls_public_serving_and_removes_restricted_copy(t
     assert row["local_path"] is None
     assert row["transcriber_credit"] == "Ada Transcriber"
     assert not score.exists()
+
+
+
+def test_startup_keeps_legacy_lilypond_with_embedded_cc_by(tmp_path, monkeypatch):
+    db_path = tmp_path / "licensed-migration.sqlite3"
+    download_root = tmp_path / "downloads"
+    download_root.mkdir()
+    score = download_root / "legacy-score.ly"
+    score.write_text(
+        '% Transcribed by: Ada Transcriber\n'
+        '% License: CC-BY-4.0 https://creativecommons.org/licenses/by/4.0/\n'
+        '\\header { title = "Ave verum" }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main, "DB_PATH", str(db_path))
+    monkeypatch.setattr(main, "DOWNLOAD_DIR", download_root)
+    stamp = main.now()
+    with sqlite3.connect(db_path) as legacy:
+        legacy.executescript("""
+            CREATE TABLE archive_items(
+                identifier TEXT PRIMARY KEY, title TEXT, source_url TEXT NOT NULL,
+                metadata_json TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+            );
+            CREATE TABLE archive_files(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+                file_name TEXT NOT NULL, file_name_safe TEXT NOT NULL, source_url TEXT NOT NULL,
+                size_bytes INTEGER, archive_format TEXT, md5 TEXT, sha1 TEXT,
+                relevant INTEGER NOT NULL DEFAULT 0, inventory_seen_at TEXT NOT NULL,
+                download_status TEXT NOT NULL DEFAULT 'not_downloaded', local_path TEXT,
+                sha256 TEXT, downloaded_bytes INTEGER, download_error TEXT,
+                UNIQUE(identifier,file_name)
+            );
+        """)
+        legacy.execute(
+            """INSERT INTO archive_items
+               (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+               VALUES(?,?,?,?,?,?)""",
+            ("licensed-migration", "Legacy licensed", "https://archive.org/details/licensed-migration", "{}", stamp, stamp),
+        )
+        legacy.execute(
+            """INSERT INTO archive_files
+               (identifier,file_name,file_name_safe,source_url,inventory_seen_at,
+                download_status,local_path)
+               VALUES(?,?,?,?,?,'downloaded',?)""",
+            ("licensed-migration", "legacy-score.ly", "legacy-score.ly",
+             "https://archive.org/download/licensed-migration/legacy-score.ly", stamp, str(score)),
+        )
+
+    main.init_db()
+    with main.db() as conn:
+        row = conn.execute(
+            """SELECT download_status,distribution_mode,rights_status,license_spdx,
+                      transcriber_credit,local_path
+                 FROM archive_files WHERE identifier='licensed-migration'"""
+        ).fetchone()
+    assert row["download_status"] == "downloaded"
+    assert row["distribution_mode"] == "hosted"
+    assert row["rights_status"] == "redistributable"
+    assert row["license_spdx"] == "CC-BY-4.0"
+    assert row["transcriber_credit"] == "Ada Transcriber"
+    assert row["local_path"] == str(score)
+    assert score.exists()
