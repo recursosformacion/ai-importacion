@@ -129,6 +129,12 @@ def ensure_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_github_files_distribution
             ON github_files(distribution_mode,rights_status)
         """)
+    from app import github_legal
+    # Keep the legal migration on the same SQLite file selected by this
+    # catalogue instance (also important for isolated test databases).
+    github_legal.DB_PATH = DB_PATH
+    github_legal.DOWNLOAD_DIR = DOWNLOAD_DIR
+    github_legal.ensure_schema()
 
 
 def parse_repository(value: str) -> tuple[str, str]:
@@ -194,16 +200,18 @@ def github_home():
     <p class="muted">Se admiten repositorios públicos de GitHub. No pegues tokens ni credenciales en este formulario.</p></section>
     <section class="panel"><h2>Repositorios registrados</h2>"""
     if repositories:
-        body += "<table><tr><th>Repositorio</th><th>Licencia declarada</th><th>Archivos musicales</th><th>Última lectura</th><th>Acción</th></tr>"
+        body += "<table><tr><th>Repositorio y autor</th><th>Licencia</th><th>Control legal</th><th>Archivos musicales</th><th>Última lectura</th><th>Acción</th></tr>"
         for repo in repositories:
             license_text = repo["license_spdx"] or repo["license_name"] or "No declarada"
             body += (
                 "<tr><td><a href='" + esc(repo["html_url"]) + "'>" + esc(repo["full_name"]) + "</a>"
-                "<div class='muted'>" + esc(repo["description"]) + "</div></td>"
-                "<td>" + esc(license_text) + "</td><td>" + str(repo["files"]) + "</td>"
+                "<div class='muted'>" + esc(repo["description"]) + "</div><div class='muted'>Autor/propietario: " + esc(repo["legal_owner_credit"] or repo["full_name"].split("/")[0]) + "</div></td>"
+                "<td>" + esc(repo["legal_license_spdx"] or license_text) + "</td>"
+                "<td><b>" + esc(repo["legal_status"]) + "</b><div class='muted'>" + esc(repo["legal_alert"]) + "</div></td><td>" + str(repo["files"]) + "</td>"
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
-                "<td><form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
-                "<a href='/github/" + str(repo["id"]) + "'>Resultado JSON</a></td></tr>"
+                "<td>" + (
+                    "<form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
+                ) + "<a href='/github/" + str(repo["id"]) + "'>Detalles legales</a></td></tr>"
             )
         body += "</table>"
     else:
@@ -234,7 +242,9 @@ async def github_add(repository: str = Form(...)):
                   metadata.get("description") or "", license_data.get("spdx_id") or "",
                   license_data.get("name") or "", int(metadata.get("stargazers_count") or 0), now()))
             row = conn.execute("SELECT id FROM github_repositories WHERE full_name=?", (full_name,)).fetchone()
-        return RedirectResponse(f"/github/{row['id']}", status_code=303)
+        from app.github_legal import capture_snapshot
+        legal = await capture_snapshot(int(row["id"]), full_name)
+        return RedirectResponse(f"/github/{row['id']}?legal=" + legal["status"], status_code=303)
     except (ValueError, httpx.HTTPError) as exc:
         return HTMLResponse(_page("No se pudo añadir", "<h1>No se pudo añadir el repositorio</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver</a></p>"), status_code=400)
 
@@ -248,6 +258,10 @@ async def github_scan(repository_id: int):
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
     started = now()
     try:
+        from app.github_legal import capture_snapshot
+        legal = await capture_snapshot(repository_id, repo["full_name"])
+        # Legal status controls redistribution, not catalogue indexing.
+        # Repositories without a license remain indexable as external references.
         metadata = await github_json(f"{API}/repos/{repo['full_name']}")
         branch = metadata.get("default_branch") or repo["default_branch"]
         tree = await github_json(f"{API}/repos/{repo['full_name']}/git/trees/{branch}?recursive=1")
@@ -290,10 +304,12 @@ async def github_scan(repository_id: int):
                                             ELSE 'not_applicable' END
                 """, (
                     repository_id, path, name, extension, size, sha, blob_url, html_url, "",
-                    stamp, stamp, repo["license_spdx"] or None, repo["license_name"] or None,
+                    stamp, stamp, legal["license_spdx"] or None, legal["license_spdx"] or None,
                     "repository" if extension in {".mxl", ".ly"} else "unknown",
-                    "unverified" if extension in {".mxl", ".ly"} else "not_applicable",
-                    "external_link" if extension in {".mxl", ".ly"} else "not_applicable",
+                    ("unverified" if legal["status"] == "approved" else "unlicensed")
+                        if extension in {".mxl", ".ly"} else "not_applicable",
+                    ("external_link" if legal["status"] != "approved" else "pending_file_review")
+                        if extension in {".mxl", ".ly"} else "not_applicable",
                 ))
             # Only a complete tree is authoritative enough to remove files no longer present.
             truncated = bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
@@ -335,6 +351,8 @@ def github_process(repository_id: int):
         exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    # Processing is allowed for every musical repository. Legal status only
+    # determines whether score content may be fetched and hosted.
     from app.github_processing import enqueue_repository
     enqueue_repository(repository_id)
     return RedirectResponse(f"/github/{repository_id}", status_code=303)
@@ -370,6 +388,13 @@ def serve_github_score_file(file_id: int):
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
     if os.path.splitext(row["path"])[1].lower() not in {".mxl", ".ly"}:
         raise HTTPException(status_code=404, detail="Este endpoint solo sirve MXL y LilyPond.")
+    with db() as conn:
+        legal = conn.execute(
+            "SELECT legal_status FROM github_repositories WHERE id=(SELECT repository_id FROM github_files WHERE id=?)",
+            (file_id,),
+        ).fetchone()
+    if not legal or legal["legal_status"] != "approved":
+        raise HTTPException(status_code=403, detail="Repositorio sin licencia aprobada: solo se permite el enlace externo.")
     if row["distribution_mode"] != "hosted" or row["download_status"] != "hosted":
         raise HTTPException(status_code=403, detail="No hay licencia individual que autorice alojar este fichero.")
     path = Path(row["local_path"] or "").resolve()
@@ -393,12 +418,27 @@ def github_repository(repository_id: int, q: str = ""):
         scan = conn.execute("SELECT * FROM github_scans WHERE repository_id=? ORDER BY id DESC LIMIT 1", (repository_id,)).fetchone()
         total = conn.execute("SELECT COUNT(*) FROM github_files WHERE repository_id=?", (repository_id,)).fetchone()[0]
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
-    body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
+    body += "<p><a href='" + esc(repo["html_url"]) + "'>Repositorio original</a> · Propietario/crédito: <b>" + esc(repo["legal_owner_credit"] or repo["full_name"].split("/")[0]) + "</b></p>"
+    body += "<p>Licencia de repositorio: <b>" + esc(repo["legal_license_spdx"] or "No verificada") + "</b> · Estado legal: <b>" + esc(repo["legal_status"]) + "</b></p>"
+    body += "<p>Commit de la instantánea: <code>" + esc(repo["legal_commit_sha"]) + "</code> · Capturada: " + esc(repo["legal_captured_at"] or "—") + "</p>"
+    if repo["legal_license_path"]:
+        license_url = repo["html_url"].rstrip("/") + "/blob/" + repo["legal_commit_sha"] + "/" + repo["legal_license_path"]
+        body += "<p><a href='" + esc(license_url) + "'>LICENSE archivada en el commit de ingesta</a></p>"
+    if repo["legal_alert"]:
+        body += "<p><b>Alerta:</b> " + esc(repo["legal_alert"]) + "</p>"
+    body += "<form method='post' action='/github/" + str(repository_id) + "/audit'><button>Auditar condiciones legales ahora</button></form>"
+    if repo["legal_status"] == "blocked":
+        body += "<form method='post' action='/github/" + str(repository_id) + "/legal/approve'><button>Confirmar revisión y aprobar snapshot</button></form>"
     from app.github_processing import ensure_processing_schema
     ensure_processing_schema()
     with db() as conn:
         job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
-    if job and job["status"] == "completed":
+    if repo["legal_status"] != "approved":
+        body += "<p><b>Sin autorización para alojar ficheros:</b> el repositorio sí se indexa y procesa para generar metadatos. Los ficheros musicales no se descargan ni se almacenan; se conserva únicamente el enlace a GitHub. Motivo: " + esc(repo["legal_alert"] or "No existe una licencia abierta explícita y verificable.") + "</p>"
+        if job and job["status"] == "completed":
+            body += "<p>Procesamiento de metadatos terminado: " + str(job["processed_count"]) + " registros, sin descargar contenido musical.</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON de metadatos</a></p>"
+        body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar o actualizar metadatos (sin descargar partituras)</button></form>"
+    elif job and job["status"] == "completed":
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
     elif job and job["status"] == "running":
@@ -412,6 +452,34 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
     body += "<p><a href='/github'>Volver a candidatos</a></p>"
     return HTMLResponse(_page("Repositorio " + repo["full_name"], body))
+
+
+@router.post("/github/{repository_id}/legal/approve")
+def github_legal_approve(repository_id: int):
+    ensure_schema()
+    from app.github_legal import approve_current_snapshot
+    try:
+        approve_current_snapshot(repository_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/github/{repository_id}?legal=approved", status_code=303)
+
+
+@router.post("/github/{repository_id}/audit")
+async def github_audit(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        repo = conn.execute("SELECT full_name FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    from app.github_legal import audit_repository, reconcile_database
+    try:
+        result = await audit_repository(repository_id, repo["full_name"])
+        if result["status"] == "blocked":
+            reconcile_database()
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return RedirectResponse(f"/github/{repository_id}?audit=" + result["status"], status_code=303)
 
 
 def _page(title: str, body: str) -> str:

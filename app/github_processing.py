@@ -287,6 +287,8 @@ def process_repository(repository_id: int):
     ensure_processing_schema()
     from app.github_catalog import ensure_schema as ensure_github_catalog_schema
     ensure_github_catalog_schema()
+    # Legal status does not prevent metadata processing. It only determines
+    # whether score blobs may be fetched and durably hosted.
     lock = _LOCKS.setdefault(repository_id, threading.Lock())
     if not lock.acquire(blocking=False):
         return
@@ -305,6 +307,103 @@ def process_repository(repository_id: int):
                    started_at=excluded.started_at,updated_at=excluded.updated_at,error_text=NULL""",
                 (repository_id, started, started),
             )
+            legal_status = repo["legal_status"]
+            indexed_files = conn.execute(
+                "SELECT * FROM github_files WHERE repository_id=? ORDER BY path",
+                (repository_id,),
+            ).fetchall()
+        if legal_status != "approved":
+            # No LICENSE, an incompatible license, or a changed legal snapshot:
+            # build the catalogue manifest using GitHub tree metadata only.
+            # Do not clone, fetch blobs, or download score files in this branch.
+            resources = []
+            for item in indexed_files:
+                suffix = (item["extension"] or "").lower()
+                is_score = suffix in {".mxl", ".ly"}
+                source_url = item["html_url"] or (
+                    "https://github.com/" + repo["full_name"] + "/blob/" +
+                    repo["default_branch"] + "/" + quote(item["path"], safe="/")
+                )
+                resources.append({
+                    "resource_key": "github:" + repo["full_name"] + ":" + (item["sha"] or item["path"]),
+                    "resource": {
+                        "title": Path(item["path"]).stem,
+                        "title_source": "filename",
+                        "title_candidates": [Path(item["path"]).stem],
+                        "format": suffix.lstrip("."),
+                    },
+                    "source": {
+                        "provider": "github",
+                        "repository": repo["full_name"],
+                        "repository_url": repo["html_url"],
+                        "repository_owner": repo["legal_owner_login"],
+                        "repository_author_credit": repo["legal_owner_credit"],
+                        "path": item["path"],
+                        "commit_sha": repo["legal_commit_sha"],
+                        "git_blob_sha": item["sha"],
+                        "repository_license_spdx": repo["legal_license_spdx"] or None,
+                        "rights_status": "unlicensed" if not repo["legal_license_spdx"] else "restricted_or_review_required",
+                        "distribution_mode": "external_link",
+                        "external_url": source_url,
+                        "local_url": None,
+                    },
+                    "identification": None,
+                    "processing": {
+                        "status": "candidate",
+                        "content_size": item["size_bytes"] or 0,
+                        "content_fetched": False,
+                    },
+                })
+                if is_score:
+                    with connect(DB_PATH) as conn:
+                        conn.execute(
+                            """UPDATE github_files SET license_scope='repository',
+                               rights_status=?,distribution_mode='external_link',
+                               download_status='external_only',local_path=NULL,sha256=NULL
+                               WHERE id=?""",
+                            ("unlicensed" if not repo["legal_license_spdx"] else "review_required", item["id"]),
+                        )
+            out = ROOT / ".osap-import" / str(repository_id)
+            out.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema": "osap-resource-import/1.4",
+                "generated_at": _now(),
+                "source": {
+                    "provider": "github",
+                    "repository": repo["full_name"],
+                    "repository_url": repo["html_url"],
+                    "repository_owner": repo["legal_owner_login"],
+                    "repository_author_credit": repo["legal_owner_credit"],
+                    "repository_license_spdx": repo["legal_license_spdx"] or None,
+                    "legal_snapshot_commit": repo["legal_commit_sha"],
+                    "legal_snapshot_captured_at": repo["legal_captured_at"],
+                    "snapshot": "metadata_only",
+                    "score_content_downloaded": False,
+                },
+                "rights_notice": (
+                    "Repositorio sin licencia abierta aplicable o pendiente de revisión. "
+                    "Se indexan metadatos y enlaces externos; no se descargan ni alojan ficheros musicales."
+                ),
+                "processing": {
+                    "music_files_considered": len(indexed_files),
+                    "music_file_contents_downloaded": 0,
+                    "metadata_only": True,
+                },
+                "resources": resources,
+            }
+            manifest_path = out / "resources.json"
+            temp = manifest_path.with_suffix(".json.tmp")
+            temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temp.replace(manifest_path)
+            stamp = _now()
+            with connect(DB_PATH) as conn:
+                conn.execute(
+                    """UPDATE github_processing_jobs SET status='completed',commit_sha=?,
+                       processed_count=?,output_dir=?,updated_at=?,error_text=NULL
+                       WHERE repository_id=?""",
+                    (repo["legal_commit_sha"] or "", len(resources), str(out), stamp, repository_id),
+                )
+            return
         url = "https://github.com/" + repo["full_name"] + ".git"
         commit, selected_paths = _prepare_music_snapshot(url, repo_dir)
         paths = []
@@ -376,7 +475,22 @@ def process_repository(repository_id: int):
                     transcriber = get_transcriber_credit(rights_analysis)
                 except Exception:
                     rights_analysis = None
-                rights_status, distribution_mode = distribution_decision(relative, **file_license)
+                if file_license["license_scope"] == "file":
+                    rights_status, distribution_mode = distribution_decision(relative, **file_license)
+                else:
+                    # A verified repository LICENSE is the default grant when the
+                    # README/snapshot has not excluded score files. A restrictive
+                    # file-level notice always takes precedence.
+                    rights_status, distribution_mode = "redistributable", "hosted"
+                    file_license = {
+                        "license_spdx": repo["legal_license_spdx"],
+                        "license_name": repo["legal_license_spdx"],
+                        "license_url": (
+                            repo["html_url"].rstrip("/") + "/blob/" +
+                            repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                        ),
+                        "license_scope": "repository",
+                    }
             title = _explicit_title(path, suffix)
             if not title and rights_analysis:
                 title = rights_analysis.get("title")
@@ -474,11 +588,15 @@ def process_repository(repository_id: int):
                        rights_evidence_url=?,rights_checked_at=?,download_status=?,local_path=?,sha256=?
                        WHERE id=?""",
                     (
-                        repo["license_spdx"] or None, repo["license_name"] or None,
+                        repo["legal_license_spdx"] or repo["license_spdx"] or None,
+                        repo["legal_license_spdx"] or repo["license_name"] or None,
                         file_license["license_spdx"], file_license["license_name"],
                         file_license["license_url"], file_license["license_scope"],
                         rights_status, distribution_mode, transcriber, attribution,
-                        file_license["license_url"] or "", _now(),
+                        file_license["license_url"] or (
+                            repo["html_url"].rstrip("/") + "/blob/" +
+                            repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                        ), _now(),
                         "hosted" if hosted_path else ("external_only" if suffix in {".mxl", ".ly"} else "not_applicable"),
                         str(hosted_path) if hosted_path else None,
                         file_sha256 if hosted_path else None, file_id,
@@ -491,13 +609,19 @@ def process_repository(repository_id: int):
                     "provider": "github",
                     "repository": repo["full_name"],
                     "repository_url": repo["html_url"],
+                    "repository_owner": repo["legal_owner_login"],
+                    "repository_author_credit": repo["legal_owner_credit"],
+                    "repository_license_snapshot_url": (
+                        repo["html_url"].rstrip("/") + "/blob/" +
+                        repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                    ),
                     "path": relative,
                     "commit_sha": commit,
                     "git_blob_sha": sha,
-                    # Repository licensing is provenance only, never proof of
-                    # redistribution rights for an individual score file.
-                    "repository_license_spdx": repo["license_spdx"] or None,
-                    "repository_license_name": repo["license_name"] or None,
+                    # The archived repository license is the default grant for score files
+                    # unless the README or an individual file explicitly excludes them.
+                    "repository_license_spdx": repo["legal_license_spdx"] or None,
+                    "repository_license_name": repo["legal_license_spdx"] or None,
                     "file_license_spdx": file_license["license_spdx"],
                     "file_license_name": file_license["license_name"],
                     "file_license_url": file_license["license_url"],
@@ -520,7 +644,7 @@ def process_repository(repository_id: int):
                 },
             })
             # MXL/LilyPond originals are copied to durable storage only when
-            # their own file metadata explicitly proves CC BY or CC0.
+            # repository-level or file-level licensing explicitly authorizes redistribution.
             if suffix in {".mxl", ".ly"}:
                 path.unlink(missing_ok=True)
 
@@ -530,6 +654,16 @@ def process_repository(repository_id: int):
             "source": {
                 "provider": "github",
                 "repository": repo["full_name"],
+                "repository_url": repo["html_url"],
+                "repository_owner": repo["legal_owner_login"],
+                "repository_author_credit": repo["legal_owner_credit"],
+                "repository_license_spdx": repo["legal_license_spdx"],
+                "repository_license_snapshot_url": (
+                    repo["html_url"].rstrip("/") + "/blob/" +
+                    repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                ),
+                "legal_snapshot_commit": repo["legal_commit_sha"],
+                "legal_snapshot_captured_at": repo["legal_captured_at"],
                 "commit_sha": commit,
                 "snapshot": "filtered_shallow_clone",
                 "download_strategy": "single_sparse_checkout_batch",
@@ -537,9 +671,9 @@ def process_repository(repository_id: int):
                 "snapshot_lifecycle": "temporary_removed_after_processing",
             },
             "rights_notice": (
-                "La licencia del repositorio es solo contexto y no autoriza por sí misma la redistribución. "
-                "Los MXL/LilyPond solo se alojan cuando sus propios metadatos acreditan CC BY o CC0; "
-                "el resto conserva metadatos y enlace externo."
+                "La licencia abierta verificada del repositorio se aplica a los ficheros salvo exclusión "
+                "o licencia individual incompatible. Los repositorios sin licencia se procesan en modo "
+                "metadatos: no se descargan ficheros y solo se conservan enlaces externos."
             ),
             "processing": {
                 "files_in_snapshot": None,

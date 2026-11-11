@@ -50,9 +50,10 @@ def test_github_score_serving_requires_file_level_redistribution(tmp_path, monke
         with catalog.db() as conn:
             repo_id = conn.execute(
                 """INSERT INTO github_repositories
-                   (full_name,html_url,default_branch,added_at)
-                   VALUES(?,?,?,?)""",
-                ("example/score", "https://github.com/example/score", "main", "2026-11-11"),
+                   (full_name,html_url,default_branch,added_at,legal_status)
+                   VALUES(?,?,?,?,?)""",
+                ("example/score", "https://github.com/example/score", "main",
+                 "2026-11-11", "approved"),
             ).lastrowid
             file_id = conn.execute(
                 """INSERT INTO github_files

@@ -129,3 +129,40 @@ La licencia se decide **por fichero**, nunca por la licencia general del reposit
 - Los endpoints de servicio local comprueban tanto la decisión de derechos como que la ruta esté dentro del almacenamiento configurado.
 
 La licencia declarada por un repositorio, por Archive.org o por una página de catálogo no se convierte automáticamente en licencia del fichero. Cuando no hay evidencia individual suficiente, el comportamiento predeterminado es enlace externo.
+
+
+## Control legal de repositorios GitHub
+
+La licencia **no impide indexar ni analizar un repositorio musical**. Todos los repositorios musicales pueden incorporarse al catálogo y procesarse:
+
+- Con una licencia abierta explícita, archivamos la instantánea legal y, si su alcance incluye las partituras y no hay una licencia individual incompatible, podemos descargar y alojar los ficheros conforme a sus condiciones.
+- Sin licencia, con licencia restrictiva o con condiciones dudosas, indexamos los nombres, rutas, formatos, tamaños y enlaces originales. Se genera un JSON de metadatos, pero **no se descargan ni almacenan los ficheros musicales**. Se marcan como `unlicensed` o `review_required`.
+- Si cambian LICENSE, README o propietario, se bloquea el alojamiento y se conserva el catálogo y los enlaces externos hasta la revisión.
+
+La primera exploración archiva una instantánea inmutable en SQLite:
+- texto íntegro de LICENSE/COPYING y su SHA-256, si existe;
+- README y su SHA-256, si existe;
+- commit exacto, fecha UTC y metadatos públicos de GitHub;
+- propietario y crédito visible;
+- decisión y motivo de la evaluación legal.
+
+La licencia del repositorio se aplica a los ficheros musicales solo si el README no excluye esos contenidos y el propio fichero no declara condiciones incompatibles. Una licencia individual restrictiva prevalece sobre la del repositorio.
+
+### Auditoría y reparación de la base de datos
+
+Ejecutar desde la raíz del proyecto después de actualizar:
+
+```powershell
+.venv\Scripts\python.exe -m scripts.audit_github_rights
+```
+
+El programa:
+1. Migra las tablas y columnas legales de SQLite, creando una copia de seguridad antes de modificar la base.
+2. Conserva los registros de repositorios y ficheros, incluidos los que no tienen licencia.
+3. Elimina copias locales de partituras que no tengan autorización acreditada, pero mantiene sus metadatos y enlaces externos.
+4. Audita cada repositorio registrado y compara LICENSE, README, propietario y commit.
+5. Bloquea y retira de servicio los recursos cuando detecta cambios en las condiciones legales; conserva las instantáneas anteriores y registra una alerta.
+
+Para auditorías recurrentes, programa ese mismo comando en el Programador de tareas de Windows (por ejemplo, una vez al día), usando como directorio de inicio la carpeta del proyecto. No se requiere webhook: la auditoría periódica consulta el estado actual de GitHub.
+
+Los repositorios sin licencia se pueden seguir procesando en modo metadatos. Los repositorios bloqueados por cambios legales también conservan esa posibilidad, pero no pueden alojar ficheros. Tras revisar una nueva instantánea, el operador puede confirmar manualmente la aprobación; después se reprocesa el repositorio para alojar los ficheros autorizados.
