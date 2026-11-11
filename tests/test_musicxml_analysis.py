@@ -112,3 +112,21 @@ def test_content_analysis_route_persists_downloaded_musicxml_results(tmp_path, m
         assert "Test Motet" in row["analysis_json"]
         page = client.get("/items/musicxml-route-test/content-analysis")
         assert "Test Motet" in page.text
+
+
+def test_analyze_musicxml_extracts_file_license_and_transcriber():
+    licensed_score = SCORE.replace(
+        '<creator type="composer">Ada Composer</creator>',
+        '<creator type="composer">Ada Composer</creator>'
+        '<creator type="transcriber">Bea Transcriber</creator>'
+        '<rights>CC-BY-4.0 https://creativecommons.org/licenses/by/4.0/</rights>',
+    )
+    path = __import__("pathlib").Path("licensed-score.musicxml")
+    path.write_text(licensed_score, encoding="utf-8")
+    try:
+        result = analyze_musicxml(path)
+    finally:
+        path.unlink(missing_ok=True)
+    assert result["license_spdx"] == "CC-BY-4.0"
+    assert result["license_url"] == "https://creativecommons.org/licenses/by/4.0/"
+    assert {"name": "Bea Transcriber", "type": "transcriber"} in result["creators"]
