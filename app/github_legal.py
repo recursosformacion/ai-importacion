@@ -163,7 +163,7 @@ def ensure_schema():
         """)
         conn.execute("""
           UPDATE github_files SET distribution_mode='external_link',
-                 rights_status='unverified',download_status='external_only',local_path=NULL
+                 rights_status='unverified',download_status='external_only'
           WHERE repository_id IN (SELECT id FROM github_repositories
                                   WHERE legal_status!='approved')
             AND distribution_mode='hosted'
