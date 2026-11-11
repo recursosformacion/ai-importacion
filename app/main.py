@@ -1842,7 +1842,7 @@ def analyze_downloaded_musicxml(identifier: str):
                  OR lower(file_name) LIKE '%.midi'
                  OR lower(file_name) LIKE '%.kar')""", (identifier,)).fetchall()
     if not files:
-        raise HTTPException(status_code=422, detail="No hay archivos MusicXML/MXL o MIDI descargados para analizar.")
+        raise HTTPException(status_code=422, detail="No hay archivos MusicXML, MXL, LilyPond o MIDI descargados para analizar.")
     analyzed_count = 0
     skipped_count = 0
     failed_count = 0
@@ -1868,7 +1868,7 @@ def analyze_downloaded_musicxml(identifier: str):
                     creator = creators[0].get("name", "") if creators and isinstance(creators[0], dict) else ""
                     register_auto_work_candidate(
                         identifier, previous_analysis["title"], creator, file_row["file_name"],
-                        "Título explícito de metadatos MusicXML/MXL; análisis anterior sin cambios.",
+                        "Título explícito de metadatos; análisis anterior sin cambios.",
                     )
             except (TypeError, json.JSONDecodeError, AttributeError):
                 pass
@@ -1911,7 +1911,7 @@ def analyze_downloaded_musicxml(identifier: str):
             creator = creators[0].get("name", "") if creators and isinstance(creators[0], dict) else ""
             register_auto_work_candidate(
                 identifier, analysis["title"], creator, file_row["file_name"],
-                "Título explícito de metadatos MusicXML/MXL; estructura analizada localmente.",
+                "Título explícito extraído de los metadatos del fichero musical.",
             )
         if path.suffix.lower() in {".mxl", ".ly"}:
             file_license = {
@@ -1969,7 +1969,8 @@ def analyze_downloaded_musicxml(identifier: str):
                 analysis_json=excluded.analysis_json,error_text=excluded.error_text,
                 analyzed_at=excluded.analyzed_at,sha256=excluded.sha256""",
                 (file_row["id"], identifier,
-                 "midi" if path.suffix.lower() in {".mid", ".midi", ".kar"} else "musicxml",
+                 "midi" if path.suffix.lower() in {".mid", ".midi", ".kar"}
+                 else ("lilypond" if path.suffix.lower() == ".ly" else "musicxml"),
                  status, json.dumps(analysis, ensure_ascii=False), error_text, now(), file_row["sha256"]))
     return RedirectResponse(
         url=(
