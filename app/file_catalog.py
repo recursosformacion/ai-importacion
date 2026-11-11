@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
@@ -265,7 +265,19 @@ def file_catalog(identifier: str):
                 action = "<span>No disponible por el límite de tamaño</span>"
             license_label = f["license_spdx"] or f["license_name"] or "Sin licencia individual verificada"
             credit_label = f["transcriber_credit"] or "Transcriptor no indicado"
-            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(license_label)}<br><small>{esc(credit_label)}</small></td><td>{esc(download_status_label(status, f['download_error']))}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
+            rights_form = ""
+            if Path(f["file_name"]).suffix.lower() in {".mxl", ".ly"}:
+                rights_form = (
+                    f"<details><summary>Registrar licencia y créditos</summary>"
+                    f"<form method='post' action='/files/{f['id']}/rights'>"
+                    f"<input name='license_spdx' placeholder='CC-BY-4.0 o CC0-1.0' value='{esc(f['license_spdx'] or '')}' maxlength='100'>"
+                    f"<input name='license_name' placeholder='Nombre de licencia' value='{esc(f['license_name'] or '')}' maxlength='500'>"
+                    f"<input name='license_url' placeholder='URL de la licencia' value='{esc(f['license_url'] or '')}' maxlength='2000'>"
+                    f"<input name='evidence_url' placeholder='URL de la página fuente que acredita la licencia' value='{esc(f['rights_evidence_url'] or '')}' maxlength='2000'>"
+                    f"<input name='transcriber_credit' placeholder='Créditos del transcriptor' value='{esc(f['transcriber_credit'] or '')}' maxlength='1000'>"
+                    f"<button>Guardar derechos del fichero</button></form></details>"
+                )
+            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(license_label)}<br><small>{esc(credit_label)}</small>{rights_form}</td><td>{esc(download_status_label(status, f['download_error']))}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
         body += "</table>"
     body += "<div class='section-nav'><a href='/items/" + esc(identifier) + "'>Volver a la ficha</a><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar contenido →</a></div>"
     body += "</html>"
@@ -341,6 +353,63 @@ async def download_file(file_id: int):
                          (str(exc)[:1000], total, file_id))
     return RedirectResponse(url="/files/" + quote(row["identifier"], safe=""), status_code=303)
 
+
+
+@router.post("/files/{file_id}/rights")
+def update_score_file_rights(
+    file_id: int,
+    license_spdx: str = Form(""),
+    license_name: str = Form(""),
+    license_url: str = Form(""),
+    evidence_url: str = Form(""),
+    transcriber_credit: str = Form(""),
+):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM archive_files WHERE id=?", (file_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    if Path(row["file_name"]).suffix.lower() not in {".mxl", ".ly"}:
+        raise HTTPException(status_code=422, detail="La revisión de redistribución se aplica a MXL y LilyPond.")
+    license_spdx = license_spdx.strip()[:100]
+    license_name = license_name.strip()[:500]
+    license_url = license_url.strip()[:2000]
+    evidence_url = evidence_url.strip()[:2000]
+    transcriber_credit = transcriber_credit.strip()[:1000] or row["transcriber_credit"] or ""
+    for value, label in ((license_url, "La URL de licencia"), (evidence_url, "La URL de evidencia")):
+        if value:
+            parsed = urlsplit(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise HTTPException(status_code=422, detail=label + " debe usar http o https.")
+    scope = "file" if evidence_url and (license_spdx or license_name or license_url) else "unknown"
+    rights_status, distribution_mode = distribution_decision(
+        row["file_name"], license_spdx, license_name, license_url, scope
+    )
+    attribution = "Transcriptor: " + (transcriber_credit or "no indicado en la fuente")
+    local_path = row["local_path"]
+    if distribution_mode != "hosted":
+        if local_path:
+            candidate = Path(local_path).resolve()
+            if candidate.is_relative_to(DOWNLOAD_DIR.resolve()):
+                candidate.unlink(missing_ok=True)
+        download_status = "external_only"
+        local_path = None
+        download_error = "No consta una licencia CC BY o CC0 aplicable al fichero; se conserva solo el enlace externo."
+    else:
+        download_status = "not_downloaded" if row["download_status"] == "external_only" else row["download_status"]
+        download_error = None if download_status == "not_downloaded" else row["download_error"]
+    with db() as conn:
+        conn.execute(
+            """UPDATE archive_files SET license_spdx=?,license_name=?,license_url=?,
+               license_scope=?,rights_status=?,distribution_mode=?,transcriber_credit=?,
+               attribution_text=?,rights_evidence_url=?,rights_checked_at=?,
+               download_status=?,local_path=?,download_error=? WHERE id=?""",
+            (
+                license_spdx or None, license_name or None, license_url or None, scope,
+                rights_status, distribution_mode, transcriber_credit, attribution,
+                evidence_url, now(), download_status, local_path, download_error, file_id,
+            ),
+        )
+    return RedirectResponse(url="/files/" + quote(row["identifier"], safe=""), status_code=303)
 
 
 @router.get("/files/local/{file_id}")
