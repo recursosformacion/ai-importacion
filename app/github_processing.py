@@ -544,9 +544,20 @@ def process_repository(repository_id: int) -> None:
         return
 
     started = _now()
-    out = ROOT / str(int(repository_id)) / ".osap-import"
+    out = None
     try:
         with connect(DB_PATH) as conn:
+            repository_row = conn.execute(
+                "SELECT full_name FROM github_repositories WHERE id=?", (repository_id,)
+            ).fetchone()
+            if repository_row is None:
+                raise ValueError("Repositorio inexistente")
+            # Keep the owner/repository names visible in the filesystem. The
+            # numeric SQLite ID remains an internal database key only.
+            repository_parts = str(repository_row["full_name"]).split("/", 1)
+            if len(repository_parts) != 2 or not all(repository_parts):
+                raise ValueError("Nombre GitHub de repositorio no válido")
+            out = ROOT.joinpath(*repository_parts, ".osap-import")
             conn.execute("""INSERT INTO github_processing_jobs
                 (repository_id,status,stage,progress_count,total_count,started_at,updated_at,error_text)
                 VALUES(?,'running','inventory',0,0,?,?,NULL)
