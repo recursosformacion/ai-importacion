@@ -267,11 +267,19 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
     environment["GIT_TERMINAL_PROMPT"] = "0"
     environment["GIT_LFS_SKIP_SMUDGE"] = "1"
 
+    logging.getLogger(__name__).info(
+        "GitHub %s: transferencia Git por lotes de %s archivos seleccionados; no se solicitan blobs mediante HTTP individual.",
+        repository_id, len(pending),
+    )
     with tempfile.TemporaryDirectory(prefix="ai-importacion-github-") as temporary:
         checkout = Path(temporary) / "repository"
         _clone_sparse_checkout(
             clone_url, branch, [str(row["path"]) for row in pending],
             checkout, environment,
+        )
+        logging.getLogger(__name__).info(
+            "GitHub %s: transferencia por lotes terminada; procesando los archivos desde el checkout local.",
+            repository_id,
         )
 
         completed = 0
