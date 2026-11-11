@@ -268,8 +268,12 @@ async def github_scan(repository_id: int):
                     blob_url=excluded.blob_url,html_url=excluded.html_url,last_seen_at=excluded.last_seen_at,
                     repository_license_spdx=excluded.repository_license_spdx,
                     repository_license_name=excluded.repository_license_name,
-                    license_scope=CASE WHEN github_files.license_scope='file' THEN 'file' ELSE 'repository' END,
-                    rights_status=CASE WHEN github_files.license_scope='file' THEN github_files.rights_status ELSE 'unverified' END,
+                    license_scope=CASE WHEN github_files.license_scope='file' THEN 'file'
+                                        WHEN excluded.extension IN ('.mxl','.ly') THEN 'repository'
+                                        ELSE 'unknown' END,
+                    rights_status=CASE WHEN github_files.license_scope='file' THEN github_files.rights_status
+                                       WHEN excluded.extension IN ('.mxl','.ly') THEN 'unverified'
+                                       ELSE 'not_applicable' END,
                     distribution_mode=CASE WHEN github_files.license_scope='file' THEN github_files.distribution_mode
                                             WHEN excluded.extension IN ('.mxl','.ly') THEN 'external_link'
                                             ELSE 'not_applicable' END
