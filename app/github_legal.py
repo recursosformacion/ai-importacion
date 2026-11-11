@@ -297,10 +297,7 @@ async def capture_snapshot(repository_id: int, full_name: str):
 
 
 async def audit_repository(repository_id: int, full_name: str):
-    result = await capture_snapshot(repository_id, full_name)
-    if result["status"] == "blocked":
-        reconcile_database()
-    return result
+    return await capture_snapshot(repository_id, full_name)
 
 
 def approve_current_snapshot(repository_id: int):
