@@ -10,7 +10,7 @@ _ALLOWED = {"CC0-1.0", "CC-BY-1.0", "CC-BY-2.0", "CC-BY-2.5", "CC-BY-3.0", "CC-B
 
 def canonical_license(value: str | None, url: str | None = None) -> str | None:
     raw = (value or "").strip().upper().replace("_", "-")
-    candidate = (url or "").strip().lower()
+    candidate = (url or value or "").strip().lower()
     # A conflicting/restrictive URL always overrides a permissive text label.
     if re.search(r"/(?:by-sa|by-nc|by-nd|by-nc-sa|by-nc-nd)/", candidate):
         return None
