@@ -421,6 +421,8 @@ def github_repository(repository_id: int, q: str = ""):
     if repo["legal_alert"]:
         body += "<p><b>Alerta:</b> " + esc(repo["legal_alert"]) + "</p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/audit'><button>Auditar condiciones legales ahora</button></form>"
+    if repo["legal_status"] == "blocked":
+        body += "<form method='post' action='/github/" + str(repository_id) + "/legal/approve'><button>Confirmar revisión y aprobar snapshot</button></form>"
     from app.github_processing import ensure_processing_schema
     ensure_processing_schema()
     with db() as conn:
@@ -439,6 +441,17 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
     body += "<p><a href='/github'>Volver a candidatos</a></p>"
     return HTMLResponse(_page("Repositorio " + repo["full_name"], body))
+
+
+@router.post("/github/{repository_id}/legal/approve")
+def github_legal_approve(repository_id: int):
+    ensure_schema()
+    from app.github_legal import approve_current_snapshot
+    try:
+        approve_current_snapshot(repository_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(f"/github/{repository_id}?legal=approved", status_code=303)
 
 
 @router.post("/github/{repository_id}/audit")
