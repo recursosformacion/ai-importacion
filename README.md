@@ -133,16 +133,20 @@ La licencia declarada por un repositorio, por Archive.org o por una página de c
 
 ## Control legal de repositorios GitHub
 
-La admisión de un repositorio GitHub requiere un archivo `LICENSE` o `COPYING` explícito y una licencia identificable que permita redistribución y adaptación. La licencia se contrasta con el texto del archivo, no solo con el indicador de licencia que devuelve la API de GitHub. Los README con exclusiones o alcances distintos dejan el repositorio pendiente de revisión.
+La licencia **no impide indexar ni analizar un repositorio musical**. Todos los repositorios musicales pueden incorporarse al catálogo y procesarse:
 
-En cada primera admisión se archiva una instantánea inmutable en SQLite con:
-- texto íntegro de LICENSE/COPYING y su SHA-256;
-- README y su SHA-256;
-- commit exacto, fecha UTC, metadatos de GitHub;
+- Con una licencia abierta explícita, archivamos la instantánea legal y, si su alcance incluye las partituras y no hay una licencia individual incompatible, podemos descargar y alojar los ficheros conforme a sus condiciones.
+- Sin licencia, con licencia restrictiva o con condiciones dudosas, indexamos los nombres, rutas, formatos, tamaños y enlaces originales. Se genera un JSON de metadatos, pero **no se descargan ni almacenan los ficheros musicales**. Se marcan como `unlicensed` o `review_required`.
+- Si cambian LICENSE, README o propietario, se bloquea el alojamiento y se conserva el catálogo y los enlaces externos hasta la revisión.
+
+La primera exploración archiva una instantánea inmutable en SQLite:
+- texto íntegro de LICENSE/COPYING y su SHA-256, si existe;
+- README y su SHA-256, si existe;
+- commit exacto, fecha UTC y metadatos públicos de GitHub;
 - propietario y crédito visible;
-- decisión y motivo de admisión.
+- decisión y motivo de la evaluación legal.
 
-La licencia del repositorio se aplica a los ficheros musicales solo si el README no excluye esos contenidos y el propio fichero no declara condiciones incompatibles. Una licencia individual restrictiva prevalece sobre la del repositorio. El manifiesto conserva el alcance de la licencia y el enlace a la evidencia.
+La licencia del repositorio se aplica a los ficheros musicales solo si el README no excluye esos contenidos y el propio fichero no declara condiciones incompatibles. Una licencia individual restrictiva prevalece sobre la del repositorio.
 
 ### Auditoría y reparación de la base de datos
 
@@ -153,14 +157,12 @@ Ejecutar desde la raíz del proyecto después de actualizar:
 ```
 
 El programa:
-1. Migra las tablas y columnas legales de SQLite.
-2. Pone en cuarentena repositorios antiguos sin snapshot verificable.
-3. Elimina copias locales alojadas que ya no tienen admisión legal aprobada, conservando los registros y enlaces externos.
+1. Migra las tablas y columnas legales de SQLite, creando una copia de seguridad antes de modificar la base.
+2. Conserva los registros de repositorios y ficheros, incluidos los que no tienen licencia.
+3. Elimina copias locales de partituras que no tengan autorización acreditada, pero mantiene sus metadatos y enlaces externos.
 4. Audita cada repositorio registrado y compara LICENSE, README, propietario y commit.
-5. Bloquea y retira de servicio los recursos cuando detecta cambios en LICENSE, README o propietario; conserva las instantáneas anteriores y registra una alerta.
+5. Bloquea y retira de servicio los recursos cuando detecta cambios en las condiciones legales; conserva las instantáneas anteriores y registra una alerta.
 
 Para auditorías recurrentes, programa ese mismo comando en el Programador de tareas de Windows (por ejemplo, una vez al día), usando como directorio de inicio la carpeta del proyecto. No se requiere webhook: la auditoría periódica consulta el estado actual de GitHub.
 
-Los repositorios bloqueados muestran el motivo en `/github/{id}`. Tras revisar la nueva instantánea, el operador puede confirmar la revisión manualmente; los ficheros deberán procesarse de nuevo para volver a alojarse. El endpoint de servicio también comprueba el estado legal en cada petición.
-
-La migración es conservadora: un repositorio existente no se considera autorizado por el mero hecho de que antes figurase en el catálogo. Necesita una nueva instantánea verificable.
+Los repositorios sin licencia se pueden seguir procesando en modo metadatos. Los repositorios bloqueados por cambios legales también conservan esa posibilidad, pero no pueden alojar ficheros. Tras revisar una nueva instantánea, el operador puede confirmar manualmente la aprobación; después se reprocesa el repositorio para alojar los ficheros autorizados.
