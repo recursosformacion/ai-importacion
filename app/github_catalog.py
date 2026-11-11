@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from app.db import connect
 
@@ -90,6 +90,11 @@ def ensure_schema() -> None:
           distribution_mode TEXT NOT NULL DEFAULT 'external_link',
           transcriber_credit TEXT NOT NULL DEFAULT '',
           attribution_text TEXT NOT NULL DEFAULT '',
+          rights_evidence_url TEXT NOT NULL DEFAULT '',
+          rights_checked_at TEXT,
+          download_status TEXT NOT NULL DEFAULT 'external_only',
+          local_path TEXT,
+          sha256 TEXT,
           UNIQUE(repository_id,path)
         );
         CREATE INDEX IF NOT EXISTS idx_github_files_extension ON github_files(extension);
@@ -104,6 +109,11 @@ def ensure_schema() -> None:
             "distribution_mode": "TEXT NOT NULL DEFAULT 'external_link'",
             "transcriber_credit": "TEXT NOT NULL DEFAULT ''",
             "attribution_text": "TEXT NOT NULL DEFAULT ''",
+            "rights_evidence_url": "TEXT NOT NULL DEFAULT ''",
+            "rights_checked_at": "TEXT",
+            "download_status": "TEXT NOT NULL DEFAULT 'external_only'",
+            "local_path": "TEXT",
+            "sha256": "TEXT",
         }
         for column, declaration in additions.items():
             if column not in columns:
@@ -111,7 +121,7 @@ def ensure_schema() -> None:
         conn.execute("""
             UPDATE github_files
                SET rights_status='unverified',distribution_mode='external_link',
-                   license_scope='repository'
+                   license_scope='repository',download_status='external_only',local_path=NULL
              WHERE extension IN ('.mxl','.ly') AND license_scope!='file'
         """)
         conn.execute("""
@@ -335,6 +345,27 @@ def github_resources_json(repository_id: int):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="No se encuentra el JSON generado")
     return FileResponse(path, media_type="application/json", filename=f"github-{repository_id}-resources.json")
+
+
+@router.get("/github/files/{file_id}")
+def serve_github_score_file(file_id: int):
+    ensure_schema()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT path,local_path,download_status,distribution_mode FROM github_files WHERE id=?",
+            (file_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    if os.path.splitext(row["path"])[1].lower() not in {".mxl", ".ly"}:
+        raise HTTPException(status_code=404, detail="Este endpoint solo sirve MXL y LilyPond.")
+    if row["distribution_mode"] != "hosted" or row["download_status"] != "hosted":
+        raise HTTPException(status_code=403, detail="No hay licencia individual que autorice alojar este fichero.")
+    path = Path(row["local_path"] or "")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="El fichero autorizado no está disponible.")
+    media_type = "application/vnd.recordare.musicxml" if path.suffix.lower() == ".mxl" else "text/plain; charset=utf-8"
+    return FileResponse(path, media_type=media_type, filename=Path(row["path"]).name)
 
 
 @router.get("/github/{repository_id}", response_class=HTMLResponse)
