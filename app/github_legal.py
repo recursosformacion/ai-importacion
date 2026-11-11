@@ -70,7 +70,7 @@ def _license_id(text, api_spdx):
             match = re.search(r"by-sa/(2\.0|2\.5|3\.0|4\.0)", body)
             return "CC-BY-SA-" + match.group(1) if match else None
         if re.search(r"attribution|cc by", body):
-            match = re.search(r"(?:licenses/by/|cc by )(2\.0|2\.5|3\.0|4\.0)", body)
+            match = re.search(r"(?:licenses/by/|cc by |attribution[^0-9]{0,30})(2\.0|2\.5|3\.0|4\.0)", body)
             return "CC-BY-" + match.group(1) if match else None
         if "cc0" in body or "public domain" in body:
             return "CC0-1.0"
@@ -107,7 +107,16 @@ def _has_scope_exclusions(readme):
         r"(?:not covered|excluded|all rights reserved|separate license).{0,100}"
         r"(?:scores|music|audio|media|assets|data|content|partituras)",
     )
-    return any(re.search(pattern, text, re.S) for pattern in patterns)
+    if any(re.search(pattern, text, re.S) for pattern in patterns):
+        return True
+    # A README may grant a different, restrictive license specifically to scores.
+    for line in text.splitlines():
+        if re.search(r"score|partitur|music|audio|mxl|musicxml", line) and re.search(
+            r"cc[- ]?by[- ]?(?:nc|nd)|noncommercial|non-commercial|no derivatives|all rights reserved|\\bproprietary\\b",
+            line,
+        ):
+            return True
+    return False
 
 
 def ensure_schema():
@@ -304,8 +313,12 @@ def approve_current_snapshot(repository_id: int):
         ).fetchone()
         if not snapshot or snapshot["decision"] not in {"approved", "review_required"}:
             raise ValueError("No existe una instantánea legal revisable.")
-        if not snapshot["license_text"] or snapshot["license_spdx"] not in OPEN_LICENSES:
-            raise ValueError("La última instantánea no contiene una licencia abierta admitida.")
+        if (
+            not snapshot["license_text"]
+            or snapshot["license_spdx"] not in OPEN_LICENSES
+            or _has_scope_exclusions(snapshot["readme_text"])
+        ):
+            raise ValueError("La última instantánea no contiene una licencia abierta aplicable a las partituras.")
         conn.execute(
             """UPDATE github_repositories SET legal_status='approved',legal_alert='',
                legal_license_spdx=?,legal_license_path=?,legal_license_sha256=?,
