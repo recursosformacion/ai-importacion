@@ -594,7 +594,12 @@ def exploration_repository_action(
 
 
 @router.post("/github/exploration/repository/incorporate")
-def incorporate_discovered_repository(full_name: str = Form(...)):
+def incorporate_discovered_repository(
+    full_name: str = Form(...),
+    return_page: int = Form(1),
+    return_status: str = Form(""),
+    return_q: str = Form(""),
+):
     ensure_schema()
     from app import github_catalog, github_processing
     from app.github_processing import enqueue_repository
@@ -626,7 +631,12 @@ def incorporate_discovered_repository(full_name: str = Form(...)):
                 progress_count=0,total_count=0,updated_at=excluded.updated_at,error_text=NULL""",
                 (int(repo["id"]),now(),now()))
         enqueue_repository(int(repo["id"]))
-    return RedirectResponse("/github/exploration",status_code=303)
+    destination = "/github/exploration?page=" + str(max(1, return_page))
+    if return_status:
+        destination += "&status=" + quote(return_status)
+    if return_q:
+        destination += "&q=" + quote(return_q)
+    return RedirectResponse(destination, status_code=303)
 
 
 _exploration_task: asyncio.Task | None = None
