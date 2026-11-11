@@ -12,6 +12,8 @@ import httpx
 from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
+from app.rights_policy import distribution_decision
+
 from app.db import (
     MAX_DOWNLOAD_BYTES,
     DOWNLOAD_DIR,
@@ -100,6 +102,7 @@ def download_status_label(status: str | None, error: str | None = None) -> str:
         "downloaded": "Guardado localmente",
         "error": "Error de descarga",
         "too_large": "No descargado: supera el límite configurado",
+        "external_only": "Solo enlace externo: no hay permiso verificado para alojar el archivo",
     }
     label = labels.get(status or "not_downloaded", "Estado: " + str(status))
     if status == "error" and error:
@@ -131,24 +134,43 @@ def normalize_file_records(identifier: str, files_payload, stamp: str) -> list[d
             size = None
         fmt = str(item.get("format") or "")
         source_url = "https://archive.org/download/" + quote(identifier, safe="") + "/" + quote(name, safe="/")
-        records.append({
+        record = {
             "identifier": identifier, "file_name": name, "file_name_safe": safe_filename(name),
             "source_url": source_url, "size_bytes": size, "archive_format": fmt,
             "md5": item.get("md5"), "sha1": item.get("sha1"),
+            "license_spdx": item.get("license_spdx"),
+            "license_name": item.get("license") or item.get("rights"),
+            "license_url": item.get("license_url") or item.get("licenseurl"),
+            "license_scope": "file" if any(item.get(key) for key in (
+                "license_spdx", "license", "rights", "license_url", "licenseurl"
+            )) else "unknown",
             "relevant": int(relevant_file(name, fmt)), "inventory_seen_at": stamp,
-        })
+        }
+        record["rights_status"], record["distribution_mode"] = distribution_decision(
+            name, record["license_spdx"], record["license_name"],
+            record["license_url"], record["license_scope"],
+        )
+        records.append(record)
     return records
 
 
 def upsert_archive_files(conn, identifier: str, records: list[dict]) -> int:
     """UPSERT file records in a single connection. Returns inserted count."""
     conn.executemany("""INSERT INTO archive_files
-      (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at)
+      (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at,
+       license_spdx,license_name,license_url,license_scope,rights_status,distribution_mode)
       VALUES(:identifier,:file_name,:file_name_safe,:source_url,:size_bytes,:archive_format,
-             :md5,:sha1,:relevant,:inventory_seen_at)
+             :md5,:sha1,:relevant,:inventory_seen_at,:license_spdx,:license_name,:license_url,
+             :license_scope,:rights_status,:distribution_mode)
       ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
       source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
-      md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at""",
+      md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at,
+      license_spdx=COALESCE(excluded.license_spdx,archive_files.license_spdx),
+      license_name=COALESCE(excluded.license_name,archive_files.license_name),
+      license_url=COALESCE(excluded.license_url,archive_files.license_url),
+      license_scope=CASE WHEN excluded.license_scope='file' THEN 'file' ELSE archive_files.license_scope END,
+      rights_status=CASE WHEN excluded.license_scope='file' THEN excluded.rights_status ELSE archive_files.rights_status END,
+      distribution_mode=CASE WHEN excluded.license_scope='file' THEN excluded.distribution_mode ELSE archive_files.distribution_mode END""",
         records)
     return len(records)
 
@@ -310,6 +332,26 @@ async def download_file(file_id: int):
                          (str(exc)[:1000], total, file_id))
     return RedirectResponse(url="/files/" + quote(row["identifier"], safe=""), status_code=303)
 
+
+
+@router.get("/files/local/{file_id}")
+def serve_local_score_file(file_id: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT file_name,local_path,download_status,distribution_mode FROM archive_files WHERE id=?",
+            (file_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Fichero no encontrado")
+    if Path(row["file_name"]).suffix.lower() not in {".mxl", ".ly"}:
+        raise HTTPException(status_code=404, detail="Este endpoint solo sirve MXL y LilyPond.")
+    if row["distribution_mode"] != "hosted" or row["download_status"] != "downloaded":
+        raise HTTPException(status_code=403, detail="El fichero no tiene autorización de redistribución verificada.")
+    path = Path(row["local_path"] or "")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="El fichero autorizado no está disponible.")
+    media_type = "application/vnd.recordare.musicxml" if path.suffix.lower() == ".mxl" else "text/plain; charset=utf-8"
+    return FileResponse(path, media_type=media_type, filename=row["file_name"])
 
 
 # Integrated intake: inventory new candidates and download a small number of likely score files.
