@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -231,6 +232,22 @@ def init_db():
             "rights_evidence_url": "TEXT NOT NULL DEFAULT ''",
             "rights_checked_at": "TEXT",
         }
+        missing_rights_columns = [
+            column for column in archive_file_additions if column not in archive_file_columns
+        ]
+        if missing_rights_columns:
+            # Preserve the exact pre-migration database before schema changes or
+            # removal of local MXL/LilyPond copies. Abort if the backup fails.
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = Path(DB_PATH).with_name(
+                Path(DB_PATH).name + ".pre-rights-migration-" + stamp + ".bak"
+            )
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            backup = sqlite3.connect(str(backup_path))
+            try:
+                conn.backup(backup)
+            finally:
+                backup.close()
         for column, declaration in archive_file_additions.items():
             if column not in archive_file_columns:
                 conn.execute(f"ALTER TABLE archive_files ADD COLUMN {column} {declaration}")
