@@ -199,7 +199,8 @@ async def capture_snapshot(repository_id: int, full_name: str):
         readme_hash = hashlib.sha256(readme_text.encode("utf-8")).hexdigest()
         owner = meta.get("owner") or {}
         owner_login = str(owner.get("login") or "")
-        owner_name = str(owner.get("name") or owner_login)
+        owner_profile = await _get_json(client, f"{API}/users/{quote(owner_login)}") if owner_login else {}
+        owner_name = str(owner_profile.get("name") or owner_login)
         decision = "approved" if license_path and license_text and license_id in OPEN_LICENSES and not _has_scope_exclusions(readme_text) else "restricted"
         if not license_path:
             reason = "No se encontró un archivo LICENSE/COPYING explícito."
@@ -212,7 +213,7 @@ async def capture_snapshot(repository_id: int, full_name: str):
         metadata_snapshot = {
             "full_name": meta.get("full_name"), "html_url": meta.get("html_url"),
             "description": meta.get("description"), "default_branch": branch,
-            "license_api": api_license, "owner": owner,
+            "license_api": api_license, "owner": owner, "owner_profile": owner_profile,
             "repository_created_at": meta.get("created_at"),
             "repository_updated_at": meta.get("updated_at"),
         }
