@@ -313,7 +313,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     # La tabla solo presenta repositorios cuyo recuento ya alcanza el mínimo.
     # Los candidatos aún no inspeccionados y los que quedan por debajo se
     # conservan en la base de datos, pero no se ofrecen como repositorios válidos.
-    where = ["musical_file_count >= ?"]
+    where = ["(musical_file_count >= ? OR (status = 'pending' AND discovery_query = 'seed'))"]
     params = [MIN_MUSICAL_FILES]
     if status:
         where.append("status=?")
@@ -473,7 +473,9 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
    const button=document.querySelector("form[action='/github/exploration/run'] button");
    if(button)button.disabled=['queued','running'].includes(d.job_status);
    if(['queued','running'].includes(d.job_status))setTimeout(refresh,5000);
-   else if(document.querySelector("tr[data-processing='running'],tr[data-processing='queued'],tr[data-processing='pending']"))setTimeout(()=>location.reload(),5000);
+   // No recargar la página completa: interrumpe la búsqueda y pierde el texto escrito.
+   // El usuario puede actualizar la tabla manualmente cuando lo necesite.
+   if(['queued','running'].includes(d.job_status))setTimeout(refresh,10000);
   }catch(e){
    const message=document.getElementById('job-message');
    if(message)message.textContent='No se pudo consultar el estado; se volverá a intentar automáticamente.';
