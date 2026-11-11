@@ -5,8 +5,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.license_policy import (
+    HOSTABLE,
+    POLICY_VERSION,
+    evaluate,
+    license_url,
+    normalize_spdx,
+)
 
-SCHEMA_VERSION = "osap-resource-import/1.0"
+
+SCHEMA_VERSION = "osap-resource-import/1.1"
 
 
 def stable_resource_id(repository: str, source_path: str) -> str:
@@ -65,6 +73,7 @@ def build_github_resource_document(
             for part in (metadata.get("parts") or [])
             if isinstance(part, dict) and part.get("name")
         ]
+    declared_spdx = normalize_spdx(repository.get("license_spdx"))
     return {
         "schema": SCHEMA_VERSION,
         "resource_key": stable_resource_id(full_name, source_path),
@@ -87,8 +96,18 @@ def build_github_resource_document(
             "license": {
                 "spdx": repository.get("license_spdx") or None,
                 "name": repository.get("license_name") or None,
+                "url": license_url(declared_spdx),
                 "scope": "repository_declared_license",
                 "verified_for_file": False,
+                "status": repository.get("license_status") or evaluate(declared_spdx),
+                "allow_hosting": (
+                    repository.get("license_status") or evaluate(declared_spdx)
+                )
+                == HOSTABLE,
+                "policy_version": POLICY_VERSION,
+                "checked_at": repository.get("license_checked_at"),
+                "previous_spdx": repository.get("license_previous_spdx") or None,
+                "changed_at": repository.get("license_changed_at"),
             },
             "file_path": source_path,
             "file_url": source_file.get("html_url"),
@@ -129,6 +148,7 @@ def build_github_resource_document(
             "Este documento describe un recurso adquirido y un único fichero.",
             "No contiene IDs internos de Work, Person, Source, Resource o File de OSAP.",
             "La licencia indicada es la declarada por el repositorio y no está verificada individualmente para este fichero.",
+            "Solo se aloja el fichero cuando la licencia declarada permite la redistribución; en caso contrario se enlaza al origen.",
             "Los metadatos musicales son observaciones del análisis; no implican que la obra o las personas estén identificadas en OSAP.",
         ],
     }

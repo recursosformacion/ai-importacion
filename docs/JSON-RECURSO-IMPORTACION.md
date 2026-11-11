@@ -12,11 +12,11 @@ La clave del recurso es determinista para la combinación de repositorio y ruta 
 
 ## Datos incluidos
 
-El documento utiliza el esquema `osap-resource-import/1.0` e incluye:
+El documento utiliza el esquema `osap-resource-import/1.1` e incluye:
 
 - `resource`: título, evidencia del campo de título utilizado, candidatos derivados del nombre del fichero, creadores e instrumentación cuando el análisis los haya podido extraer.
 - En MusicXML/MXL se prioriza `work-title`; si falta, se utiliza el crédito visible `credit-type=title`, y después `movement-title`. Se leen también los créditos `composer`, `arranger`, `lyricist`, `poet`, `translator`, `artist` y `editor` como creadores tipificados, además de los elementos `creator` estándar. Se conservan por separado `work-title` y `movement-title`, así como derechos declarados, fuente indicada y datos de codificación. Esto permite extraer títulos y atribuciones de ficheros MuseScore que solo los incluyen en los créditos de página.
-- `source`: proveedor, repositorio, descripción, rama, licencia declarada, ruta y enlaces originales.
+- `source`: proveedor, repositorio, descripción, rama, ruta y enlaces originales; `source.license` conserva la licencia declarada con `spdx`, `name`, `url`, `status` (`hostable`/`link_only`/`unknown`), `checked_at`, `previous_spdx`, `changed_at`, `policy_version` y `verified_for_file: false`.
 - `file`: ruta dentro del paquete, nombre original, formato, tamaño y SHA-256.
 - `analysis`: tipo, estado, metadatos estructurales, error y fecha de análisis.
 - `text_extraction`: estado y texto extraído localmente, cuando existe.

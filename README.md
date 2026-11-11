@@ -99,6 +99,20 @@ La sección web **Fuentes GitHub** permite descubrir repositorios públicos sin 
 
 La búsqueda inicial descubre candidatos mediante metadatos de repositorios; no es un índice exhaustivo de todos los ficheros públicos de GitHub. La confirmación de archivos musicales se realiza al leer el árbol del repositorio, donde se detectan las extensiones reconocidas con independencia del término usado para descubrirlo. GitHub impone límites de consulta y de tamaño de árbol, por lo que no se puede prometer cobertura absoluta. Los filtros de licencia son criterios de descubrimiento, no una comprobación jurídica: la licencia declarada debe revisarse antes de reutilizar o redistribuir archivos. La búsqueda no descarga archivos ni incorpora contenido a OSAP; esas acciones siguen siendo pasos explícitos posteriores.
 
+## Licencias y revalidación del alojamiento
+
+- `app/license_policy.py` clasifica la licencia declarada por el repositorio: `hostable` (permite redistribuir), `link_only` (licencia conocida que no permite alojar) y `unknown` (sin licencia declarada o no reconocida). **Solo `hostable` autoriza a hospedar el fichero**; en los demás casos el recurso se enlaza al origen.
+- `app/license_recheck.py` consulta la API de GitHub, guarda historial en `github_license_checks` y actualiza `license_checked_at`, `license_status`, `license_previous_spdx` y `license_changed_at` en `github_repositories`.
+- Cadencia recomendada: una vez al día.
+
+```bash
+python -m app.license_recheck --days 7 --limit 50   # revisa las licencias vencidas
+python -m app.license_recheck --force --limit 20    # revisión inmediata
+python -m app.license_recheck --dry-run             # simulación, no escribe
+```
+
+El paquete JSON (`osap-resource-import/1.1`) incluye `source.license.status`, `checked_at`, `previous_spdx`, `changed_at` y `policy_version`. El receptor de OSAP debe **dejar de hospedar y redirigir al origen** cuando el estado no sea `hostable`.
+
 ## Ecosistema OSAP
 
 Este repositorio es una herramienta independiente del ecosistema **OSAP — Open Score Acquisition Platform**. Su base de datos es propia y el flujo actual de importación sirve para descubrir y revisar materiales; no escribe directamente en el catálogo de producción.

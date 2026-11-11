@@ -341,7 +341,7 @@ async def lifespan(_: FastAPI):
         await asyncio.gather(*workers, return_exceptions=True)
 
 
-app = FastAPI(title="AI Importación", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="AI Importación", version="0.3.0", lifespan=lifespan)
 
 from app.file_catalog import (
     MAX_DOWNLOAD_BYTES, _intake_priority, download_file, inventory_item_files,
