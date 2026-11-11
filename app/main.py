@@ -16,7 +16,8 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
-from app.db import connect
+from app.db import DOWNLOAD_DIR, connect
+from app.rights_policy import distribution_decision, transcriber_credit as get_transcriber_credit
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 ARCHIVE_ENDPOINT = "https://archive.org/advancedsearch.php"
@@ -121,6 +122,14 @@ def init_db():
           size_bytes INTEGER, archive_format TEXT, md5 TEXT, sha1 TEXT, relevant INTEGER NOT NULL DEFAULT 0,
           inventory_seen_at TEXT NOT NULL, download_status TEXT NOT NULL DEFAULT 'not_downloaded',
           local_path TEXT, sha256 TEXT, downloaded_bytes INTEGER, download_error TEXT,
+          license_spdx TEXT, license_name TEXT, license_url TEXT,
+          license_scope TEXT NOT NULL DEFAULT 'unknown',
+          rights_status TEXT NOT NULL DEFAULT 'unverified',
+          distribution_mode TEXT NOT NULL DEFAULT 'external_link',
+          transcriber_credit TEXT NOT NULL DEFAULT '',
+          attribution_text TEXT NOT NULL DEFAULT '',
+          rights_evidence_url TEXT NOT NULL DEFAULT '',
+          rights_checked_at TEXT,
           UNIQUE(identifier,file_name));
         CREATE INDEX IF NOT EXISTS idx_archive_title ON archive_items(title);
         CREATE TABLE IF NOT EXISTS archive_content_assessments(
@@ -207,6 +216,51 @@ def init_db():
           error_text TEXT
         );
         """)
+        # Per-file rights migration: old MXL/LilyPond files have no verified
+        # per-file license, so they become external-link records by default.
+        archive_file_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(archive_files)")
+        }
+        archive_file_additions = {
+            "license_spdx": "TEXT", "license_name": "TEXT", "license_url": "TEXT",
+            "license_scope": "TEXT NOT NULL DEFAULT 'unknown'",
+            "rights_status": "TEXT NOT NULL DEFAULT 'unverified'",
+            "distribution_mode": "TEXT NOT NULL DEFAULT 'external_link'",
+            "transcriber_credit": "TEXT NOT NULL DEFAULT ''",
+            "attribution_text": "TEXT NOT NULL DEFAULT ''",
+            "rights_evidence_url": "TEXT NOT NULL DEFAULT ''",
+            "rights_checked_at": "TEXT",
+        }
+        for column, declaration in archive_file_additions.items():
+            if column not in archive_file_columns:
+                conn.execute(f"ALTER TABLE archive_files ADD COLUMN {column} {declaration}")
+        conn.execute("""
+            UPDATE archive_files
+               SET rights_status='unverified', distribution_mode='external_link'
+             WHERE (lower(file_name) LIKE '%.mxl' OR lower(file_name) LIKE '%.ly')
+               AND COALESCE(license_scope,'unknown')!='file'
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_archive_files_distribution
+            ON archive_files(distribution_mode, rights_status)
+        """)
+        legacy_unhosted = conn.execute("""
+            SELECT id,local_path FROM archive_files
+             WHERE (lower(file_name) LIKE '%.mxl' OR lower(file_name) LIKE '%.ly')
+               AND distribution_mode!='hosted' AND download_status='downloaded'
+        """).fetchall()
+        download_root = DOWNLOAD_DIR.resolve()
+        for legacy_file in legacy_unhosted:
+            stored_path = legacy_file["local_path"]
+            if stored_path:
+                candidate = Path(stored_path).resolve()
+                if candidate.is_relative_to(download_root):
+                    candidate.unlink(missing_ok=True)
+            conn.execute("""
+                UPDATE archive_files SET download_status='external_only',local_path=NULL,
+                       download_error='Migrado: no existe licencia de redistribución verificada; se conserva el enlace de origen.'
+                 WHERE id=?
+            """, (legacy_file["id"],))
         analysis_job_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(content_analysis_jobs)")
         }
@@ -291,7 +345,7 @@ from app.file_catalog import (
     METADATA_ENDPOINT, USER_AGENT,
 )
 from urllib.parse import quote, urlencode
-from app.musicxml_analysis import NotMusicXMLFileError, analyze_musicxml
+from app.musicxml_analysis import NotMusicXMLFileError, analyze_lilypond, analyze_musicxml
 from app.midi_analysis import analyze_midi
 app.include_router(file_catalog_router)
 
@@ -1777,10 +1831,12 @@ def analyze_downloaded_musicxml(identifier: str):
     with db() as conn:
         if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
             raise HTTPException(status_code=404, detail="Elemento no encontrado")
-        files = conn.execute("""SELECT id,file_name,local_path,sha256 FROM archive_files
+        files = conn.execute("""SELECT id,file_name,local_path,sha256,license_spdx,license_name,
+            license_url,license_scope,distribution_mode FROM archive_files
             WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
             AND (lower(file_name) LIKE '%.musicxml'
                  OR lower(file_name) LIKE '%.mxl'
+                 OR lower(file_name) LIKE '%.ly'
                  OR lower(file_name) LIKE '%.xml'
                  OR lower(file_name) LIKE '%.mid'
                  OR lower(file_name) LIKE '%.midi'
@@ -1827,6 +1883,8 @@ def analyze_downloaded_musicxml(identifier: str):
                 raise FileNotFoundError("El archivo descargado no existe en la ruta local registrada.")
             if path.suffix.lower() in {".mid", ".midi", ".kar"}:
                 analysis = analyze_midi(path)
+            elif path.suffix.lower() == ".ly":
+                analysis = analyze_lilypond(path)
             else:
                 analysis = analyze_musicxml(path)
         except NotMusicXMLFileError as exc:
@@ -1855,6 +1913,53 @@ def analyze_downloaded_musicxml(identifier: str):
                 identifier, analysis["title"], creator, file_row["file_name"],
                 "Título explícito de metadatos MusicXML/MXL; estructura analizada localmente.",
             )
+        if path.suffix.lower() in {".mxl", ".ly"}:
+            file_license = {
+                "license_spdx": file_row["license_spdx"],
+                "license_name": file_row["license_name"],
+                "license_url": file_row["license_url"],
+                "license_scope": file_row["license_scope"] or "unknown",
+            }
+            extracted = {
+                "license_spdx": analysis.get("license_spdx") if status == "ok" else None,
+                "license_name": analysis.get("license_name") if status == "ok" else None,
+                "license_url": analysis.get("license_url") if status == "ok" else None,
+            }
+            if any(extracted.values()):
+                file_license.update(extracted)
+                file_license["license_scope"] = "file"
+            rights_status, distribution_mode = distribution_decision(
+                file_row["file_name"], **file_license
+            )
+            transcriber = get_transcriber_credit(analysis)
+            creator_names = [
+                str(item.get("name", "")).strip()
+                for item in (analysis.get("creators") or [])
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ] if status == "ok" else []
+            attribution = "; ".join(creator_names) or "Créditos de autoría no indicados en los metadatos"
+            attribution += "; transcriptor: " + (transcriber or "no indicado en la fuente")
+            with db() as conn:
+                conn.execute(
+                    """UPDATE archive_files SET license_spdx=?,license_name=?,license_url=?,
+                       license_scope=?,rights_status=?,distribution_mode=?,transcriber_credit=?,
+                       attribution_text=?,rights_evidence_url=?,rights_checked_at=?
+                       WHERE id=?""",
+                    (
+                        file_license["license_spdx"], file_license["license_name"],
+                        file_license["license_url"], file_license["license_scope"],
+                        rights_status, distribution_mode, transcriber, attribution,
+                        file_license["license_url"] or "", now(), file_row["id"],
+                    ),
+                )
+            if distribution_mode != "hosted":
+                path.unlink(missing_ok=True)
+                with db() as conn:
+                    conn.execute(
+                        """UPDATE archive_files SET download_status='external_only',
+                           local_path=NULL,download_error=? WHERE id=?""",
+                        ("Partitura identificada; no se conserva el archivo porque no consta una licencia de redistribución autorizada.", file_row["id"]),
+                    )
         with db() as conn:
             conn.execute("""INSERT INTO archive_file_analyses
                 (file_id,identifier,analysis_type,status,analysis_json,error_text,analyzed_at,sha256)
