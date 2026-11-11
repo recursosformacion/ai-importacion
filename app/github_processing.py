@@ -33,7 +33,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_PROCESSING_SCHEMA_LOCK = threading.Lock()
+_PROCESSING_SCHEMA_READY_PATHS: set[str] = set()
+
+
 def ensure_processing_schema() -> None:
+    """Create/upgrade processing tables once per database path."""
+    schema_path = str(Path(DB_PATH).resolve())
+    if schema_path in _PROCESSING_SCHEMA_READY_PATHS:
+        return
+    with _PROCESSING_SCHEMA_LOCK:
+        if schema_path in _PROCESSING_SCHEMA_READY_PATHS:
+            return
+        _ensure_processing_schema_tables()
+        _PROCESSING_SCHEMA_READY_PATHS.add(schema_path)
+
+
+def _ensure_processing_schema_tables() -> None:
     with connect(DB_PATH) as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS github_processing_jobs(
