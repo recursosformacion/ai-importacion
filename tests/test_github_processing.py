@@ -114,3 +114,22 @@ def test_recover_processing_jobs_requeues_interrupted_work(tmp_path, monkeypatch
         ).fetchone()
     assert missing_job["status"] == "queued"
     assert missing_job["stage"] == "queued"
+
+def test_recovery_does_not_spawn_duplicate_worker_when_lock_is_held(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "active-worker.sqlite3")
+    monkeypatch.setattr(processing, "DB_PATH", db_path)
+    processing.ensure_processing_schema()
+    with processing.connect(db_path) as conn:
+        conn.execute("CREATE TABLE github_repositories(id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO github_repositories(id) VALUES(9)")
+        conn.execute("""
+            INSERT INTO github_processing_jobs
+              (repository_id,status,stage,progress_count,total_count,started_at,updated_at)
+            VALUES(9,'queued','queued',0,25,'start','queued')
+        """)
+    monkeypatch.setattr(processing, "_processing_worker_is_active", lambda: True)
+    launched = []
+    monkeypatch.setattr(processing, "enqueue_repositories", lambda ids: launched.extend(ids))
+
+    assert processing.recover_processing_jobs() == 1
+    assert launched == []
