@@ -129,3 +129,38 @@ La licencia se decide **por fichero**, nunca por la licencia general del reposit
 - Los endpoints de servicio local comprueban tanto la decisión de derechos como que la ruta esté dentro del almacenamiento configurado.
 
 La licencia declarada por un repositorio, por Archive.org o por una página de catálogo no se convierte automáticamente en licencia del fichero. Cuando no hay evidencia individual suficiente, el comportamiento predeterminado es enlace externo.
+
+
+## Control legal de repositorios GitHub
+
+La admisión de un repositorio GitHub requiere un archivo `LICENSE` o `COPYING` explícito y una licencia identificable que permita redistribución y adaptación. La licencia se contrasta con el texto del archivo, no solo con el indicador de licencia que devuelve la API de GitHub. Los README con exclusiones o alcances distintos dejan el repositorio pendiente de revisión.
+
+En cada primera admisión se archiva una instantánea inmutable en SQLite con:
+- texto íntegro de LICENSE/COPYING y su SHA-256;
+- README y su SHA-256;
+- commit exacto, fecha UTC, metadatos de GitHub;
+- propietario y crédito visible;
+- decisión y motivo de admisión.
+
+La licencia del repositorio se aplica a los ficheros musicales solo si el README no excluye esos contenidos y el propio fichero no declara condiciones incompatibles. Una licencia individual restrictiva prevalece sobre la del repositorio. El manifiesto conserva el alcance de la licencia y el enlace a la evidencia.
+
+### Auditoría y reparación de la base de datos
+
+Ejecutar desde la raíz del proyecto después de actualizar:
+
+```powershell
+.venv\\Scripts\\python.exe -m scripts.audit_github_rights
+```
+
+El programa:
+1. Migra las tablas y columnas legales de SQLite.
+2. Pone en cuarentena repositorios antiguos sin snapshot verificable.
+3. Elimina copias locales alojadas que ya no tienen admisión legal aprobada, conservando los registros y enlaces externos.
+4. Audita cada repositorio registrado y compara LICENSE, README, propietario y commit.
+5. Bloquea y retira de servicio los recursos cuando detecta cambios en LICENSE, README o propietario; conserva las instantáneas anteriores y registra una alerta.
+
+Para auditorías recurrentes, programa ese mismo comando en el Programador de tareas de Windows (por ejemplo, una vez al día), usando como directorio de inicio la carpeta del proyecto. No se requiere webhook: la auditoría periódica consulta el estado actual de GitHub.
+
+Los repositorios bloqueados muestran el motivo en `/github/{id}`. Tras revisar la nueva instantánea, el operador puede confirmar la revisión manualmente; los ficheros deberán procesarse de nuevo para volver a alojarse. El endpoint de servicio también comprueba el estado legal en cada petición.
+
+La migración es conservadora: un repositorio existente no se considera autorizado por el mero hecho de que antes figurase en el catálogo. Necesita una nueva instantánea verificable.
