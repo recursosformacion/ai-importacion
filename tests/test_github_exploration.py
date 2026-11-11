@@ -280,6 +280,10 @@ def test_exploration_table_shows_count_and_only_lists_repositories_at_threshold(
     assert "<b>117</b>" in response.text
     assert "example/too-small" not in response.text
     assert "example/not-inspected" not in response.text
+    # Seed repositories remain discoverable before their first tree inspection.
+    assert "OpenScore/Lieder" in response.text
+    # Status polling must never reload the whole page while a user is typing a search.
+    assert "location.reload()" not in response.text
     assert "Sin inspeccionar" not in response.text
 
 
