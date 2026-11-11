@@ -10,12 +10,18 @@ _ALLOWED = {"CC0-1.0", "CC-BY-1.0", "CC-BY-2.0", "CC-BY-2.5", "CC-BY-3.0", "CC-B
 
 def canonical_license(value: str | None, url: str | None = None) -> str | None:
     raw = (value or "").strip().upper().replace("_", "-")
-    match = re.search(r"\b(CC0-1\.0|CC-BY-(?:1\.0|2\.0|2\.5|3\.0|4\.0))\b", raw)
+    candidate = (url or "").strip().lower()
+    # A conflicting/restrictive URL always overrides a permissive text label.
+    if re.search(r"/(?:by-sa|by-nc|by-nd|by-nc-sa|by-nc-nd)/", candidate):
+        return None
+    if re.search(r"\\b(?:NC|ND|SA)\\b", raw):
+        return None
+    normalized = re.sub(r"\\s+", "-", raw)
+    match = re.search(r"\\b(CC0-1\\.0|CC-BY-(?:1\\.0|2\\.0|2\\.5|3\\.0|4\\.0))\\b", normalized)
     if match:
         return match.group(1)
-    candidate = (url or value or "").strip().lower()
     match = re.search(
-        r"creativecommons\.org/(?:licenses/by|publicdomain/zero)/(1\.0|2\.0|2\.5|3\.0|4\.0)",
+        r"creativecommons\\.org/(?:licenses/by|publicdomain/zero)/(1\\.0|2\\.0|2\\.5|3\\.0|4\\.0)",
         candidate,
     )
     if match:
