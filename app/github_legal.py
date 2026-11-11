@@ -112,7 +112,7 @@ def _has_scope_exclusions(readme):
     # A README may grant a different, restrictive license specifically to scores.
     for line in text.splitlines():
         if re.search(r"score|partitur|music|audio|mxl|musicxml", line) and re.search(
-            r"cc[- ]?by[- ]?(?:nc|nd)|noncommercial|non-commercial|no derivatives|all rights reserved|\\bproprietary\\b",
+            r"cc[- ]?by[- ]?(?:nc|nd)|noncommercial|non-commercial|no derivatives|all rights reserved|\bproprietary\b",
             line,
         ):
             return True
