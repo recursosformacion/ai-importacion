@@ -63,6 +63,8 @@ def test_legacy_database_is_fail_closed_and_local_copy_is_removed(tmp_path, monk
     assert row["distribution_mode"] == "external_link"
     assert row["download_status"] == "external_only"
     assert result["local_files_removed"] == 1
+    backups = list(tmp_path.glob("legacy.sqlite3.pre-github-legal-migration-*.bak"))
+    assert backups, "Debe existir una copia completa antes de migrar la base"
     assert not score.exists()
 
 
