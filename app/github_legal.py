@@ -66,6 +66,10 @@ def _license_id(text, api_spdx):
     body = (text or "").casefold()
     if not body:
         return None
+    # Reject restrictive Creative Commons variants before matching the
+    # broader "Attribution" wording (which also appears in BY-NC/BY-ND).
+    if re.search(r"non[- ]?commercial|no derivatives|attribution[- ]?noncommercial|attribution[- ]?noderivatives", body):
+        return None
     if "creative commons" in body or "creativecommons.org" in body:
         if re.search(r"attribution[- ]sharealike|by-sa", body):
             match = re.search(r"by-sa/(2\.0|2\.5|3\.0|4\.0)", body)
