@@ -492,7 +492,8 @@ def process_repository(repository_id: int):
                        rights_evidence_url=?,rights_checked_at=?,download_status=?,local_path=?,sha256=?
                        WHERE id=?""",
                     (
-                        repo["license_spdx"] or None, repo["license_name"] or None,
+                        repo["legal_license_spdx"] or repo["license_spdx"] or None,
+                        repo["legal_license_spdx"] or repo["license_name"] or None,
                         file_license["license_spdx"], file_license["license_name"],
                         file_license["license_url"], file_license["license_scope"],
                         rights_status, distribution_mode, transcriber, attribution,
