@@ -287,7 +287,42 @@ async def capture_snapshot(repository_id: int, full_name: str):
 
 
 async def audit_repository(repository_id: int, full_name: str):
-    return await capture_snapshot(repository_id, full_name)
+    result = await capture_snapshot(repository_id, full_name)
+    if result["status"] == "blocked":
+        reconcile_database()
+    return result
+
+
+def approve_current_snapshot(repository_id: int):
+    ensure_schema()
+    stamp = now()
+    with connect(DB_PATH) as conn:
+        snapshot = conn.execute(
+            "SELECT * FROM github_legal_snapshots WHERE repository_id=? ORDER BY id DESC LIMIT 1",
+            (repository_id,),
+        ).fetchone()
+        if not snapshot or snapshot["decision"] not in {"approved", "review_required"}:
+            raise ValueError("No existe una instantánea legal revisable.")
+        if not snapshot["license_text"] or snapshot["license_spdx"] not in OPEN_LICENSES:
+            raise ValueError("La última instantánea no contiene una licencia abierta admitida.")
+        conn.execute(
+            """UPDATE github_repositories SET legal_status='approved',legal_alert='',
+               legal_license_spdx=?,legal_license_path=?,legal_license_sha256=?,
+               legal_commit_sha=?,legal_captured_at=?,legal_owner_login=?,
+               legal_owner_credit=? WHERE id=?""",
+            (snapshot["license_spdx"], snapshot["license_path"], snapshot["license_sha256"],
+             snapshot["commit_sha"], snapshot["captured_at"], snapshot["owner_login"],
+             snapshot["author_credit"], repository_id),
+        )
+        conn.execute(
+            """INSERT INTO github_legal_audits
+               (repository_id,audited_at,current_commit_sha,current_license_sha256,
+                current_owner_login,previous_license_sha256,previous_owner_login,status,details)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (repository_id, stamp, snapshot["commit_sha"], snapshot["license_sha256"],
+             snapshot["owner_login"], snapshot["license_sha256"], snapshot["owner_login"],
+             "manually_approved", "Aprobación manual de la instantánea legal más reciente."),
+        )
 
 
 def assert_repository_approved(repository_id: int):
