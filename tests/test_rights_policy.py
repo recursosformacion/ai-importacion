@@ -1,3 +1,5 @@
+import sqlite3
+
 from fastapi.testclient import TestClient
 
 import app.main as main
@@ -62,16 +64,31 @@ def test_startup_migrates_legacy_unverified_mxl_to_external_only(tmp_path, monke
     monkeypatch.setattr(main, "DB_PATH", str(db_path))
     monkeypatch.setattr(main, "DOWNLOAD_DIR", download_root)
 
-    main.init_db()
     stamp = main.now()
-    with main.db() as conn:
-        conn.execute(
+    with sqlite3.connect(db_path) as legacy:
+        legacy.executescript("""
+            CREATE TABLE archive_items(
+                identifier TEXT PRIMARY KEY, title TEXT, source_url TEXT NOT NULL,
+                metadata_json TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+            );
+            CREATE TABLE archive_files(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identifier TEXT NOT NULL REFERENCES archive_items(identifier) ON DELETE CASCADE,
+                file_name TEXT NOT NULL, file_name_safe TEXT NOT NULL, source_url TEXT NOT NULL,
+                size_bytes INTEGER, archive_format TEXT, md5 TEXT, sha1 TEXT,
+                relevant INTEGER NOT NULL DEFAULT 0, inventory_seen_at TEXT NOT NULL,
+                download_status TEXT NOT NULL DEFAULT 'not_downloaded', local_path TEXT,
+                sha256 TEXT, downloaded_bytes INTEGER, download_error TEXT,
+                UNIQUE(identifier,file_name)
+            );
+        """)
+        legacy.execute(
             """INSERT INTO archive_items
                (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
                VALUES(?,?,?,?,?,?)""",
             ("legacy-rights-test", "Legacy", "https://archive.org/details/legacy-rights-test", "{}", stamp, stamp),
         )
-        conn.execute(
+        legacy.execute(
             """INSERT INTO archive_files
                (identifier,file_name,file_name_safe,source_url,inventory_seen_at,
                 download_status,local_path)
@@ -86,6 +103,8 @@ def test_startup_migrates_legacy_unverified_mxl_to_external_only(tmp_path, monke
             """SELECT download_status,local_path,distribution_mode,rights_status
                FROM archive_files WHERE identifier='legacy-rights-test'"""
         ).fetchone()
+    backups = list(tmp_path.glob("migration.sqlite3.pre-rights-migration-*.bak"))
+    assert backups, "La base de datos debe respaldarse antes de migrar"
     assert row["download_status"] == "external_only"
     assert row["local_path"] is None
     assert row["distribution_mode"] == "external_link"
