@@ -299,7 +299,7 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
         """, (repository_id, len(pending), stamp, stamp))
         conn.execute("""
             UPDATE github_processing_jobs
-            SET stage='download',progress_count=0,total_count=?,current_path='',updated_at=?
+            SET stage='git_pack',progress_count=0,total_count=?,current_path='Transferencia Git agrupada en curso',updated_at=?
             WHERE repository_id=?
         """, (len(pending), stamp, repository_id))
 
@@ -324,6 +324,12 @@ def _ensure_catalog_inventory_and_downloads(repository_id: int) -> bool:
             "GitHub %s: transferencia por lotes terminada; procesando los archivos desde el checkout local.",
             repository_id,
         )
+        with connect(DB_PATH) as conn:
+            conn.execute("""
+                UPDATE github_processing_jobs
+                SET stage='download',progress_count=0,current_path='',updated_at=?
+                WHERE repository_id=?
+            """, (_now(), repository_id))
 
         completed = 0
         failed = 0
