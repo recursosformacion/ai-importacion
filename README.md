@@ -115,3 +115,17 @@ La disponibilidad pública de un fichero no acredita permiso para redistribuirlo
 ### Configuración de Gemini
 
 Crea `secrets.txt` en la raíz del proyecto a partir de `secrets_example.txt` y pega la clave obtenida en Google AI Studio. `secrets.txt` está excluido de Git. También se admite `GEMINI_API_KEY` o `GEMINI_API_KEYS` como variable de entorno, y varias claves separadas por comas. El modelo predeterminado es `gemini-flash-lite-latest`; el límite inicial es de 100 ficheros por ejecución para controlar el consumo. Si no hay clave o falla la identificación, el procesamiento local continúa y deja el título como candidato sin inventarlo.
+
+
+## Derechos de redistribución de partituras MXL y LilyPond
+
+La licencia se decide **por fichero**, nunca por la licencia general del repositorio o del elemento que lo contiene.
+
+- Solo una licencia individual verificable **CC BY** o **CC0** permite conservar y servir públicamente un fichero .mxl o .ly.
+- Se guardan la licencia original, su URL/evidencia, los créditos identificados y el crédito del transcriptor por separado.
+- Licencias NC, ND, SA, restrictivas, dudosas o no verificables mantienen únicamente los metadatos y el enlace a la fuente. El fichero de trabajo se elimina después del análisis.
+- Los ficheros GitHub se procesan en un clon temporal. Solo se copian a AI_IMPORTACION_DOWNLOAD_DIR los MXL/LilyPond cuya licencia individual permite redistribución; el clon temporal se elimina al terminar.
+- Los ficheros Archive.org sin autorización individual se migran a estado external_only; sus copias locales antiguas se eliminan tras crear una copia de seguridad SQLite previa a la migración.
+- Los endpoints de servicio local comprueban tanto la decisión de derechos como que la ruta esté dentro del almacenamiento configurado.
+
+La licencia declarada por un repositorio, por Archive.org o por una página de catálogo no se convierte automáticamente en licencia del fichero. Cuando no hay evidencia individual suficiente, el comportamiento predeterminado es enlace externo.
