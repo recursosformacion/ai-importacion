@@ -537,8 +537,9 @@ def process_repository(repository_id: int):
                 "snapshot_lifecycle": "temporary_removed_after_processing",
             },
             "rights_notice": (
-                "La licencia declarada por GitHub no ha sido verificada. "
-                "La presencia pública no acredita permiso de redistribución."
+                "La licencia del repositorio es solo contexto y no autoriza por sí misma la redistribución. "
+                "Los MXL/LilyPond solo se alojan cuando sus propios metadatos acreditan CC BY o CC0; "
+                "el resto conserva metadatos y enlace externo."
             ),
             "processing": {
                 "files_in_snapshot": None,
