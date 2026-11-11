@@ -536,13 +536,15 @@ def view_downloaded_file(file_id: int):
     """Preview safe local PDFs/images/text; serve proprietary/compressed formats as downloads."""
     with db() as conn:
         row = conn.execute(
-            "SELECT identifier,file_name,local_path,download_status FROM archive_files WHERE id=?",
+            "SELECT identifier,file_name,local_path,download_status,distribution_mode FROM archive_files WHERE id=?",
             (file_id,),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
     if row["download_status"] != "downloaded" or not row["local_path"]:
         raise HTTPException(status_code=409, detail="El fichero todavía no está descargado")
+    if Path(row["file_name"]).suffix.lower() in {".mxl", ".ly"} and row["distribution_mode"] != "hosted":
+        raise HTTPException(status_code=403, detail="El fichero solo puede analizarse localmente; no está autorizado para servirlo.")
     path = Path(row["local_path"]).resolve()
     allowed_root = (DOWNLOAD_DIR / row["identifier"]).resolve()
     try:
