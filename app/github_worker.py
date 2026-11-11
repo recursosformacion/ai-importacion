@@ -29,17 +29,23 @@ def _acquire_singleton_lock():
         handle.write(b"0")
         handle.flush()
     handle.seek(0)
-    try:
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, BlockingIOError):
-        handle.close()
-        return None
-    return handle
+    for attempt in range(30):
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except (OSError, BlockingIOError):
+            if attempt == 29:
+                handle.close()
+                return None
+            time.sleep(0.5)
+    handle.close()
+    return None
 
 
 def _next_repository_id() -> int | None:
