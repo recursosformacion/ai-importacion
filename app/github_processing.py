@@ -648,10 +648,13 @@ def recover_processing_jobs() -> int:
         ).fetchall()
         ids = [int(row["repository_id"]) for row in rows]
         if ids:
+            # Do not relabel a live detached worker's running job during a web
+            # server reload. The singleton worker requeues stale running rows
+            # itself only after it has acquired the process lock.
             conn.execute("""
                 UPDATE github_processing_jobs
                 SET status='queued',stage='queued',current_path='',updated_at=?,error_text=NULL
-                WHERE status IN ('queued','running','pending')
+                WHERE status='pending'
             """, (_now(),))
     if ids:
         logging.getLogger(__name__).warning(
