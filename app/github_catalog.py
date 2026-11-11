@@ -129,8 +129,9 @@ def ensure_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_github_files_distribution
             ON github_files(distribution_mode,rights_status)
         """)
-    from app.github_legal import ensure_schema as ensure_legal_schema
+    from app.github_legal import ensure_schema as ensure_legal_schema, reconcile_database
     ensure_legal_schema()
+    reconcile_database()
 
 
 def parse_repository(value: str) -> tuple[str, str]:
@@ -196,13 +197,14 @@ def github_home():
     <p class="muted">Se admiten repositorios públicos de GitHub. No pegues tokens ni credenciales en este formulario.</p></section>
     <section class="panel"><h2>Repositorios registrados</h2>"""
     if repositories:
-        body += "<table><tr><th>Repositorio</th><th>Licencia declarada</th><th>Archivos musicales</th><th>Última lectura</th><th>Acción</th></tr>"
+        body += "<table><tr><th>Repositorio y autor</th><th>Licencia</th><th>Control legal</th><th>Archivos musicales</th><th>Última lectura</th><th>Acción</th></tr>"
         for repo in repositories:
             license_text = repo["license_spdx"] or repo["license_name"] or "No declarada"
             body += (
                 "<tr><td><a href='" + esc(repo["html_url"]) + "'>" + esc(repo["full_name"]) + "</a>"
-                "<div class='muted'>" + esc(repo["description"]) + "</div></td>"
-                "<td>" + esc(license_text) + "</td><td>" + str(repo["files"]) + "</td>"
+                "<div class='muted'>" + esc(repo["description"]) + "</div><div class='muted'>Autor/propietario: " + esc(repo["legal_owner_credit"] or repo["full_name"].split("/")[0]) + "</div></td>"
+                "<td>" + esc(repo["legal_license_spdx"] or license_text) + "</td>"
+                "<td><b>" + esc(repo["legal_status"]) + "</b><div class='muted'>" + esc(repo["legal_alert"]) + "</div></td><td>" + str(repo["files"]) + "</td>"
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
                 "<td><form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
                 "<a href='/github/" + str(repo["id"]) + "'>Resultado JSON</a></td></tr>"
