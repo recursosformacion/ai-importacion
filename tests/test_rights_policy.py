@@ -1,4 +1,5 @@
 import sqlite3
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
@@ -243,3 +244,68 @@ def test_startup_keeps_legacy_lilypond_with_embedded_cc_by(tmp_path, monkeypatch
     assert row["transcriber_credit"] == "Ada Transcriber"
     assert row["local_path"] == str(score)
     assert score.exists()
+
+
+def test_analysis_removes_unlicensed_mxl_but_keeps_its_metadata(tmp_path, monkeypatch):
+    db_path = tmp_path / "analysis-rights.sqlite3"
+    download_root = tmp_path / "downloads"
+    score_dir = download_root / "analysis-rights-test"
+    score_dir.mkdir(parents=True)
+    score = score_dir / "score.mxl"
+    musicxml = '''<score-partwise version="4.0">
+      <work><work-title>Unlicensed score</work-title></work>
+      <identification><creator type="transcriber">Bea Transcriber</creator></identification>
+      <part-list><score-part id="P1"><part-name>Soprano</part-name></score-part></part-list>
+      <part id="P1"><measure number="1"/></part>
+    </score-partwise>'''
+    with ZipFile(score, "w") as archive:
+        archive.writestr("META-INF/container.xml",
+            '<container><rootfiles><rootfile full-path="score.musicxml"/></rootfiles></container>')
+        archive.writestr("score.musicxml", musicxml)
+
+    monkeypatch.setattr(main, "DB_PATH", str(db_path))
+    monkeypatch.setattr(file_catalog, "DB_PATH", str(db_path))
+    monkeypatch.setattr(main, "DOWNLOAD_DIR", download_root)
+    monkeypatch.setattr(file_catalog, "DOWNLOAD_DIR", download_root)
+    with TestClient(main.app) as client:
+        stamp = main.now()
+        with main.db() as conn:
+            conn.execute(
+                """INSERT INTO archive_items
+                   (identifier,title,source_url,metadata_json,first_seen_at,last_seen_at)
+                   VALUES(?,?,?,?,?,?)""",
+                ("analysis-rights-test", "Unlicensed score", "https://archive.org/details/analysis-rights-test", "{}", stamp, stamp),
+            )
+            file_id = conn.execute(
+                """INSERT INTO archive_files
+                   (identifier,file_name,file_name_safe,source_url,inventory_seen_at,
+                    download_status,local_path,sha256)
+                   VALUES(?,?,?,?,?,'downloaded',?,?)""",
+                ("analysis-rights-test", "score.mxl", "score.mxl",
+                 "https://archive.org/download/analysis-rights-test/score.mxl",
+                 stamp, str(score), "test-mxl-sha"),
+            ).lastrowid
+        response = client.post(
+            "/items/analysis-rights-test/content-analysis/analyze-files",
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    with main.db() as conn:
+        file_row = conn.execute(
+            """SELECT download_status,local_path,distribution_mode,rights_status,
+                      transcriber_credit FROM archive_files WHERE id=?""",
+            (file_id,),
+        ).fetchone()
+        analysis_row = conn.execute(
+            "SELECT status,analysis_json FROM archive_file_analyses WHERE file_id=?",
+            (file_id,),
+        ).fetchone()
+    assert file_row["download_status"] == "external_only"
+    assert file_row["local_path"] is None
+    assert file_row["distribution_mode"] == "external_link"
+    assert file_row["rights_status"] == "unverified"
+    assert file_row["transcriber_credit"] == "Bea Transcriber"
+    assert analysis_row["status"] == "ok"
+    assert "Unlicensed score" in analysis_row["analysis_json"]
+    assert not score.exists()
