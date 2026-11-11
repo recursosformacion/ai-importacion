@@ -212,7 +212,11 @@ def ensure_schema():
         """)
         conn.execute("""
           UPDATE github_files SET distribution_mode='external_link',
-                 rights_status='unverified',download_status='external_only'
+                 rights_status=CASE
+                   WHEN (SELECT legal_license_spdx FROM github_repositories
+                         WHERE id=github_files.repository_id)='' THEN 'unlicensed'
+                   ELSE 'review_required' END,
+                 download_status='external_only'
           WHERE repository_id IN (SELECT id FROM github_repositories
                                   WHERE legal_status!='approved')
             AND distribution_mode='hosted'
@@ -406,7 +410,11 @@ def reconcile_database():
                 removed += 1
         conn.execute("""
           UPDATE github_files SET local_path=NULL,download_status='external_only',
-            distribution_mode='external_link',rights_status='unverified'
+            distribution_mode='external_link',
+            rights_status=CASE
+              WHEN (SELECT legal_license_spdx FROM github_repositories
+                    WHERE id=github_files.repository_id)='' THEN 'unlicensed'
+              ELSE 'review_required' END
           WHERE repository_id IN (SELECT id FROM github_repositories WHERE legal_status!='approved')
         """)
     return {"local_files_removed": removed}
