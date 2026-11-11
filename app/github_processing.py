@@ -512,6 +512,12 @@ def process_repository(repository_id: int):
                     "provider": "github",
                     "repository": repo["full_name"],
                     "repository_url": repo["html_url"],
+                    "repository_owner": repo["legal_owner_login"],
+                    "repository_author_credit": repo["legal_owner_credit"],
+                    "repository_license_snapshot_url": (
+                        repo["html_url"].rstrip("/") + "/blob/" +
+                        repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                    ),
                     "path": relative,
                     "commit_sha": commit,
                     "git_blob_sha": sha,
@@ -551,6 +557,16 @@ def process_repository(repository_id: int):
             "source": {
                 "provider": "github",
                 "repository": repo["full_name"],
+                "repository_url": repo["html_url"],
+                "repository_owner": repo["legal_owner_login"],
+                "repository_author_credit": repo["legal_owner_credit"],
+                "repository_license_spdx": repo["legal_license_spdx"],
+                "repository_license_snapshot_url": (
+                    repo["html_url"].rstrip("/") + "/blob/" +
+                    repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                ),
+                "legal_snapshot_commit": repo["legal_commit_sha"],
+                "legal_snapshot_captured_at": repo["legal_captured_at"],
                 "commit_sha": commit,
                 "snapshot": "filtered_shallow_clone",
                 "download_strategy": "single_sparse_checkout_batch",
