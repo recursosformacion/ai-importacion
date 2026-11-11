@@ -62,10 +62,6 @@ async def _get_text(client, full_name, path, commit):
 
 
 def _license_id(text, api_spdx):
-    declared = (api_spdx or "").strip().upper()
-    normalized = re.sub(r"[^A-Z0-9.+-]", "", declared)
-    if normalized in OPEN_LICENSES:
-        return normalized
     body = (text or "").casefold()
     if not body:
         return None
@@ -93,6 +89,13 @@ def _license_id(text, api_spdx):
         return "GPL-2.0"
     if "mozilla public license" in body and "2.0" in body:
         return "MPL-2.0"
+    if "gnu lesser general public license" in body:
+        if "version 3" in body:
+            return "LGPL-3.0"
+        if "version 2.1" in body:
+            return "LGPL-2.1"
+        if "version 2" in body:
+            return "LGPL-2.0"
     return None
 
 
@@ -222,6 +225,8 @@ async def capture_snapshot(repository_id: int, full_name: str):
             if previous and (
                 previous["license_sha256"] != license_hash
                 or previous["owner_login"] != owner_login
+                or previous["readme_sha256"] != readme_hash
+                or previous["license_spdx"] != (license_id or "")
             ):
                 decision = "review_required"
                 reason = "Han cambiado el texto de LICENSE o el propietario desde la instantánea anterior."
