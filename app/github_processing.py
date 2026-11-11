@@ -447,6 +447,8 @@ def process_repository(repository_id: int):
             hosted_path = None
             if suffix in {".mxl", ".ly"} and distribution_mode == "hosted":
                 hosted_path = (DOWNLOAD_DIR / "github" / str(repository_id) / relative).resolve()
+                if not hosted_path.is_relative_to(DOWNLOAD_DIR.resolve()):
+                    raise ValueError("La ruta de almacenamiento de la partitura no es segura.")
                 hosted_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, hosted_path)
                 local_url = f"/github/files/{file_id}"
