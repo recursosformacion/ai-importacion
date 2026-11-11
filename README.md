@@ -149,7 +149,7 @@ La licencia del repositorio se aplica a los ficheros musicales solo si el README
 Ejecutar desde la raíz del proyecto después de actualizar:
 
 ```powershell
-.venv\\Scripts\\python.exe -m scripts.audit_github_rights
+.venv\Scripts\python.exe -m scripts.audit_github_rights
 ```
 
 El programa:
