@@ -206,8 +206,10 @@ def github_home():
                 "<td>" + esc(repo["legal_license_spdx"] or license_text) + "</td>"
                 "<td><b>" + esc(repo["legal_status"]) + "</b><div class='muted'>" + esc(repo["legal_alert"]) + "</div></td><td>" + str(repo["files"]) + "</td>"
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
-                "<td><form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
-                "<a href='/github/" + str(repo["id"]) + "'>Resultado JSON</a></td></tr>"
+                "<td>" + (
+                    "<form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
+                    if repo["legal_status"] == "approved" else "<span>Solo enlace externo; repositorio no admitido</span>"
+                ) + "<a href='/github/" + str(repo["id"]) + "'>Detalles legales</a></td></tr>"
             )
         body += "</table>"
     else:
@@ -418,6 +420,9 @@ def github_repository(repository_id: int, q: str = ""):
     body += "<p><a href='" + esc(repo["html_url"]) + "'>Repositorio original</a> · Propietario/crédito: <b>" + esc(repo["legal_owner_credit"] or repo["full_name"].split("/")[0]) + "</b></p>"
     body += "<p>Licencia de repositorio: <b>" + esc(repo["legal_license_spdx"] or "No verificada") + "</b> · Estado legal: <b>" + esc(repo["legal_status"]) + "</b></p>"
     body += "<p>Commit de la instantánea: <code>" + esc(repo["legal_commit_sha"]) + "</code> · Capturada: " + esc(repo["legal_captured_at"] or "—") + "</p>"
+    if repo["legal_license_path"]:
+        license_url = repo["html_url"].rstrip("/") + "/blob/" + repo["legal_commit_sha"] + "/" + repo["legal_license_path"]
+        body += "<p><a href='" + esc(license_url) + "'>LICENSE archivada en el commit de ingesta</a></p>"
     if repo["legal_alert"]:
         body += "<p><b>Alerta:</b> " + esc(repo["legal_alert"]) + "</p>"
     body += "<form method='post' action='/github/" + str(repository_id) + "/audit'><button>Auditar condiciones legales ahora</button></form>"
@@ -427,7 +432,9 @@ def github_repository(repository_id: int, q: str = ""):
     ensure_processing_schema()
     with db() as conn:
         job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
-    if job and job["status"] == "completed":
+    if repo["legal_status"] != "approved":
+        body += "<p><b>Repositorio excluido o bloqueado:</b> no se indexan ni procesan sus partituras. Solo se conserva el enlace al repositorio original. Motivo: " + esc(repo["legal_alert"] or "No existe una licencia abierta explícita y verificable.") + "</p>"
+    elif job and job["status"] == "completed":
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
     elif job and job["status"] == "running":
