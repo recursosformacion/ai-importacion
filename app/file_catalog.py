@@ -243,7 +243,7 @@ def file_catalog(identifier: str):
     if not files:
         body += "<p>Inventario aún no consultado. Pulsa el botón para recuperar nombres, formatos, tamaños y checksums de origen.</p>"
     else:
-        body += "<table><tr><th>Fichero / formato</th><th>Tamaño</th><th>Checksums</th><th>Estado</th><th>Acción</th></tr>"
+        body += "<table><tr><th>Fichero / formato</th><th>Tamaño</th><th>Checksums</th><th>Licencia / crédito</th><th>Estado</th><th>Acción</th></tr>"
         for f in files:
             size = f"{f['size_bytes']:,} bytes" if f["size_bytes"] is not None else "—"
             checksums = "MD5: " + esc(f["md5"] or "—") + "<br>SHA-1 origen: " + esc(f["sha1"] or "—") + "<br>SHA-256 local: " + esc(f["sha256"] or "—")
@@ -253,10 +253,17 @@ def file_catalog(identifier: str):
                 button_label = "Reintentar descarga" if status == "error" else "Descargar"
                 action = f"<form method='post' action='/files/download/{f['id']}'><button>{button_label}</button></form>"
             elif status == "downloaded":
-                action = "<span>Guardado localmente</span>"
+                if Path(f["file_name"]).suffix.lower() in {".mxl", ".ly"} and f["distribution_mode"] == "hosted":
+                    action = f"<a href='/files/local/{f['id']}'>Servir fichero autorizado</a>"
+                else:
+                    action = "<span>Guardado para análisis local</span>"
+            elif status == "external_only":
+                action = f"<a target='_blank' rel='noopener' href='{esc(f['source_url'])}'>Abrir fuente original ↗</a>"
             elif status == "too_large":
                 action = "<span>No disponible por el límite de tamaño</span>"
-            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(download_status_label(status, f['download_error']))}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
+            license_label = f["license_spdx"] or f["license_name"] or "Sin licencia individual verificada"
+            credit_label = f["transcriber_credit"] or "Transcriptor no indicado"
+            body += f"<tr><td>{esc(f['file_name'])}<br><small>{esc(f['archive_format'] or 'Formato no indicado')}{' · texto de apoyo para análisis' if Path(f['file_name'].lower()).suffix == '.txt' else (' · candidato musical' if f['relevant'] else '')}</small></td><td>{esc(size)}</td><td><code>{checksums}</code></td><td>{esc(license_label)}<br><small>{esc(credit_label)}</small></td><td>{esc(download_status_label(status, f['download_error']))}<br>{esc(f['download_error'] or '')}</td><td>{action}</td></tr>"
         body += "</table>"
     body += "<div class='section-nav'><a href='/items/" + esc(identifier) + "'>Volver a la ficha</a><a href='/items/" + esc(identifier) + "/content-analysis'>Analizar contenido →</a></div>"
     body += "</html>"
