@@ -142,7 +142,11 @@ def ensure_schema():
                     "legal_owner_login", "legal_owner_credit", "legal_alert",
                     "last_legal_audit_at",
                 }
-                needs_backup = not required.issubset(columns) or "github_legal_snapshots" not in tables
+                needs_backup = (
+                    not required.issubset(columns)
+                    or "github_legal_snapshots" not in tables
+                    or "github_legal_audits" not in tables
+                )
         if needs_backup:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             backup_path = database_path.with_name(
