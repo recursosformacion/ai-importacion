@@ -95,7 +95,7 @@ def main() -> int:
                     """UPDATE github_processing_jobs
                        SET status='running',stage='starting',updated_at=?
                        WHERE repository_id=? AND status IN ('queued','pending')""",
-                    (__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(timespec="seconds"), repository_id),
+                    (datetime.now(timezone.utc).isoformat(timespec="seconds"), repository_id),
                 ).rowcount
             if not claimed:
                 continue
