@@ -170,7 +170,9 @@ def upsert_archive_files(conn, identifier: str, records: list[dict]) -> int:
       license_url=COALESCE(excluded.license_url,archive_files.license_url),
       license_scope=CASE WHEN excluded.license_scope='file' THEN 'file' ELSE archive_files.license_scope END,
       rights_status=CASE WHEN excluded.license_scope='file' THEN excluded.rights_status ELSE archive_files.rights_status END,
-      distribution_mode=CASE WHEN excluded.license_scope='file' THEN excluded.distribution_mode ELSE archive_files.distribution_mode END""",
+      distribution_mode=CASE WHEN excluded.license_scope='file' THEN excluded.distribution_mode ELSE archive_files.distribution_mode END,
+      download_status=CASE WHEN excluded.distribution_mode='hosted' AND archive_files.download_status='external_only'
+                           THEN 'not_downloaded' ELSE archive_files.download_status END""",
         records)
     return len(records)
 
