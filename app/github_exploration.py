@@ -359,7 +359,7 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
     body+="<div id='exploration-live'><b>Estado:</b> <span id='job-status'>"+esc(state["job_status"] or "idle")+"</span><p id='job-progress'>Páginas: "+str(state["progress_discoveries"])+" · Repositorios inspeccionados: "+str(state["progress_inspections"])+"</p><p id='job-message'>"+esc(state["last_message"])+"</p></div></section>"
     body+="<section class='panel'><h2>2. Seleccionar repositorios</h2><p>Elegir qué colecciones se quieren incorporar. Inventariar, descargar agrupadamente y analizar los ficheros. Construir el catálogo a partir de los datos almacenados en SQLite. Ver el estado, las cantidades y obtener el JSON generado.</p>"
     body+="<p>Se muestran "+str(len(repositories))+" de "+str(filtered_total)+" repositorios que cumplen el mínimo de más de 10 archivos musicales o son semillas pendientes de inspección.</p>"
-    body+="<form method='get' action='/github/exploration'><label>Buscar <input name='q' value='"+esc(q)+"' placeholder='Propietario, repositorio o descripción'></label> "
+    body+="<form method='get' action='/github/exploration'><label>Filtrar repositorios guardados <input name='q' value='"+esc(q)+"' placeholder='Propietario, repositorio o descripción'></label> "
     body+="<label>Estado <select name='status'><option value=''>Todos</option>"
     for value,label in (("pending","Pendiente"),("qualified","Cumple mínimo"),("below_threshold","Por debajo del mínimo"),("partial","Árbol parcial"),("error","Error"),("ignored","Ignorado")):
         body+="<option value='"+value+"'"+(" selected" if status==value else "")+">"+label+"</option>"
