@@ -229,14 +229,14 @@ async def capture_snapshot(repository_id: int, full_name: str):
                 or previous["license_spdx"] != (license_id or "")
             ):
                 decision = "review_required"
-                reason = "Han cambiado el texto de LICENSE o el propietario desde la instantánea anterior."
+                reason = "Han cambiado LICENSE, README, la licencia declarada o el propietario desde la instantánea anterior."
                 conn.execute(
                     "UPDATE github_repositories SET legal_status='blocked',legal_alert=? WHERE id=?",
                     (reason, repository_id),
                 )
                 conn.execute("""
                   UPDATE github_files SET distribution_mode='external_link',
-                    rights_status='review_required',download_status='external_only',local_path=NULL
+                    rights_status='review_required',download_status='external_only'
                   WHERE repository_id=?
                 """, (repository_id,))
             conn.execute("""
