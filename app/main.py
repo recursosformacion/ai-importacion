@@ -262,20 +262,75 @@ def init_db():
             ON archive_files(distribution_mode, rights_status)
         """)
         legacy_unhosted = conn.execute("""
-            SELECT id,local_path FROM archive_files
+            SELECT id,local_path,file_name,source_url,license_scope,rights_evidence_url
+              FROM archive_files
              WHERE (lower(file_name) LIKE '%.mxl' OR lower(file_name) LIKE '%.ly')
                AND distribution_mode!='hosted' AND download_status='downloaded'
         """).fetchall()
         download_root = DOWNLOAD_DIR.resolve()
+        from app.musicxml_analysis import analyze_lilypond, analyze_musicxml
         for legacy_file in legacy_unhosted:
-            stored_path = legacy_file["local_path"]
-            if stored_path:
-                candidate = Path(stored_path).resolve()
-                if candidate.is_relative_to(download_root):
-                    candidate.unlink(missing_ok=True)
+            stored_path = Path(legacy_file["local_path"] or "").resolve()
+            migrated_to_hosted = False
+            # A legacy local copy may itself contain its individual CC BY/CC0
+            # notice. Inspect it before deleting; never infer from repository rights.
+            if (
+                legacy_file["license_scope"] != "file"
+                and stored_path.is_relative_to(download_root)
+                and stored_path.is_file()
+            ):
+                try:
+                    analysis = (
+                        analyze_musicxml(stored_path)
+                        if stored_path.suffix.lower() == ".mxl"
+                        else analyze_lilypond(stored_path)
+                    )
+                    extracted_license = {
+                        "license_spdx": analysis.get("license_spdx"),
+                        "license_name": analysis.get("license_name"),
+                        "license_url": analysis.get("license_url"),
+                        "license_scope": "file" if any((
+                            analysis.get("license_spdx"),
+                            analysis.get("license_name"),
+                            analysis.get("license_url"),
+                        )) else "unknown",
+                    }
+                    rights_status, distribution_mode = distribution_decision(
+                        legacy_file["file_name"], **extracted_license
+                    )
+                    if distribution_mode == "hosted":
+                        transcriber = get_transcriber_credit(analysis)
+                        creator_names = [
+                            str(item.get("name", "")).strip()
+                            for item in (analysis.get("creators") or [])
+                            if isinstance(item, dict) and str(item.get("name", "")).strip()
+                        ]
+                        attribution = "; ".join(creator_names) or "Créditos de autoría no indicados en los metadatos"
+                        attribution += "; transcriptor: " + (transcriber or "no indicado en la fuente")
+                        conn.execute(
+                            """UPDATE archive_files SET license_spdx=?,license_name=?,license_url=?,
+                               license_scope='file',rights_status='redistributable',distribution_mode='hosted',
+                               transcriber_credit=?,attribution_text=?,rights_evidence_url=?,rights_checked_at=?
+                               WHERE id=?""",
+                            (
+                                extracted_license["license_spdx"], extracted_license["license_name"],
+                                extracted_license["license_url"], transcriber, attribution,
+                                extracted_license["license_url"] or legacy_file["source_url"],
+                                now(), legacy_file["id"],
+                            ),
+                        )
+                        migrated_to_hosted = True
+                except Exception:
+                    migrated_to_hosted = False
+            if migrated_to_hosted:
+                continue
+            if stored_path.is_relative_to(download_root):
+                stored_path.unlink(missing_ok=True)
             conn.execute("""
                 UPDATE archive_files SET download_status='external_only',local_path=NULL,
-                       download_error='Migrado: no existe licencia de redistribución verificada; se conserva el enlace de origen.'
+                       rights_status=CASE WHEN rights_status='redistributable' THEN 'unverified' ELSE rights_status END,
+                       distribution_mode='external_link',
+                       download_error='Migrado: no consta una licencia individual CC BY/CC0 verificable; se conserva el enlace de origen.'
                  WHERE id=?
             """, (legacy_file["id"],))
         analysis_job_columns = {
