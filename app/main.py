@@ -1903,7 +1903,7 @@ def analyze_downloaded_musicxml(identifier: str):
     with db() as conn:
         if not conn.execute("SELECT 1 FROM archive_items WHERE identifier=?", (identifier,)).fetchone():
             raise HTTPException(status_code=404, detail="Elemento no encontrado")
-        files = conn.execute("""SELECT id,file_name,local_path,sha256,license_spdx,license_name,
+        files = conn.execute("""SELECT id,file_name,source_url,local_path,sha256,license_spdx,license_name,
             license_url,license_scope,distribution_mode FROM archive_files
             WHERE identifier=? AND download_status='downloaded' AND local_path IS NOT NULL
             AND (lower(file_name) LIKE '%.musicxml'
