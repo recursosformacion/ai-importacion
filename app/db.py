@@ -26,7 +26,20 @@ def esc(value: object | None) -> str:
 def connect(db_path: str):
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=15)
+    # The web process and the detached GitHub worker write to the same SQLite
+    # database. WAL lets catalog pages read while the worker persists progress;
+    # the longer busy timeout lets concurrent short writes wait instead of
+    # aborting a multi-hour repository job.
+    conn = sqlite3.connect(db_path, timeout=60)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=60000")
     conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError:
+        # Another process may be changing journal state during startup. The
+        # busy timeout applies to subsequent statements; a later connection
+        # will retry enabling WAL.
+        pass
     return conn
