@@ -207,7 +207,7 @@ def github_home():
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
                 "<td>" + (
                     "<form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
-                    if repo["legal_status"] == "approved" else "<span>Solo enlace externo; repositorio no admitido</span>"
+                    True else "<span>Solo enlace externo</span>"
                 ) + "<a href='/github/" + str(repo["id"]) + "'>Detalles legales</a></td></tr>"
             )
         body += "</table>"
@@ -257,8 +257,8 @@ async def github_scan(repository_id: int):
     try:
         from app.github_legal import capture_snapshot
         legal = await capture_snapshot(repository_id, repo["full_name"])
-        if legal["status"] != "approved":
-            raise ValueError("Repositorio excluido o bloqueado por derechos: " + legal["reason"])
+        # Legal status controls redistribution, not catalogue indexing.
+        # Repositories without a license remain indexable as external references.
         metadata = await github_json(f"{API}/repos/{repo['full_name']}")
         branch = metadata.get("default_branch") or repo["default_branch"]
         tree = await github_json(f"{API}/repos/{repo['full_name']}/git/trees/{branch}?recursive=1")
@@ -301,10 +301,12 @@ async def github_scan(repository_id: int):
                                             ELSE 'not_applicable' END
                 """, (
                     repository_id, path, name, extension, size, sha, blob_url, html_url, "",
-                    stamp, stamp, repo["license_spdx"] or None, repo["license_name"] or None,
+                    stamp, stamp, legal["license_spdx"] or None, legal["license_spdx"] or None,
                     "repository" if extension in {".mxl", ".ly"} else "unknown",
-                    "unverified" if extension in {".mxl", ".ly"} else "not_applicable",
-                    "external_link" if extension in {".mxl", ".ly"} else "not_applicable",
+                    ("unverified" if legal["status"] == "approved" else "unlicensed")
+                        if extension in {".mxl", ".ly"} else "not_applicable",
+                    ("external_link" if legal["status"] != "approved" else "pending_file_review")
+                        if extension in {".mxl", ".ly"} else "not_applicable",
                 ))
             # Only a complete tree is authoritative enough to remove files no longer present.
             truncated = bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
@@ -346,11 +348,8 @@ def github_process(repository_id: int):
         exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
-    from app.github_legal import assert_repository_approved
-    try:
-        assert_repository_approved(repository_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    # Processing is allowed for every musical repository. Legal status only
+    # determines whether score content may be fetched and hosted.
     from app.github_processing import enqueue_repository
     enqueue_repository(repository_id)
     return RedirectResponse(f"/github/{repository_id}", status_code=303)
@@ -392,7 +391,7 @@ def serve_github_score_file(file_id: int):
             (file_id,),
         ).fetchone()
     if not legal or legal["legal_status"] != "approved":
-        raise HTTPException(status_code=403, detail="Repositorio bloqueado por revisión legal.")
+        raise HTTPException(status_code=403, detail="Repositorio sin licencia aprobada: solo se permite el enlace externo.")
     if row["distribution_mode"] != "hosted" or row["download_status"] != "hosted":
         raise HTTPException(status_code=403, detail="No hay licencia individual que autorice alojar este fichero.")
     path = Path(row["local_path"] or "").resolve()
@@ -432,7 +431,7 @@ def github_repository(repository_id: int, q: str = ""):
     with db() as conn:
         job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
     if repo["legal_status"] != "approved":
-        body += "<p><b>Repositorio excluido o bloqueado:</b> no se indexan ni procesan sus partituras. Solo se conserva el enlace al repositorio original. Motivo: " + esc(repo["legal_alert"] or "No existe una licencia abierta explícita y verificable.") + "</p>"
+        body += "<p><b>Sin autorización para alojar ficheros:</b> el repositorio sí se indexa y procesa para generar metadatos. Los ficheros musicales no se descargan ni se almacenan; se conserva únicamente el enlace a GitHub. Motivo: " + esc(repo["legal_alert"] or "No existe una licencia abierta explícita y verificable.") + "</p>"
     elif job and job["status"] == "completed":
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
