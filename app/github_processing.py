@@ -725,7 +725,10 @@ def recover_processing_jobs() -> int:
                 VALUES(?,'queued','queued',0,0,'',?,?,NULL)
             """, (int(row["id"]), stamp, stamp))
         rows = conn.execute(
-            "SELECT repository_id FROM github_processing_jobs WHERE status IN ('queued','running','pending') ORDER BY updated_at"
+            """SELECT repository_id FROM github_processing_jobs
+               WHERE status IN ('queued','running','pending')
+                  OR (status='error' AND error_text LIKE '%database is locked%')
+               ORDER BY updated_at"""
         ).fetchall()
         ids = [int(row["repository_id"]) for row in rows]
         if ids and not worker_active:
@@ -735,6 +738,7 @@ def recover_processing_jobs() -> int:
                 UPDATE github_processing_jobs
                 SET status='queued',stage='queued',current_path='',updated_at=?,error_text=NULL
                 WHERE status IN ('running','pending')
+                   OR (status='error' AND error_text LIKE '%database is locked%')
             """, (_now(),))
     if ids:
         logging.getLogger(__name__).warning(
