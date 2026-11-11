@@ -107,9 +107,9 @@ def analyze_musicxml(path: str | Path) -> dict:
     ]
     license_text = "; ".join(dict.fromkeys(rights_values))
     import re
-    license_url_match = re.search(r"https?://[^\\s<>]+", license_text)
+    license_url_match = re.search(r"https?://[^\s<>]+", license_text)
     spdx_match = re.search(
-        r"\\b(?:CC0-1\\.0|CC-BY-(?:1\\.0|2\\.0|2\\.5|3\\.0|4\\.0))\\b",
+        r"\b(?:CC0-1\.0|CC-BY-(?:1\.0|2\.0|2\.5|3\.0|4\.0))\b",
         license_text, re.I,
     )
     return {
@@ -139,7 +139,7 @@ def analyze_lilypond(path: str | Path) -> dict:
 
     def header_value(key: str) -> str | None:
         match = re.search(
-            rf"(?im)^\\s*{re.escape(key)}\\s*=\\s*[\"'](.*?)[\"']",
+            rf"(?im)^\s*{re.escape(key)}\s*=\s*[\"'](.*?)[\"']",
             text,
         )
         return match.group(1).strip()[:500] if match else None
@@ -148,17 +148,17 @@ def analyze_lilypond(path: str | Path) -> dict:
     composer = header_value("composer")
     arranger = header_value("arranger")
     transcriber_match = re.search(
-        r"(?im)^\\s*%+\\s*(?:transcriber|transcribed by|transcription)\\s*[:=-]\\s*(.+)$",
+        r"(?im)^\s*%+\s*(?:transcriber|transcribed by|transcription)\s*[:=-]\s*(.+)$",
         text,
     )
     license_match = re.search(
-        r"(?im)^\\s*%+\\s*(?:license|licence|rights)\\s*[:=-]\\s*(.+)$",
+        r"(?im)^\s*%+\s*(?:license|licence|rights)\s*[:=-]\s*(.+)$",
         text,
     )
     license_text = license_match.group(1).strip()[:1000] if license_match else None
-    license_url_match = re.search(r"https?://[^\\s<>]+", license_text or "")
+    license_url_match = re.search(r"https?://[^\s<>]+", license_text or "")
     spdx_match = re.search(
-        r"\\b(?:CC0-1\\.0|CC-BY-(?:1\\.0|2\\.0|2\\.5|3\\.0|4\\.0))\\b",
+        r"\b(?:CC0-1\.0|CC-BY-(?:1\.0|2\.0|2\.5|3\.0|4\.0))\b",
         license_text or "", re.I,
     )
     creators = []
