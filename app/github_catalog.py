@@ -1072,7 +1072,8 @@ def github_repository(repository_id: int, q: str = ""):
             "queued": "En cola",
             "starting": "Preparando",
             "inventory": "Comprobando inventario",
-            "download": "Transferencia agrupada",
+            "git_pack": "Transferencia Git agrupada",
+            "download": "Copiando archivos desde el paquete local",
             "analysis": "Análisis local",
             "export": "Generando resources.json",
         }
@@ -1082,7 +1083,9 @@ def github_repository(repository_id: int, q: str = ""):
         progress_total = int(processing_job["total_count"] or 0)
         current_path = str(processing_job["current_path"] or "")
         body += "<p id='processing-state'>" + esc(stage_label) + " · " + str(progress) + " / " + str(progress_total) + "</p>"
-        if progress_total > 0:
+        if stage == "git_pack":
+            body += "<p>Git está transfiriendo los " + str(progress_total) + " archivos seleccionados en un único paquete. Git no proporciona aquí un contador fiable por archivo; el progreso numérico comenzará al materializar el paquete localmente.</p>"
+        elif progress_total > 0:
             percentage = min(100, int(progress * 100 / progress_total))
             body += "<progress max='" + str(progress_total) + "' value='" + str(min(progress, progress_total)) + "' style='width:100%'></progress>"
             body += "<p>" + str(percentage) + "% completado</p>"
@@ -1090,7 +1093,7 @@ def github_repository(repository_id: int, q: str = ""):
             body += "<p>El trabajador ha aceptado el trabajo; está preparando el inventario.</p>"
         if current_path:
             body += "<p class='muted'><code>" + esc(current_path) + "</code></p>"
-        body += "<p class='muted'>Actualización automática cada 10 segundos.</p><script>setTimeout(function(){location.reload()},10000)</script>"
+        body += "<p class='muted'>El proceso continúa en segundo plano. Actualiza esta página manualmente cuando quieras consultar el avance.</p>"
     elif processing_job and processing_job["status"] == "error":
         body += "<p>No se pudo completar el procesamiento: " + esc(processing_job["error_text"]) + "</p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Reintentar procesamiento</button></form>"
