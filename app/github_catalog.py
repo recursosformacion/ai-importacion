@@ -129,9 +129,8 @@ def ensure_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_github_files_distribution
             ON github_files(distribution_mode,rights_status)
         """)
-    from app.github_legal import ensure_schema as ensure_legal_schema, reconcile_database
+    from app.github_legal import ensure_schema as ensure_legal_schema
     ensure_legal_schema()
-    reconcile_database()
 
 
 def parse_repository(value: str) -> tuple[str, str]:
