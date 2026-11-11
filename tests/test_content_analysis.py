@@ -1497,7 +1497,7 @@ def test_review_queue_shows_uncertain_item_files_and_evidence(tmp_path, monkeypa
     assert "metadata.xml" not in response.text
 
 
-def test_local_preview_opens_pdf_inline_and_serves_mxl_as_download(tmp_path, monkeypatch):
+def test_local_preview_opens_pdf_inline_and_serves_only_authorized_mxl_as_download(tmp_path, monkeypatch):
     db_path = str(tmp_path / "local-preview.sqlite3")
     monkeypatch.setattr(main, "DB_PATH", db_path)
     monkeypatch.setattr(file_catalog, "DB_PATH", db_path)
@@ -1534,5 +1534,16 @@ def test_local_preview_opens_pdf_inline_and_serves_mxl_as_download(tmp_path, mon
     assert pdf_response.status_code == 200
     assert pdf_response.headers["content-type"].startswith("application/pdf")
     assert pdf_response.headers["content-disposition"].startswith("inline;")
-    assert mxl_response.status_code == 200
-    assert mxl_response.headers["content-disposition"].startswith("attachment;")
+    # An MXL with no individual license evidence must not be served.
+    assert mxl_response.status_code == 403
+    with main.db() as conn:
+        conn.execute(
+            """UPDATE archive_files SET license_spdx='CC-BY-4.0',
+               license_scope='file',rights_status='redistributable',
+               distribution_mode='hosted' WHERE id=?""",
+            (mxl_id,),
+        )
+    with TestClient(main.app) as client:
+        authorized_response = client.get(f"/files/view/{mxl_id}")
+    assert authorized_response.status_code == 200
+    assert authorized_response.headers["content-disposition"].startswith("attachment;")
