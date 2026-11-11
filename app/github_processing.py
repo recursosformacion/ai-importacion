@@ -747,11 +747,15 @@ def recover_processing_jobs() -> int:
                 WHERE status IN ('running','pending')
                    OR (status='error' AND error_text LIKE '%database is locked%')
             """, (_now(),))
-    if ids:
+    if ids and not worker_active:
         logging.getLogger(__name__).warning(
             "Recuperando %s trabajos GitHub pendientes/interrumpidos", len(ids)
         )
         enqueue_repositories(ids)
+    elif ids:
+        logging.getLogger(__name__).info(
+            "Trabajador GitHub activo; %s trabajos pendientes o en curso permanecen en la cola.", len(ids)
+        )
     return len(ids)
 
 
