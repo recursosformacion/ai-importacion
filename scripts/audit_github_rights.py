@@ -17,6 +17,7 @@ from app.github_legal import audit_repository, reconcile_database
 
 async def main():
     ensure_schema()
+    initial_cleanup = reconcile_database()
     with connect(DB_PATH) as conn:
         repositories = conn.execute(
             "SELECT id,full_name FROM github_repositories ORDER BY id"
@@ -32,7 +33,10 @@ async def main():
                 "status": "audit_error",
                 "reason": str(exc),
             })
-    cleanup = reconcile_database()
+    final_cleanup = reconcile_database()
+    cleanup = {
+        "local_files_removed": initial_cleanup["local_files_removed"] + final_cleanup["local_files_removed"]
+    }
     print(json.dumps({"audits": results, "cleanup": cleanup}, ensure_ascii=False, indent=2))
 
 
