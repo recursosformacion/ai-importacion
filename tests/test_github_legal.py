@@ -62,6 +62,7 @@ def test_legacy_database_is_fail_closed_and_local_copy_is_removed(tmp_path, monk
     assert row["local_path"] is None
     assert row["distribution_mode"] == "external_link"
     assert row["download_status"] == "external_only"
+    assert row["rights_status"] == "unlicensed"
     assert result["local_files_removed"] == 1
     backups = list(tmp_path.glob("legacy.sqlite3.pre-github-legal-migration-*.bak"))
     assert backups, "Debe existir una copia completa antes de migrar la base"
@@ -77,3 +78,12 @@ def test_processing_requires_approved_repository(tmp_path, monkeypatch):
     with connect(str(db_path)) as conn:
         conn.execute("UPDATE github_repositories SET legal_status='approved' WHERE id=1")
     legal.assert_repository_approved(1)
+
+
+
+def test_unlicensed_repository_is_not_admitted_for_hosting_but_remains_cataloguable():
+    # Legal admission is intentionally a hosting decision, not an indexing gate.
+    # A missing LICENSE is represented as restricted/unlicensed; the catalogue
+    # and metadata-only processing paths do not call assert_repository_approved.
+    assert legal._license_id("", "") is None
+    assert legal._license_id("All rights reserved", "") is None
