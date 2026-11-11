@@ -298,6 +298,16 @@ async def github_scan(repository_id: int):
             # Only a complete tree is authoritative enough to remove files no longer present.
             truncated = bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
             if not truncated:
+                stale_files = conn.execute(
+                    """SELECT local_path FROM github_files
+                       WHERE repository_id=? AND last_seen_at<>? AND local_path IS NOT NULL""",
+                    (repository_id, stamp),
+                ).fetchall()
+                storage_root = DOWNLOAD_DIR.resolve()
+                for stale in stale_files:
+                    stale_path = Path(stale["local_path"]).resolve()
+                    if stale_path.is_relative_to(storage_root):
+                        stale_path.unlink(missing_ok=True)
                 conn.execute(
                     "DELETE FROM github_files WHERE repository_id=? AND last_seen_at<>?",
                     (repository_id, stamp),
