@@ -8,6 +8,7 @@ submodules are not initialized and Git LFS payloads are not fetched.
 
 import json
 import os
+import hashlib
 import re
 import shutil
 import subprocess
@@ -20,7 +21,9 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from app.db import connect
+from app.db import DOWNLOAD_DIR, connect
+from app.musicxml_analysis import analyze_lilypond, analyze_musicxml
+from app.rights_policy import distribution_decision, transcriber_credit as get_transcriber_credit
 
 DB_PATH = os.getenv("AI_IMPORTACION_DB", "data/ai-importacion.sqlite3")
 ROOT = Path(os.getenv("AI_IMPORTACION_GITHUB_DIR", "data/github-repositories")).resolve()
@@ -282,6 +285,8 @@ def _relative_file(repo_dir: Path, raw_path: str) -> Path | None:
 
 def process_repository(repository_id: int):
     ensure_processing_schema()
+    from app.github_catalog import ensure_schema as ensure_github_catalog_schema
+    ensure_github_catalog_schema()
     lock = _LOCKS.setdefault(repository_id, threading.Lock())
     if not lock.acquire(blocking=False):
         return
@@ -347,7 +352,34 @@ def process_repository(repository_id: int):
                 ["git", "hash-object", "--", relative], cwd=repo_dir,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
             ).stdout.strip()
+            rights_analysis = None
+            file_license = {
+                "license_spdx": None, "license_name": None,
+                "license_url": None, "license_scope": "unknown",
+            }
+            rights_status = "not_applicable"
+            distribution_mode = "not_applicable"
+            transcriber = ""
+            if suffix in {".mxl", ".ly"}:
+                try:
+                    rights_analysis = analyze_musicxml(path) if suffix == ".mxl" else analyze_lilypond(path)
+                    file_license = {
+                        "license_spdx": rights_analysis.get("license_spdx"),
+                        "license_name": rights_analysis.get("license_name"),
+                        "license_url": rights_analysis.get("license_url"),
+                        "license_scope": "file" if any((
+                            rights_analysis.get("license_spdx"),
+                            rights_analysis.get("license_name"),
+                            rights_analysis.get("license_url"),
+                        )) else "unknown",
+                    }
+                    transcriber = get_transcriber_credit(rights_analysis)
+                except Exception:
+                    rights_analysis = None
+                rights_status, distribution_mode = distribution_decision(relative, **file_license)
             title = _explicit_title(path, suffix)
+            if not title and rights_analysis:
+                title = rights_analysis.get("title")
             title_source = "musicxml" if title else None
             ai_data = None
             context = ""
@@ -375,6 +407,14 @@ def process_repository(repository_id: int):
                 "title_candidates": [path.stem] if not title else [],
                 "format": suffix.lstrip("."),
             }
+            if rights_analysis:
+                for creator in rights_analysis.get("creators") or []:
+                    if not isinstance(creator, dict):
+                        continue
+                    kind = str(creator.get("type") or "").casefold()
+                    name = str(creator.get("name") or "").strip()
+                    if name and kind in {"composer", "arranger"} and not resource.get(kind):
+                        resource[kind] = name
             if ai_data:
                 for source_key, target_key in (
                     ("composer", "composer"),
@@ -384,6 +424,64 @@ def process_repository(repository_id: int):
                     value = ai_data.get(source_key)
                     if isinstance(value, (str, list)) and value:
                         resource[target_key] = value
+
+            file_html_url = repo["html_url"].rstrip("/") + "/blob/" + commit + "/" + quote(relative, safe="/")
+            file_sha256 = hashlib.sha256(raw).hexdigest()
+            with connect(DB_PATH) as conn:
+                conn.execute(
+                    """INSERT INTO github_files
+                       (repository_id,path,name,extension,size_bytes,sha,html_url,first_seen_at,last_seen_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(repository_id,path) DO UPDATE SET
+                         name=excluded.name,extension=excluded.extension,size_bytes=excluded.size_bytes,
+                         sha=excluded.sha,html_url=excluded.html_url,last_seen_at=excluded.last_seen_at""",
+                    (repository_id, relative, path.name, suffix, raw_size, sha,
+                     file_html_url, _now(), _now()),
+                )
+                file_row = conn.execute(
+                    "SELECT id,local_path FROM github_files WHERE repository_id=? AND path=?",
+                    (repository_id, relative),
+                ).fetchone()
+            file_id = int(file_row["id"])
+            local_url = None
+            hosted_path = None
+            if suffix in {".mxl", ".ly"} and distribution_mode == "hosted":
+                hosted_path = (DOWNLOAD_DIR / "github" / str(repository_id) / relative).resolve()
+                hosted_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, hosted_path)
+                local_url = f"/github/files/{file_id}"
+            elif suffix in {".mxl", ".ly"}:
+                old_path = file_row["local_path"]
+                if old_path:
+                    candidate = Path(old_path).resolve()
+                    if candidate.is_relative_to(DOWNLOAD_DIR.resolve()):
+                        candidate.unlink(missing_ok=True)
+
+            attribution_names = [
+                str(item.get("name", "")).strip()
+                for item in (rights_analysis.get("creators") or [])
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ] if rights_analysis else []
+            attribution = "; ".join(attribution_names) or "Créditos no indicados en el fichero"
+            attribution += "; transcriptor: " + (transcriber or "no indicado en la fuente")
+            with connect(DB_PATH) as conn:
+                conn.execute(
+                    """UPDATE github_files SET repository_license_spdx=?,repository_license_name=?,
+                       license_spdx=?,license_name=?,license_url=?,license_scope=?,rights_status=?,
+                       distribution_mode=?,transcriber_credit=?,attribution_text=?,
+                       rights_evidence_url=?,rights_checked_at=?,download_status=?,local_path=?,sha256=?
+                       WHERE id=?""",
+                    (
+                        repo["license_spdx"] or None, repo["license_name"] or None,
+                        file_license["license_spdx"], file_license["license_name"],
+                        file_license["license_url"], file_license["license_scope"],
+                        rights_status, distribution_mode, transcriber, attribution,
+                        file_license["license_url"] or "", _now(),
+                        "hosted" if hosted_path else ("external_only" if suffix in {".mxl", ".ly"} else "not_applicable"),
+                        str(hosted_path) if hosted_path else None,
+                        file_sha256 if hosted_path else None, file_id,
+                    ),
+                )
             records.append({
                 "resource_key": "github:" + repo["full_name"] + ":" + sha,
                 "resource": resource,
@@ -398,13 +496,15 @@ def process_repository(repository_id: int):
                     # redistribution rights for an individual score file.
                     "repository_license_spdx": repo["license_spdx"] or None,
                     "repository_license_name": repo["license_name"] or None,
-                    "file_license_spdx": None,
-                    "file_license_name": None,
-                    "license_scope": "repository" if repo["license_spdx"] or repo["license_name"] else "unknown",
-                    "rights_status": "unverified" if suffix in {".mxl", ".ly"} else "not_applicable",
-                    "distribution_mode": "external_link" if suffix in {".mxl", ".ly"} else "not_applicable",
-                    "transcriber_credit": None,
-                    "external_url": repo["html_url"].rstrip("/") + "/blob/" + commit + "/" + quote(relative, safe="/"),
+                    "file_license_spdx": file_license["license_spdx"],
+                    "file_license_name": file_license["license_name"],
+                    "file_license_url": file_license["license_url"],
+                    "license_scope": file_license["license_scope"],
+                    "rights_status": rights_status,
+                    "distribution_mode": distribution_mode,
+                    "transcriber_credit": transcriber or None,
+                    "external_url": file_html_url,
+                    "local_url": local_url,
                 },
                 "identification": {
                     "provider": "gemini" if title_source == "gemini" or ai_data else None,
@@ -417,13 +517,13 @@ def process_repository(repository_id: int):
                     "content_size": len(raw),
                 },
             })
-            # MXL/LilyPond files are parsed as temporary acquisition inputs only.
-            # Their public record is metadata plus the original GitHub link.
+            # MXL/LilyPond originals are copied to durable storage only when
+            # their own file metadata explicitly proves CC BY or CC0.
             if suffix in {".mxl", ".ly"}:
                 path.unlink(missing_ok=True)
 
         payload = {
-            "schema": "osap-resource-import/1.2",
+            "schema": "osap-resource-import/1.3",
             "generated_at": _now(),
             "source": {
                 "provider": "github",
