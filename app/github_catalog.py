@@ -129,8 +129,12 @@ def ensure_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_github_files_distribution
             ON github_files(distribution_mode,rights_status)
         """)
-    from app.github_legal import ensure_schema as ensure_legal_schema
-    ensure_legal_schema()
+    from app import github_legal
+    # Keep the legal migration on the same SQLite file selected by this
+    # catalogue instance (also important for isolated test databases).
+    github_legal.DB_PATH = DB_PATH
+    github_legal.DOWNLOAD_DIR = DOWNLOAD_DIR
+    github_legal.ensure_schema()
 
 
 def parse_repository(value: str) -> tuple[str, str]:
