@@ -57,7 +57,7 @@ def test_legacy_database_is_fail_closed_and_local_copy_is_removed(tmp_path, monk
 
     with connect(str(db_path)) as conn:
         repo = conn.execute("SELECT legal_status FROM github_repositories WHERE id=1").fetchone()
-        row = conn.execute("SELECT local_path,distribution_mode,download_status FROM github_files WHERE id=1").fetchone()
+        row = conn.execute("SELECT local_path,distribution_mode,download_status,rights_status FROM github_files WHERE id=1").fetchone()
     assert repo["legal_status"] == "restricted"
     assert row["local_path"] is None
     assert row["distribution_mode"] == "external_link"
