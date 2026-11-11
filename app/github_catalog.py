@@ -207,7 +207,6 @@ def github_home():
                 "<td>" + esc(repo["last_scanned_at"] or "Sin explorar") + "</td>"
                 "<td>" + (
                     "<form method='post' action='/github/" + str(repo["id"]) + "/process'><button>Procesar repositorio</button></form>"
-                    True else "<span>Solo enlace externo</span>"
                 ) + "<a href='/github/" + str(repo["id"]) + "'>Detalles legales</a></td></tr>"
             )
         body += "</table>"
@@ -432,6 +431,8 @@ def github_repository(repository_id: int, q: str = ""):
         job = conn.execute("SELECT * FROM github_processing_jobs WHERE repository_id=?", (repository_id,)).fetchone()
     if repo["legal_status"] != "approved":
         body += "<p><b>Sin autorización para alojar ficheros:</b> el repositorio sí se indexa y procesa para generar metadatos. Los ficheros musicales no se descargan ni se almacenan; se conserva únicamente el enlace a GitHub. Motivo: " + esc(repo["legal_alert"] or "No existe una licencia abierta explícita y verificable.") + "</p>"
+        if job and job["status"] == "completed":
+            body += "<p>Procesamiento de metadatos terminado: " + str(job["processed_count"]) + " registros, sin descargar contenido musical.</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON de metadatos</a></p>"
     elif job and job["status"] == "completed":
         body += "<p>Procesamiento terminado. Recursos JSON: " + str(job["processed_count"]) + ".</p><p><a href='/github/" + str(repository_id) + "/resources.json'>Descargar JSON generado</a></p>"
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Actualizar desde GitHub</button></form>"
