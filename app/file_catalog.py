@@ -150,6 +150,8 @@ def normalize_file_records(identifier: str, files_payload, stamp: str) -> list[d
             name, record["license_spdx"], record["license_name"],
             record["license_url"], record["license_scope"],
         )
+        record["rights_evidence_url"] = source_url if record["license_scope"] == "file" else ""
+        record["rights_checked_at"] = stamp if record["license_scope"] == "file" else None
         records.append(record)
     return records
 
@@ -158,10 +160,11 @@ def upsert_archive_files(conn, identifier: str, records: list[dict]) -> int:
     """UPSERT file records in a single connection. Returns inserted count."""
     conn.executemany("""INSERT INTO archive_files
       (identifier,file_name,file_name_safe,source_url,size_bytes,archive_format,md5,sha1,relevant,inventory_seen_at,
-       license_spdx,license_name,license_url,license_scope,rights_status,distribution_mode)
+       license_spdx,license_name,license_url,license_scope,rights_status,distribution_mode,
+       rights_evidence_url,rights_checked_at)
       VALUES(:identifier,:file_name,:file_name_safe,:source_url,:size_bytes,:archive_format,
              :md5,:sha1,:relevant,:inventory_seen_at,:license_spdx,:license_name,:license_url,
-             :license_scope,:rights_status,:distribution_mode)
+             :license_scope,:rights_status,:distribution_mode,:rights_evidence_url,:rights_checked_at)
       ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
       source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
       md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at,
@@ -177,6 +180,10 @@ def upsert_archive_files(conn, identifier: str, records: list[dict]) -> int:
                          WHEN excluded.license_scope='file' THEN excluded.rights_status ELSE archive_files.rights_status END,
       distribution_mode=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.distribution_mode
                              WHEN excluded.license_scope='file' THEN excluded.distribution_mode ELSE archive_files.distribution_mode END,
+      rights_evidence_url=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.rights_evidence_url
+                               ELSE excluded.rights_evidence_url END,
+      rights_checked_at=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.rights_checked_at
+                             ELSE excluded.rights_checked_at END,
       download_status=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.download_status
                            WHEN excluded.distribution_mode='hosted' AND archive_files.download_status='external_only'
                            THEN 'not_downloaded' ELSE archive_files.download_status END""",
