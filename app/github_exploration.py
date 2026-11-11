@@ -393,13 +393,15 @@ def exploration_home(page: int = 1, status: str = "", q: str = "",
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])
                     if r["current_path"]:
                         body+="<div class='muted'>Analizando: "+esc(r["current_path"])+"</div>"
+                elif pstatus=="running" and r["processing_stage"]=="git_pack":
+                    body+="<div class='muted'>Transferencia Git agrupada en curso: "+str(r["total_count"] or 0)+" archivos seleccionados. El contador se actualizará al terminar el paquete.</div>"
                 elif pstatus=="running" and r["processing_stage"]=="download" and r["total_count"]:
                     pct=min(100,int((r["progress_count"] or 0)*100/r["total_count"]))
                     body+="<progress max='100' value='"+str(pct)+"'></progress> "+str(r["progress_count"] or 0)+"/"+str(r["total_count"])+" archivos adquiridos"
                     if r["current_path"]:
                         body+="<div class='muted'>Descargando: "+esc(r["current_path"])+"</div>"
                 elif pstatus in ("running","queued"):
-                    stage_label={"inventory":"Inventariando archivos","download":"Descargando archivos agrupadamente","analysis":"Analizando archivos musicales","export":"Generando resources.json","queued":"En cola"}.get(r["processing_stage"] or pstatus,"Procesando")
+                    stage_label={"inventory":"Inventariando archivos","git_pack":"Transfiriendo archivos mediante un único paquete Git","download":"Copiando archivos desde el paquete local","analysis":"Analizando archivos musicales","export":"Generando resources.json","queued":"En cola"}.get(r["processing_stage"] or pstatus,"Procesando")
                     body+="<progress></progress><div class='muted'>"+stage_label+"</div>"
                 if pstatus=="completed":
                     body+="<div><a href='/github/"+str(r["catalog_id"])+"/resources.json'>Descargar resources.json ("+str(r["processed_count"] or 0)+" recursos)</a></div>"
