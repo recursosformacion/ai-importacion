@@ -622,9 +622,36 @@ def _process_repository_batch(repository_ids: list[int]) -> None:
             process_repository(repository_id)
 
 
+def _processing_worker_is_active() -> bool:
+    """Check the detached worker's OS lock without disturbing its ownership."""
+    lock_path = Path(DB_PATH).resolve().parent / "github-processing-worker.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return False
+    except (OSError, BlockingIOError):
+        return True
+    finally:
+        handle.close()
+
+
 def recover_processing_jobs() -> int:
-    """Resume jobs interrupted by a server restart or a lost daemon thread."""
+    """Resume jobs interrupted by a server restart or a lost worker process."""
     ensure_processing_schema()
+    worker_active = _processing_worker_is_active()
     with connect(DB_PATH) as conn:
         # A catalog repository is an explicit user selection. Older bulk
         # incorporation paths could create the catalog row without creating
@@ -647,14 +674,13 @@ def recover_processing_jobs() -> int:
             "SELECT repository_id FROM github_processing_jobs WHERE status IN ('queued','running','pending') ORDER BY updated_at"
         ).fetchall()
         ids = [int(row["repository_id"]) for row in rows]
-        if ids:
-            # Do not relabel a live detached worker's running job during a web
-            # server reload. The singleton worker requeues stale running rows
-            # itself only after it has acquired the process lock.
+        if ids and not worker_active:
+            # No detached worker owns the lock, so any running row is stale
+            # and can safely be requeued. A live worker keeps its running row.
             conn.execute("""
                 UPDATE github_processing_jobs
                 SET status='queued',stage='queued',current_path='',updated_at=?,error_text=NULL
-                WHERE status='pending'
+                WHERE status IN ('running','pending')
             """, (_now(),))
     if ids:
         logging.getLogger(__name__).warning(
