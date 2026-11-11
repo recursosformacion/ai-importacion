@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -120,6 +121,41 @@ def _has_scope_exclusions(readme):
 
 
 def ensure_schema():
+    # Back up the complete existing SQLite database before the first legal
+    # schema migration. If the backup fails, abort before changing anything.
+    database_path = Path(DB_PATH)
+    if database_path.is_file():
+        needs_backup = False
+        with sqlite3.connect(str(database_path)) as probe:
+            tables = {
+                row[0] for row in probe.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "github_repositories" in tables:
+                columns = {
+                    row[1] for row in probe.execute("PRAGMA table_info(github_repositories)")
+                }
+                required = {
+                    "legal_status", "legal_license_spdx", "legal_license_path",
+                    "legal_license_sha256", "legal_commit_sha", "legal_captured_at",
+                    "legal_owner_login", "legal_owner_credit", "legal_alert",
+                    "last_legal_audit_at",
+                }
+                needs_backup = not required.issubset(columns) or "github_legal_snapshots" not in tables
+        if needs_backup:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = database_path.with_name(
+                database_path.name + ".pre-github-legal-migration-" + stamp + ".bak"
+            )
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+            source = sqlite3.connect(str(database_path))
+            backup = sqlite3.connect(str(backup_path))
+            try:
+                source.backup(backup)
+            finally:
+                backup.close()
+                source.close()
     with connect(DB_PATH) as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS github_legal_snapshots(
