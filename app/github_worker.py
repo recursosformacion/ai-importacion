@@ -106,7 +106,24 @@ def main() -> int:
             if not claimed:
                 continue
             log.info("Comienza repositorio id=%s", repository_id)
-            process_repository(repository_id)
+            try:
+                process_repository(repository_id)
+            except Exception:
+                # A secondary failure while recording a job error must not
+                # terminate the persistent queue worker or strand later jobs.
+                log.exception("Fallo no controlado procesando repositorio id=%s", repository_id)
+                try:
+                    with connect(DB_PATH) as conn:
+                        conn.execute(
+                            """UPDATE github_processing_jobs
+                               SET status='error',stage='error',current_path='',updated_at=?,error_text=?
+                               WHERE repository_id=?""",
+                            (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                             "Error no controlado del trabajador; consulta github-worker.log",
+                             repository_id),
+                        )
+                except Exception:
+                    log.exception("No se pudo guardar el estado de error del repositorio id=%s", repository_id)
             with connect(DB_PATH) as conn:
                 row = conn.execute(
                     "SELECT status,error_text FROM github_processing_jobs WHERE repository_id=?",
