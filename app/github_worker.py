@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.db import connect
@@ -75,7 +76,7 @@ def main() -> int:
                 """UPDATE github_processing_jobs
                    SET status='queued',stage='queued',current_path='',updated_at=?
                    WHERE status='running'""",
-                (__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(timespec="seconds"),),
+                (datetime.now(timezone.utc).isoformat(timespec="seconds"),),
             )
         log.info("Trabajador GitHub persistente iniciado. Cola SQLite: %s", DB_PATH)
         idle_since = time.monotonic()
