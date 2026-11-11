@@ -165,13 +165,20 @@ def upsert_archive_files(conn, identifier: str, records: list[dict]) -> int:
       ON CONFLICT(identifier,file_name) DO UPDATE SET file_name_safe=excluded.file_name_safe,
       source_url=excluded.source_url,size_bytes=excluded.size_bytes,archive_format=excluded.archive_format,
       md5=excluded.md5,sha1=excluded.sha1,relevant=excluded.relevant,inventory_seen_at=excluded.inventory_seen_at,
-      license_spdx=COALESCE(excluded.license_spdx,archive_files.license_spdx),
-      license_name=COALESCE(excluded.license_name,archive_files.license_name),
-      license_url=COALESCE(excluded.license_url,archive_files.license_url),
-      license_scope=CASE WHEN excluded.license_scope='file' THEN 'file' ELSE archive_files.license_scope END,
-      rights_status=CASE WHEN excluded.license_scope='file' THEN excluded.rights_status ELSE archive_files.rights_status END,
-      distribution_mode=CASE WHEN excluded.license_scope='file' THEN excluded.distribution_mode ELSE archive_files.distribution_mode END,
-      download_status=CASE WHEN excluded.distribution_mode='hosted' AND archive_files.download_status='external_only'
+      license_spdx=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.license_spdx
+                         ELSE COALESCE(excluded.license_spdx,archive_files.license_spdx) END,
+      license_name=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.license_name
+                        ELSE COALESCE(excluded.license_name,archive_files.license_name) END,
+      license_url=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.license_url
+                       ELSE COALESCE(excluded.license_url,archive_files.license_url) END,
+      license_scope=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.license_scope
+                         WHEN excluded.license_scope='file' THEN 'file' ELSE archive_files.license_scope END,
+      rights_status=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.rights_status
+                         WHEN excluded.license_scope='file' THEN excluded.rights_status ELSE archive_files.rights_status END,
+      distribution_mode=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.distribution_mode
+                             WHEN excluded.license_scope='file' THEN excluded.distribution_mode ELSE archive_files.distribution_mode END,
+      download_status=CASE WHEN archive_files.rights_evidence_url<>'' THEN archive_files.download_status
+                           WHEN excluded.distribution_mode='hosted' AND archive_files.download_status='external_only'
                            THEN 'not_downloaded' ELSE archive_files.download_status END""",
         records)
     return len(records)
