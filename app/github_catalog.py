@@ -80,10 +80,43 @@ def ensure_schema() -> None:
           download_url TEXT NOT NULL DEFAULT '',
           first_seen_at TEXT NOT NULL,
           last_seen_at TEXT NOT NULL,
+          repository_license_spdx TEXT,
+          repository_license_name TEXT,
+          license_spdx TEXT,
+          license_name TEXT,
+          license_url TEXT,
+          license_scope TEXT NOT NULL DEFAULT 'unknown',
+          rights_status TEXT NOT NULL DEFAULT 'unverified',
+          distribution_mode TEXT NOT NULL DEFAULT 'external_link',
+          transcriber_credit TEXT NOT NULL DEFAULT '',
+          attribution_text TEXT NOT NULL DEFAULT '',
           UNIQUE(repository_id,path)
         );
         CREATE INDEX IF NOT EXISTS idx_github_files_extension ON github_files(extension);
         CREATE INDEX IF NOT EXISTS idx_github_files_repo ON github_files(repository_id,path);
+        """)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(github_files)")}
+        additions = {
+            "repository_license_spdx": "TEXT", "repository_license_name": "TEXT",
+            "license_spdx": "TEXT", "license_name": "TEXT", "license_url": "TEXT",
+            "license_scope": "TEXT NOT NULL DEFAULT 'unknown'",
+            "rights_status": "TEXT NOT NULL DEFAULT 'unverified'",
+            "distribution_mode": "TEXT NOT NULL DEFAULT 'external_link'",
+            "transcriber_credit": "TEXT NOT NULL DEFAULT ''",
+            "attribution_text": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, declaration in additions.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE github_files ADD COLUMN {column} {declaration}")
+        conn.execute("""
+            UPDATE github_files
+               SET rights_status='unverified',distribution_mode='external_link',
+                   license_scope='repository'
+             WHERE extension IN ('.mxl','.ly') AND license_scope!='file'
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_github_files_distribution
+            ON github_files(distribution_mode,rights_status)
         """)
 
 
@@ -226,12 +259,27 @@ async def github_scan(repository_id: int):
             for path, name, extension, size, sha, blob_url, html_url in candidates:
                 conn.execute("""
                     INSERT INTO github_files
-                    (repository_id,path,name,extension,size_bytes,sha,blob_url,html_url,download_url,first_seen_at,last_seen_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    (repository_id,path,name,extension,size_bytes,sha,blob_url,html_url,download_url,
+                     first_seen_at,last_seen_at,repository_license_spdx,repository_license_name,
+                     license_scope,rights_status,distribution_mode)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(repository_id,path) DO UPDATE SET name=excluded.name,
                     extension=excluded.extension,size_bytes=excluded.size_bytes,sha=excluded.sha,
-                    blob_url=excluded.blob_url,html_url=excluded.html_url,last_seen_at=excluded.last_seen_at
-                """, (repository_id, path, name, extension, size, sha, blob_url, html_url, "", stamp, stamp))
+                    blob_url=excluded.blob_url,html_url=excluded.html_url,last_seen_at=excluded.last_seen_at,
+                    repository_license_spdx=excluded.repository_license_spdx,
+                    repository_license_name=excluded.repository_license_name,
+                    license_scope=CASE WHEN github_files.license_scope='file' THEN 'file' ELSE 'repository' END,
+                    rights_status=CASE WHEN github_files.license_scope='file' THEN github_files.rights_status ELSE 'unverified' END,
+                    distribution_mode=CASE WHEN github_files.license_scope='file' THEN github_files.distribution_mode
+                                            WHEN excluded.extension IN ('.mxl','.ly') THEN 'external_link'
+                                            ELSE 'not_applicable' END
+                """, (
+                    repository_id, path, name, extension, size, sha, blob_url, html_url, "",
+                    stamp, stamp, repo["license_spdx"] or None, repo["license_name"] or None,
+                    "repository" if extension in {".mxl", ".ly"} else "unknown",
+                    "unverified" if extension in {".mxl", ".ly"} else "not_applicable",
+                    "external_link" if extension in {".mxl", ".ly"} else "not_applicable",
+                ))
             # Only a complete tree is authoritative enough to remove files no longer present.
             truncated = bool(tree.get("truncated")) or len(entries) > MAX_TREE_ENTRIES
             if not truncated:
