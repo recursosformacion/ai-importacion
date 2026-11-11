@@ -425,8 +425,8 @@ def serve_local_score_file(file_id: int):
         raise HTTPException(status_code=404, detail="Este endpoint solo sirve MXL y LilyPond.")
     if row["distribution_mode"] != "hosted" or row["download_status"] != "downloaded":
         raise HTTPException(status_code=403, detail="El fichero no tiene autorización de redistribución verificada.")
-    path = Path(row["local_path"] or "")
-    if not path.is_file():
+    path = Path(row["local_path"] or "").resolve()
+    if not path.is_relative_to(DOWNLOAD_DIR.resolve()) or not path.is_file():
         raise HTTPException(status_code=404, detail="El fichero autorizado no está disponible.")
     media_type = "application/vnd.recordare.musicxml" if path.suffix.lower() == ".mxl" else "text/plain; charset=utf-8"
     return FileResponse(path, media_type=media_type, filename=row["file_name"])
