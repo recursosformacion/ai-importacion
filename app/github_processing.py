@@ -379,7 +379,22 @@ def process_repository(repository_id: int):
                     transcriber = get_transcriber_credit(rights_analysis)
                 except Exception:
                     rights_analysis = None
-                rights_status, distribution_mode = distribution_decision(relative, **file_license)
+                if file_license["license_scope"] == "file":
+                    rights_status, distribution_mode = distribution_decision(relative, **file_license)
+                else:
+                    # A verified repository LICENSE is the default grant when the
+                    # README/snapshot has not excluded score files. A restrictive
+                    # file-level notice always takes precedence.
+                    rights_status, distribution_mode = "redistributable", "hosted"
+                    file_license = {
+                        "license_spdx": repo["legal_license_spdx"],
+                        "license_name": repo["legal_license_spdx"],
+                        "license_url": (
+                            repo["html_url"].rstrip("/") + "/blob/" +
+                            repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                        ),
+                        "license_scope": "repository",
+                    }
             title = _explicit_title(path, suffix)
             if not title and rights_analysis:
                 title = rights_analysis.get("title")
@@ -481,7 +496,10 @@ def process_repository(repository_id: int):
                         file_license["license_spdx"], file_license["license_name"],
                         file_license["license_url"], file_license["license_scope"],
                         rights_status, distribution_mode, transcriber, attribution,
-                        file_license["license_url"] or "", _now(),
+                        file_license["license_url"] or (
+                            repo["html_url"].rstrip("/") + "/blob/" +
+                            repo["legal_commit_sha"] + "/" + quote(repo["legal_license_path"], safe="/")
+                        ), _now(),
                         "hosted" if hosted_path else ("external_only" if suffix in {".mxl", ".ly"} else "not_applicable"),
                         str(hosted_path) if hosted_path else None,
                         file_sha256 if hosted_path else None, file_id,
