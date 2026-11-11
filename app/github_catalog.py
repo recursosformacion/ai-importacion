@@ -129,6 +129,8 @@ def ensure_schema() -> None:
             CREATE INDEX IF NOT EXISTS idx_github_files_distribution
             ON github_files(distribution_mode,rights_status)
         """)
+    from app.github_legal import ensure_schema as ensure_legal_schema
+    ensure_legal_schema()
 
 
 def parse_repository(value: str) -> tuple[str, str]:
@@ -234,7 +236,9 @@ async def github_add(repository: str = Form(...)):
                   metadata.get("description") or "", license_data.get("spdx_id") or "",
                   license_data.get("name") or "", int(metadata.get("stargazers_count") or 0), now()))
             row = conn.execute("SELECT id FROM github_repositories WHERE full_name=?", (full_name,)).fetchone()
-        return RedirectResponse(f"/github/{row['id']}", status_code=303)
+        from app.github_legal import capture_snapshot
+        legal = await capture_snapshot(int(row["id"]), full_name)
+        return RedirectResponse(f"/github/{row['id']}?legal=" + legal["status"], status_code=303)
     except (ValueError, httpx.HTTPError) as exc:
         return HTMLResponse(_page("No se pudo añadir", "<h1>No se pudo añadir el repositorio</h1><p>" + esc(exc) + "</p><p><a href='/github'>Volver</a></p>"), status_code=400)
 
@@ -248,6 +252,10 @@ async def github_scan(repository_id: int):
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
     started = now()
     try:
+        from app.github_legal import capture_snapshot
+        legal = await capture_snapshot(repository_id, repo["full_name"])
+        if legal["status"] != "approved":
+            raise ValueError("Repositorio excluido o bloqueado por derechos: " + legal["reason"])
         metadata = await github_json(f"{API}/repos/{repo['full_name']}")
         branch = metadata.get("default_branch") or repo["default_branch"]
         tree = await github_json(f"{API}/repos/{repo['full_name']}/git/trees/{branch}?recursive=1")
@@ -335,6 +343,11 @@ def github_process(repository_id: int):
         exists = conn.execute("SELECT 1 FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    from app.github_legal import assert_repository_approved
+    try:
+        assert_repository_approved(repository_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     from app.github_processing import enqueue_repository
     enqueue_repository(repository_id)
     return RedirectResponse(f"/github/{repository_id}", status_code=303)
@@ -370,6 +383,13 @@ def serve_github_score_file(file_id: int):
         raise HTTPException(status_code=404, detail="Fichero no encontrado")
     if os.path.splitext(row["path"])[1].lower() not in {".mxl", ".ly"}:
         raise HTTPException(status_code=404, detail="Este endpoint solo sirve MXL y LilyPond.")
+    with db() as conn:
+        legal = conn.execute(
+            "SELECT legal_status FROM github_repositories WHERE id=(SELECT repository_id FROM github_files WHERE id=?)",
+            (file_id,),
+        ).fetchone()
+    if not legal or legal["legal_status"] != "approved":
+        raise HTTPException(status_code=403, detail="Repositorio bloqueado por revisión legal.")
     if row["distribution_mode"] != "hosted" or row["download_status"] != "hosted":
         raise HTTPException(status_code=403, detail="No hay licencia individual que autorice alojar este fichero.")
     path = Path(row["local_path"] or "").resolve()
@@ -393,7 +413,12 @@ def github_repository(repository_id: int, q: str = ""):
         scan = conn.execute("SELECT * FROM github_scans WHERE repository_id=? ORDER BY id DESC LIMIT 1", (repository_id,)).fetchone()
         total = conn.execute("SELECT COUNT(*) FROM github_files WHERE repository_id=?", (repository_id,)).fetchone()[0]
     body = "<h1>" + esc(repo["full_name"]) + "</h1><p>" + esc(repo["description"]) + "</p>"
-    body += "<p><a href='" + esc(repo["html_url"]) + "'>Abrir en GitHub</a> · Licencia declarada: <b>" + esc(repo["license_spdx"] or repo["license_name"] or "No declarada") + "</b></p>"
+    body += "<p><a href='" + esc(repo["html_url"]) + "'>Repositorio original</a> · Propietario/crédito: <b>" + esc(repo["legal_owner_credit"] or repo["full_name"].split("/")[0]) + "</b></p>"
+    body += "<p>Licencia de repositorio: <b>" + esc(repo["legal_license_spdx"] or "No verificada") + "</b> · Estado legal: <b>" + esc(repo["legal_status"]) + "</b></p>"
+    body += "<p>Commit de la instantánea: <code>" + esc(repo["legal_commit_sha"]) + "</code> · Capturada: " + esc(repo["legal_captured_at"] or "—") + "</p>"
+    if repo["legal_alert"]:
+        body += "<p><b>Alerta:</b> " + esc(repo["legal_alert"]) + "</p>"
+    body += "<form method='post' action='/github/" + str(repository_id) + "/audit'><button>Auditar condiciones legales ahora</button></form>"
     from app.github_processing import ensure_processing_schema
     ensure_processing_schema()
     with db() as conn:
@@ -412,6 +437,21 @@ def github_repository(repository_id: int, q: str = ""):
         body += "<form method='post' action='/github/" + str(repository_id) + "/process'><button>Procesar repositorio</button></form>"
     body += "<p><a href='/github'>Volver a candidatos</a></p>"
     return HTMLResponse(_page("Repositorio " + repo["full_name"], body))
+
+
+@router.post("/github/{repository_id}/audit")
+async def github_audit(repository_id: int):
+    ensure_schema()
+    with db() as conn:
+        repo = conn.execute("SELECT full_name FROM github_repositories WHERE id=?", (repository_id,)).fetchone()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    from app.github_legal import audit_repository
+    try:
+        result = await audit_repository(repository_id, repo["full_name"])
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return RedirectResponse(f"/github/{repository_id}?audit=" + result["status"], status_code=303)
 
 
 def _page(title: str, body: str) -> str:
