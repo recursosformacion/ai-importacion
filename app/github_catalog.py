@@ -7,6 +7,7 @@ import html
 import json
 import os
 import tempfile
+import threading
 import zipfile
 import re
 from pathlib import Path
@@ -123,7 +124,23 @@ def ensure_processing_tables() -> None:
     github_processing.ensure_processing_schema()
 
 
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY_PATHS: set[str] = set()
+
+
 def ensure_schema() -> None:
+    """Create/upgrade catalog tables once per database path, not on every page view."""
+    schema_path = str(Path(DB_PATH).resolve())
+    if schema_path in _SCHEMA_READY_PATHS:
+        return
+    with _SCHEMA_LOCK:
+        if schema_path in _SCHEMA_READY_PATHS:
+            return
+        _ensure_schema_tables()
+        _SCHEMA_READY_PATHS.add(schema_path)
+
+
+def _ensure_schema_tables() -> None:
     with db() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS github_repositories (
