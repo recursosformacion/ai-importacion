@@ -15,6 +15,7 @@ import threading
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -307,8 +308,10 @@ def process_repository(repository_id: int):
             if path is not None:
                 paths.append(path)
 
-        out = repo_dir / ".osap-import"
-        out.mkdir(exist_ok=True)
+        # Keep the public metadata manifest outside the temporary Git clone.
+        # The clone (including its Git object pack) is deleted after processing.
+        out = ROOT / ".osap-import" / str(repository_id)
+        out.mkdir(parents=True, exist_ok=True)
         manifest_path = out / "resources.json"
         existing = {}
         if manifest_path.exists():
@@ -401,7 +404,7 @@ def process_repository(repository_id: int):
                     "rights_status": "unverified" if suffix in {".mxl", ".ly"} else "not_applicable",
                     "distribution_mode": "external_link" if suffix in {".mxl", ".ly"} else "not_applicable",
                     "transcriber_credit": None,
-                    "external_url": repo["html_url"].rstrip("/") + "/blob/" + commit + "/" + relative,
+                    "external_url": repo["html_url"].rstrip("/") + "/blob/" + commit + "/" + quote(relative, safe="/"),
                 },
                 "identification": {
                     "provider": "gemini" if title_source == "gemini" or ai_data else None,
@@ -428,7 +431,8 @@ def process_repository(repository_id: int):
                 "commit_sha": commit,
                 "snapshot": "filtered_shallow_clone",
                 "download_strategy": "single_sparse_checkout_batch",
-                "local_repository_path": str(repo_dir),
+                "local_repository_path": None,
+                "snapshot_lifecycle": "temporary_removed_after_processing",
             },
             "rights_notice": (
                 "La licencia declarada por GitHub no ha sido verificada. "
@@ -466,6 +470,8 @@ def process_repository(repository_id: int):
                 (_now(), str(exc)[:2000], repository_id),
             )
     finally:
+        # Do not retain downloaded score blobs in the server-side clone/cache.
+        shutil.rmtree(repo_dir, ignore_errors=True)
         lock.release()
 
 
