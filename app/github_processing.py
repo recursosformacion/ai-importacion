@@ -282,8 +282,12 @@ def _explicit_title(path: Path, suffix: str) -> str | None:
 def _relative_file(repo_dir: Path, raw_path: str) -> Path | None:
     candidate = repo_dir / raw_path
     try:
+        # Check the directory entry before resolving it: resolve() follows a
+        # symlink, so testing resolved.is_symlink() would never detect it.
+        if candidate.is_symlink():
+            return None
         resolved = candidate.resolve(strict=True)
-        if not resolved.is_relative_to(repo_dir) or not resolved.is_file() or resolved.is_symlink():
+        if not resolved.is_relative_to(repo_dir) or not resolved.is_file():
             return None
         return resolved
     except (OSError, RuntimeError):
