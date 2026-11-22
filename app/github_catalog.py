@@ -262,9 +262,15 @@ async def github_scan(repository_id: int):
         legal = await capture_snapshot(repository_id, repo["full_name"])
         # Legal status controls redistribution, not catalogue indexing.
         # Repositories without a license remain indexable as external references.
+        # The catalogue tree must be the exact commit whose LICENSE/README
+        # were captured above. Reading a moving branch here could pair files
+        # from a newer commit with an older legal approval.
+        snapshot_commit = legal["commit_sha"]
+        if not snapshot_commit:
+            raise ValueError("La instantánea legal no contiene un commit verificable.")
         metadata = await github_json(f"{API}/repos/{repo['full_name']}")
         branch = metadata.get("default_branch") or repo["default_branch"]
-        tree = await github_json(f"{API}/repos/{repo['full_name']}/git/trees/{branch}?recursive=1")
+        tree = await github_json(f"{API}/repos/{repo['full_name']}/git/trees/{snapshot_commit}?recursive=1")
         entries = tree.get("tree", [])
         if not isinstance(entries, list):
             raise ValueError("GitHub no devolvió un árbol de archivos válido.")
@@ -278,7 +284,7 @@ async def github_scan(repository_id: int):
                 continue
             candidates.append((path, os.path.basename(path), extension, entry.get("size"),
                                entry.get("sha") or "", entry.get("url") or "",
-                               f"https://github.com/{repo['full_name']}/blob/{branch}/" + path))
+                               f"https://github.com/{repo['full_name']}/blob/{snapshot_commit}/" + path))
         stamp = now()
         with db() as conn:
             for path, name, extension, size, sha, blob_url, html_url in candidates:
@@ -333,7 +339,7 @@ async def github_scan(repository_id: int):
             conn.execute("""
                 INSERT INTO github_scans(repository_id,commit_sha,tree_sha,file_count,candidate_count,truncated,status,started_at,completed_at)
                 VALUES(?,?,?,?,?,?,?,?,?)
-            """, (repository_id, "", tree.get("sha") or "",
+            """, (repository_id, snapshot_commit, tree.get("sha") or "",
                   len(entries), len(candidates), int(truncated),
                   "completed", started, stamp))
         return RedirectResponse(f"/github/{repository_id}?scan=ok", status_code=303)
