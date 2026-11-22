@@ -84,7 +84,9 @@ def _safe_repo_dir(repository_id: int) -> Path:
     return target
 
 
-def _prepare_music_snapshot(url: str, repo_dir: Path) -> tuple[str, list[str]]:
+def _prepare_music_snapshot(
+    url: str, repo_dir: Path, expected_commit: str | None = None
+) -> tuple[str, list[str]]:
     """Fetch the tree first, then materialize all selected music blobs in one Git pack."""
     if repo_dir.exists() and not (repo_dir / ".git").is_dir():
         shutil.rmtree(repo_dir)
@@ -104,6 +106,11 @@ def _prepare_music_snapshot(url: str, repo_dir: Path) -> tuple[str, list[str]]:
             "--depth=1", "--no-tags", "--no-recurse-submodules", "origin",
         ], cwd=repo_dir, timeout=3600)
     commit = _run(["git", "rev-parse", "FETCH_HEAD"], cwd=repo_dir).stdout.strip()
+    if expected_commit and commit != expected_commit:
+        raise ValueError(
+            "El repositorio cambió después de la instantánea legal "
+            f"({expected_commit} -> {commit}). Vuelve a auditar y explorar antes de descargar."
+        )
     listing = _run(["git", "ls-tree", "-r", "-z", "--name-only", commit], cwd=repo_dir).stdout
     selected = []
     for raw in listing.split(chr(0)):
@@ -405,7 +412,9 @@ def process_repository(repository_id: int):
                 )
             return
         url = "https://github.com/" + repo["full_name"] + ".git"
-        commit, selected_paths = _prepare_music_snapshot(url, repo_dir)
+        commit, selected_paths = _prepare_music_snapshot(
+            url, repo_dir, expected_commit=repo["legal_commit_sha"]
+        )
         paths = []
         for relative in selected_paths:
             path = _relative_file(repo_dir, relative)
